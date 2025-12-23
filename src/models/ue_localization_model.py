@@ -41,7 +41,19 @@ class UELocalizationModel(nn.Module):
         
         # Store for later use
         self.grid_size = coarse_cfg['grid_size']
-        self.scene_extent = dataset_cfg['scene_extent']
+        scene_extent = dataset_cfg['scene_extent']
+        
+        # Handle scene_extent as either scalar or [x_min, y_min, x_max, y_max]
+        if isinstance(scene_extent, (list, tuple)):
+            # Extract size from extent
+            x_min, y_min, x_max, y_max = scene_extent
+            self.scene_extent = x_max - x_min  # Assume square scenes
+            self.map_extent = tuple(scene_extent)
+        else:
+            # Scalar size (legacy format)
+            self.scene_extent = scene_extent
+            self.map_extent = (0.0, 0.0, scene_extent, scene_extent)
+        
         self.cell_size = self.scene_extent / self.grid_size
         self.top_k = fine_cfg['top_k']
         

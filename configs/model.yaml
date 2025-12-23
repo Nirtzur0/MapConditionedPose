@@ -64,7 +64,7 @@ training:
   loss:
     coarse_weight: 1.0
     fine_weight: 1.0
-    physics_weight: 0.1  # For M4
+    use_physics_loss: false  # Enable for M4 training (requires precomputed radio maps)
   
   # Optimizer
   optimizer: adamw
@@ -90,11 +90,47 @@ dataset:
   
   # Map parameters
   map_resolution: 1.0  # meters per pixel
-  scene_extent: 512    # meters (512x512m scenes)
+  scene_extent: [0.0, 0.0, 512.0, 512.0]  # [x_min, y_min, x_max, y_max] in meters
   
   # Preprocessing
   normalize_features: true
   handle_missing_values: "mask"  # "mask", "zero", or "mean"
+
+# M4: Physics Loss Configuration (Differentiable Physics Regularization)
+physics_loss:
+  # Enable/disable physics loss
+  enabled: false  # Set to true to use physics loss (requires precomputed radio maps)
+  
+  # Loss weight (λ_phys in paper)
+  lambda_phys: 0.1
+  
+  # Feature weights (importance of each feature in physics loss)
+  feature_weights:
+    path_gain: 1.0    # High weight, most reliable
+    toa: 0.5          # Medium, affected by NLOS bias
+    aoa: 0.3          # Lower, high measurement noise
+    snr: 0.8          # High, good signal quality indicator
+    sinr: 0.8         # High, good signal quality indicator
+    throughput: 0.2   # Lower, depends on scheduler/load
+    bler: 0.2         # Lower, depends on channel conditions
+  
+  # Loss type
+  loss_type: "mse"  # "mse" or "huber"
+  huber_delta: 1.0  # Only used if loss_type="huber"
+  
+  # Feature normalization
+  normalize_features: true  # Normalize features before computing loss
+  
+  # Radio map paths (precomputed using scripts/generate_radio_maps.py)
+  radio_maps_dir: "data/radio_maps"
+  
+  # Inference-time refinement (optional)
+  refinement:
+    enabled: false  # Enable gradient-based position refinement at inference
+    num_steps: 5    # Number of gradient descent steps
+    learning_rate: 0.5  # Learning rate in meters per step
+    min_confidence_threshold: 0.5  # Only refine predictions below this confidence
+    clip_to_extent: true  # Clip refined positions to map extent
 
 # Validation/Testing
 evaluation:

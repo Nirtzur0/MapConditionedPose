@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..models.ue_localization_model import UELocalizationModel
 from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
+from ..physics_loss import PhysicsLoss, PhysicsLossConfig
 
 
 class UELocalizationLightning(pl.LightningModule):
@@ -44,6 +45,21 @@ class UELocalizationLightning(pl.LightningModule):
             'fine_weight': self.config['training']['loss']['fine_weight'],
         }
         
+        # Physics loss (if enabled)
+        self.use_physics_loss = self.config['training']['loss'].get('use_physics_loss', False)
+        if self.use_physics_loss:
+            physics_config = PhysicsLossConfig(
+                feature_weights=self.config['physics_loss']['feature_weights'],
+                map_extent=tuple(self.config['dataset']['scene_extent']),
+                loss_type=self.config['physics_loss'].get('loss_type', 'mse'),
+                normalize_features=self.config['physics_loss'].get('normalize_features', True),
+            )
+            self.physics_loss_fn = PhysicsLoss(physics_config)
+            self.lambda_phys = self.config['physics_loss']['lambda_phys']
+        else:
+            self.physics_loss_fn = None
+            self.lambda_phys = 0.0
+        
         # Metrics tracking
         self.validation_step_outputs = []
         self.test_step_outputs = []
@@ -55,6 +71,46 @@ class UELocalizationLightning(pl.LightningModule):
             batch['radio_map'],
             batch['osm_map'],
         )
+    
+    def _extract_observed_features(self, measurements: Dict) -> torch.Tensor:
+        """
+        Extract observed radio features from measurements.
+        
+        Args:
+            measurements: Dict with RT/PHY/MAC features
+                - rt_features: (batch, seq_len, 8) [path_gain, toa, aoa_az, aoa_el, ...]
+                - phy_features: (batch, seq_len, 10) [rsrp, rsrq, snr, sinr, ...]
+                - mac_features: (batch, seq_len, 6) [throughput, bler, ...]
+                
+        Returns:
+            observed: (batch, 7) features [path_gain, toa, aoa, snr, sinr, throughput, bler]
+        """
+        batch_size = measurements['rt_features'].shape[0]
+        device = measurements['rt_features'].device
+        
+        # Extract features (use mean across temporal dimension, ignoring masked values)
+        mask = measurements['mask']  # (batch, seq_len)
+        
+        # RT features: path_gain (0), toa (1), aoa_azimuth (2)
+        rt_features = measurements['rt_features']  # (batch, seq_len, 8)
+        path_gain = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        toa = (rt_features[:, :, 1] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        aoa = (rt_features[:, :, 2] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        
+        # PHY features: snr (2), sinr (3)
+        phy_features = measurements['phy_features']  # (batch, seq_len, 10)
+        snr = (phy_features[:, :, 2] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        sinr = (phy_features[:, :, 3] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        
+        # MAC features: throughput (0), bler (1)
+        mac_features = measurements['mac_features']  # (batch, seq_len, 6)
+        throughput = (mac_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        bler = (mac_features[:, :, 1] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        
+        # Stack into (batch, 7)
+        observed = torch.stack([path_gain, toa, aoa, snr, sinr, throughput, bler], dim=1)
+        
+        return observed
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         """Training step."""
@@ -68,10 +124,38 @@ class UELocalizationLightning(pl.LightningModule):
         }
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
         
+        # Add physics loss if enabled
+        if self.use_physics_loss and 'radio_maps' in batch:
+            # Extract predicted position (best candidate from fine head)
+            pred_position = outputs['predicted_position']  # (batch, 2)
+            
+            # Extract observed features from measurements
+            # Assume batch['observed_features'] contains: [path_gain, toa, aoa, snr, sinr, throughput, bler]
+            # If not provided, need to extract from measurements
+            if 'observed_features' in batch:
+                observed_features = batch['observed_features']
+            else:
+                # Extract mean features from measurements (simplified)
+                # In practice, should aggregate across temporal measurements
+                observed_features = self._extract_observed_features(batch['measurements'])
+            
+            # Compute physics loss
+            physics_loss = self.physics_loss_fn(
+                predicted_xy=pred_position,
+                observed_features=observed_features,
+                radio_maps=batch['radio_maps'],  # (batch, C, H, W)
+            )
+            
+            # Add to total loss
+            losses['physics_loss'] = physics_loss
+            losses['loss'] = losses['loss'] + self.lambda_phys * physics_loss
+        
         # Log losses
         self.log('train_loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_coarse_loss', losses['coarse_loss'], on_step=False, on_epoch=True)
         self.log('train_fine_loss', losses['fine_loss'], on_step=False, on_epoch=True)
+        if self.use_physics_loss:
+            self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=False, on_epoch=True)
         
         return losses['loss']
     
@@ -87,18 +171,35 @@ class UELocalizationLightning(pl.LightningModule):
         }
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
         
+        # Add physics loss if enabled
+        if self.use_physics_loss and 'radio_maps' in batch:
+            pred_position = outputs['predicted_position']
+            observed_features = batch.get('observed_features', self._extract_observed_features(batch['measurements']))
+            
+            physics_loss = self.physics_loss_fn(
+                predicted_xy=pred_position,
+                observed_features=observed_features,
+                radio_maps=batch['radio_maps'],
+            )
+            losses['physics_loss'] = physics_loss
+            losses['loss'] = losses['loss'] + self.lambda_phys * physics_loss
+        
         # Compute errors
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
         errors = torch.norm(pred_pos - true_pos, dim=-1)  # [B]
         
         # Store for epoch-end aggregation
-        self.validation_step_outputs.append({
+        output_dict = {
             'loss': losses['loss'],
             'coarse_loss': losses['coarse_loss'],
             'fine_loss': losses['fine_loss'],
             'errors': errors,
-        })
+        }
+        if self.use_physics_loss:
+            output_dict['physics_loss'] = losses.get('physics_loss', torch.tensor(0.0))
+        
+        self.validation_step_outputs.append(output_dict)
         
         return losses['loss']
     
@@ -111,6 +212,10 @@ class UELocalizationLightning(pl.LightningModule):
         avg_loss = torch.stack([x['loss'] for x in self.validation_step_outputs]).mean()
         avg_coarse = torch.stack([x['coarse_loss'] for x in self.validation_step_outputs]).mean()
         avg_fine = torch.stack([x['fine_loss'] for x in self.validation_step_outputs]).mean()
+        
+        if self.use_physics_loss:
+            avg_phys = torch.stack([x['physics_loss'] for x in self.validation_step_outputs]).mean()
+            self.log('val_physics_loss', avg_phys)
         
         # Aggregate errors
         all_errors = torch.cat([x['errors'] for x in self.validation_step_outputs])

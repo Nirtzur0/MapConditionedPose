@@ -1,0 +1,18 @@
+# M4: Physics Loss Requirements
+# Differentiable Physics Regularization
+
+# Base requirements (M3)
+-r requirements-m3.txt
+
+# Sionna (optional, only needed for radio map generation)
+# Uncomment if you want to generate radio maps from scratch
+# sionna>=0.15.0
+
+# Note: Sionna RT requires:
+# - CUDA-capable GPU
+# - Mitsuba 3
+# - Dr.Jit
+# See: https://nvlabs.github.io/sionna/install.html
+
+# For using precomputed radio maps (training only), Sionna is NOT required
+# Physics loss uses precomputed maps stored in Zarr format
