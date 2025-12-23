@@ -1,0 +1,19 @@
+# Requirements for M2 Data Generation
+# Install with: pip install -r requirements-m2.txt
+
+# Core dependencies
+numpy>=1.24.0
+pyproj>=3.6.0  # Coordinate transforms (from M1)
+pyyaml>=6.0  # Configuration files
+
+# Data storage
+zarr>=2.16.0  # Hierarchical array storage
+numcodecs>=0.12.0  # Compression codecs for Zarr
+
+# Optional: Sionna (for actual RT simulation)
+# sionna>=0.14.0  # Ray tracing engine (TensorFlow-based)
+# tensorflow>=2.13.0  # Required by Sionna
+
+# Note: Sionna and TensorFlow are large dependencies (>500 MB)
+# Only needed for actual ray tracing simulation
+# The code will work in mock mode without them for testing

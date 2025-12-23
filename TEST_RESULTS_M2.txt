@@ -1,0 +1,36 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-7.4.4, pluggy-1.4.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/ubuntu/projects/transformer-ue-localization
+configfile: pytest.ini
+collecting ... collected 27 items
+
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_rsrp_computation PASSED [  3%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_rsrq_computation PASSED [  7%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_sinr_computation PASSED [ 11%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_cqi_mapping PASSED [ 14%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_rank_indicator PASSED [ 18%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_timing_advance PASSED [ 22%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_measurement_dropout PASSED [ 25%]
+tests/test_m2_data_generation.py::TestMeasurementUtils::test_neighbor_list_truncation PASSED [ 29%]
+tests/test_m2_data_generation.py::TestRTFeatureExtractor::test_initialization PASSED [ 33%]
+tests/test_m2_data_generation.py::TestRTFeatureExtractor::test_mock_extraction PASSED [ 37%]
+tests/test_m2_data_generation.py::TestRTFeatureExtractor::test_rms_ds_computation PASSED [ 40%]
+tests/test_m2_data_generation.py::TestRTFeatureExtractor::test_k_factor_computation PASSED [ 44%]
+tests/test_m2_data_generation.py::TestRTFeatureExtractor::test_to_dict_conversion PASSED [ 48%]
+tests/test_m2_data_generation.py::TestPHYFAPIFeatureExtractor::test_initialization PASSED [ 51%]
+tests/test_m2_data_generation.py::TestPHYFAPIFeatureExtractor::test_phy_extraction_from_rt PASSED [ 55%]
+tests/test_m2_data_generation.py::TestPHYFAPIFeatureExtractor::test_to_dict_conversion PASSED [ 59%]
+tests/test_m2_data_generation.py::TestMACRRCFeatureExtractor::test_initialization PASSED [ 62%]
+tests/test_m2_data_generation.py::TestMACRRCFeatureExtractor::test_mac_extraction PASSED [ 66%]
+tests/test_m2_data_generation.py::TestMACRRCFeatureExtractor::test_throughput_simulation PASSED [ 70%]
+tests/test_m2_data_generation.py::TestMACRRCFeatureExtractor::test_bler_simulation PASSED [ 74%]
+tests/test_m2_data_generation.py::TestDataGenerationConfig::test_config_initialization PASSED [ 77%]
+tests/test_m2_data_generation.py::TestDataGenerationConfig::test_config_custom_values PASSED [ 81%]
+tests/test_m2_data_generation.py::TestMultiLayerDataGenerator::test_generator_initialization PASSED [ 85%]
+tests/test_m2_data_generation.py::TestMultiLayerDataGenerator::test_ue_trajectory_sampling PASSED [ 88%]
+tests/test_m2_data_generation.py::TestMultiLayerDataGenerator::test_single_measurement_simulation PASSED [ 92%]
+tests/test_m2_data_generation.py::TestZarrWriter::test_zarr_writer_initialization SKIPPED [ 96%]
+tests/test_m2_data_generation.py::TestZarrWriter::test_zarr_append_and_finalize SKIPPED [100%]
+
+======================== 25 passed, 2 skipped in 0.11s =========================

@@ -1,0 +1,17 @@
+# Test Requirements for M1 Scene Generation
+# Install with: pip install -r requirements-test.txt
+
+# Core testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-xdist>=3.3.0  # Parallel test execution
+pytest-timeout>=2.1.0
+
+# Dependencies for M1
+numpy>=1.24.0
+pyproj>=3.6.0
+pyyaml>=6.0
+
+# Optional: for better test output
+pytest-sugar>=0.9.7
+pytest-html>=3.2.0

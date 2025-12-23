@@ -1,0 +1,549 @@
+"""
+Multi-Layer Data Generator
+Orchestrates RT simulation, feature extraction, and dataset generation
+"""
+
+import numpy as np
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass
+import logging
+import yaml
+import json
+
+from .features import (
+    RTFeatureExtractor, PHYFAPIFeatureExtractor, MACRRCFeatureExtractor,
+    RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
+)
+from .measurement_utils import add_measurement_dropout
+
+logger = logging.getLogger(__name__)
+
+# Try importing Zarr writer (optional)
+try:
+    from .zarr_writer import ZarrDatasetWriter
+    ZARR_AVAILABLE = True
+except ImportError:
+    ZARR_AVAILABLE = False
+    logger.warning("Zarr not available - dataset writing will fail without zarr package")
+
+# Try importing Sionna
+try:
+    import sionna
+    from sionna.rt import Scene, Camera, load_scene
+    SIONNA_AVAILABLE = True
+except ImportError:
+    SIONNA_AVAILABLE = False
+    logger.warning("Sionna not available - MultiLayerDataGenerator will operate in mock mode")
+
+
+@dataclass
+class DataGenerationConfig:
+    """Configuration for multi-layer data generation."""
+    
+    # Scene and tile info
+    scene_dir: Path
+    scene_metadata_path: Path
+    
+    # RF parameters
+    carrier_frequency_hz: float = 3.5e9
+    bandwidth_hz: float = 100e6
+    tx_power_dbm: float = 43.0
+    noise_figure_db: float = 9.0
+    
+    # Sampling strategy
+    num_ue_per_tile: int = 100
+    ue_height_range: Tuple[float, float] = (1.5, 1.5)  # Fixed pedestrian height
+    ue_velocity_range: Tuple[float, float] = (0.0, 1.5)  # 0-1.5 m/s
+    
+    # Temporal sequence
+    num_reports_per_ue: int = 10
+    report_interval_ms: float = 200.0  # 200 ms between measurements
+    
+    # Feature extraction
+    enable_k_factor: bool = False
+    enable_beam_management: bool = True
+    num_beams: int = 64
+    max_neighbors: int = 8
+    
+    # Measurement realism
+    measurement_dropout_rates: Dict[str, float] = None
+    quantization_enabled: bool = True
+    
+    # Output
+    output_dir: Path = Path("data/synthetic")
+    zarr_chunk_size: int = 100
+    
+    def __post_init__(self):
+        if self.measurement_dropout_rates is None:
+            # Default 3GPP-like dropout rates
+            self.measurement_dropout_rates = {
+                'rsrp': 0.05,  # Serving cell: low dropout
+                'rsrq': 0.10,
+                'sinr': 0.10,
+                'cqi': 0.15,
+                'ri': 0.20,  # Less frequent reporting
+                'pmi': 0.25,
+                'neighbor_rsrp': 0.30,  # Neighbors: higher dropout
+            }
+        
+        # Convert paths to Path objects
+        self.scene_dir = Path(self.scene_dir)
+        self.scene_metadata_path = Path(self.scene_metadata_path)
+        self.output_dir = Path(self.output_dir)
+        
+    @classmethod
+    def from_yaml(cls, path: str) -> 'DataGenerationConfig':
+        """Load configuration from YAML file."""
+        with open(path, 'r') as f:
+            config_dict = yaml.safe_load(f)
+        return cls(**config_dict)
+
+
+class MultiLayerDataGenerator:
+    """
+    Orchestrates end-to-end data generation pipeline:
+    1. Load M1 scene in Sionna RT
+    2. Sample UE positions and trajectories
+    3. Run ray tracing (RT layer)
+    4. Extract PHY/FAPI features (L2)
+    5. Extract MAC/RRC features (L3)
+    6. Apply measurement realism (dropout, quantization)
+    7. Save to Zarr dataset
+    """
+    
+    def __init__(self, config: DataGenerationConfig):
+        """
+        Args:
+            config: Data generation configuration
+        """
+        self.config = config
+        
+        # Initialize feature extractors
+        self.rt_extractor = RTFeatureExtractor(
+            carrier_frequency_hz=config.carrier_frequency_hz,
+            bandwidth_hz=config.bandwidth_hz,
+            compute_k_factor=config.enable_k_factor,
+        )
+        
+        self.phy_extractor = PHYFAPIFeatureExtractor(
+            noise_figure_db=config.noise_figure_db,
+            enable_beam_management=config.enable_beam_management,
+            num_beams=config.num_beams,
+        )
+        
+        self.mac_extractor = MACRRCFeatureExtractor(
+            max_neighbors=config.max_neighbors,
+            enable_throughput=True,
+            enable_handover=False,
+        )
+        
+        # Initialize Zarr writer (only if available)
+        self.zarr_writer = None
+        if ZARR_AVAILABLE:
+            self.zarr_writer = ZarrDatasetWriter(
+                output_dir=config.output_dir,
+                chunk_size=config.zarr_chunk_size,
+            )
+        else:
+            logger.warning("Zarr writer not available - install zarr package for dataset writing")
+        
+        # Load scene metadata
+        self.scene_metadata = self._load_scene_metadata()
+        
+        logger.info(f"MultiLayerDataGenerator initialized: {config.scene_dir}")
+        logger.info(f"  Carrier freq: {config.carrier_frequency_hz/1e9:.2f} GHz")
+        logger.info(f"  UEs per tile: {config.num_ue_per_tile}")
+        logger.info(f"  Reports per UE: {config.num_reports_per_ue}")
+    
+    def _load_scene_metadata(self) -> Dict:
+        """Load scene metadata from M1 output."""
+        metadata_path = self.config.scene_metadata_path
+        if not metadata_path.exists():
+            logger.warning(f"Scene metadata not found: {metadata_path}")
+            return {}
+        
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        logger.info(f"Loaded scene metadata: {len(metadata.get('sites', []))} sites")
+        return metadata
+    
+    def generate_dataset(self, 
+                        scene_ids: Optional[List[str]] = None,
+                        num_scenes: Optional[int] = None) -> Path:
+        """
+        Generate complete dataset from M1 scenes.
+        
+        Args:
+            scene_ids: List of scene IDs to process (if None, process all)
+            num_scenes: Limit number of scenes (for testing)
+            
+        Returns:
+            output_path: Path to Zarr dataset
+        """
+        # Find all scenes
+        if scene_ids is None:
+            scene_dirs = sorted(self.config.scene_dir.glob("scene_*"))
+            scene_ids = [d.name for d in scene_dirs]
+        
+        if num_scenes is not None:
+            scene_ids = scene_ids[:num_scenes]
+        
+        logger.info(f"Generating dataset from {len(scene_ids)} scenes...")
+        
+        # Process each scene
+        for i, scene_id in enumerate(scene_ids):
+            logger.info(f"Processing scene {i+1}/{len(scene_ids)}: {scene_id}")
+            
+            scene_path = self.config.scene_dir / scene_id / "scene.xml"
+            if not scene_path.exists():
+                logger.warning(f"Scene not found: {scene_path}, skipping")
+                continue
+            
+            # Generate data for this scene
+            scene_data = self.generate_scene_data(scene_path, scene_id)
+            
+            # Write to Zarr
+            if self.zarr_writer is not None:
+                self.zarr_writer.append(scene_data, scene_id=scene_id)
+            else:
+                logger.warning("Zarr writer not available, skipping data write")
+        
+        # Finalize dataset
+        if self.zarr_writer is not None:
+            output_path = self.zarr_writer.finalize()
+            logger.info(f"Dataset generation complete: {output_path}")
+            return output_path
+        else:
+            logger.warning("Dataset generation complete but no data written (zarr not available)")
+            return self.config.output_dir
+    
+    def generate_scene_data(self, 
+                           scene_path: Path,
+                           scene_id: str) -> Dict[str, np.ndarray]:
+        """
+        Generate multi-layer data for a single scene.
+        
+        Args:
+            scene_path: Path to scene.xml
+            scene_id: Scene identifier
+            
+        Returns:
+            scene_data: Dict with all features and positions
+        """
+        # Load scene in Sionna
+        if SIONNA_AVAILABLE:
+            scene = load_scene(str(scene_path))
+            logger.info(f"Loaded Sionna scene: {scene_path}")
+        else:
+            logger.warning("Sionna not available - using mock data")
+            scene = None
+        
+        # Load site positions and cell IDs from metadata
+        scene_metadata = self.scene_metadata.get(scene_id, {})
+        sites = scene_metadata.get('sites', [])
+        site_positions = np.array([s['position'] for s in sites])
+        cell_ids = np.array([s['cell_id'] for s in sites])
+        
+        if len(sites) == 0:
+            logger.warning(f"No sites in metadata for {scene_id}, using mock")
+            site_positions = np.array([[0, 0, 30], [500, 0, 30]])
+            cell_ids = np.array([1, 2])
+        
+        # Sample UE positions and trajectories
+        ue_trajectories = self._sample_ue_trajectories(scene_metadata)
+        
+        # Collect data for all UEs and time steps
+        all_data = {
+            'rt': [],
+            'phy_fapi': [],
+            'mac_rrc': [],
+            'positions': [],
+            'timestamps': [],
+        }
+        
+        num_ues = len(ue_trajectories)
+        for ue_idx, trajectory in enumerate(ue_trajectories):
+            if (ue_idx + 1) % 10 == 0:
+                logger.info(f"  Processing UE {ue_idx+1}/{num_ues}")
+            
+            # Generate temporal sequence
+            for t_idx, ue_pos in enumerate(trajectory):
+                # Run simulation for this UE position
+                rt_features, phy_features, mac_features = self._simulate_measurement(
+                    scene, ue_pos, site_positions, cell_ids
+                )
+                
+                # Store features
+                all_data['rt'].append(rt_features.to_dict())
+                all_data['phy_fapi'].append(phy_features.to_dict())
+                all_data['mac_rrc'].append(mac_features.to_dict())
+                all_data['positions'].append(ue_pos)
+                
+                # Timestamp
+                timestamp = t_idx * self.config.report_interval_ms / 1000.0  # seconds
+                all_data['timestamps'].append(timestamp)
+        
+        # Stack into arrays
+        scene_data = self._stack_scene_data(all_data)
+        
+        # Apply measurement realism
+        scene_data = self._apply_measurement_realism(scene_data)
+        
+        return scene_data
+    
+    def _sample_ue_trajectories(self, scene_metadata: Dict) -> List[np.ndarray]:
+        """
+        Sample UE positions and trajectories.
+        
+        Args:
+            scene_metadata: Scene metadata with bounding box
+            
+        Returns:
+            trajectories: List of [num_reports, 3] position arrays
+        """
+        # Get scene bounds
+        bbox = scene_metadata.get('bbox', {})
+        x_min = bbox.get('x_min', -500)
+        x_max = bbox.get('x_max', 500)
+        y_min = bbox.get('y_min', -500)
+        y_max = bbox.get('y_max', 500)
+        
+        trajectories = []
+        for _ in range(self.config.num_ue_per_tile):
+            # Sample initial position
+            x0 = np.random.uniform(x_min, x_max)
+            y0 = np.random.uniform(y_min, y_max)
+            z0 = np.random.uniform(*self.config.ue_height_range)
+            
+            # Sample velocity
+            speed = np.random.uniform(*self.config.ue_velocity_range)
+            direction = np.random.uniform(0, 2*np.pi)
+            vx = speed * np.cos(direction)
+            vy = speed * np.sin(direction)
+            
+            # Generate trajectory
+            trajectory = []
+            for t in range(self.config.num_reports_per_ue):
+                dt = t * self.config.report_interval_ms / 1000.0
+                x = x0 + vx * dt
+                y = y0 + vy * dt
+                z = z0  # Fixed height
+                
+                # Clip to bounds
+                x = np.clip(x, x_min, x_max)
+                y = np.clip(y, y_min, y_max)
+                
+                trajectory.append([x, y, z])
+            
+            trajectories.append(np.array(trajectory))
+        
+        return trajectories
+    
+    def _simulate_measurement(self,
+                             scene: Any,
+                             ue_position: np.ndarray,
+                             site_positions: np.ndarray,
+                             cell_ids: np.ndarray) -> Tuple[RTLayerFeatures, 
+                                                             PHYFAPILayerFeatures,
+                                                             MACRRCLayerFeatures]:
+        """
+        Run simulation for single UE position.
+        
+        Args:
+            scene: Sionna RT Scene
+            ue_position: [3] UE position (x, y, z)
+            site_positions: [num_sites, 3] site positions
+            cell_ids: [num_sites] cell IDs
+            
+        Returns:
+            (rt_features, phy_features, mac_features)
+        """
+        if SIONNA_AVAILABLE and scene is not None:
+            # Configure TX and RX in Sionna
+            # (Simplified: would need to set up transmitters/receivers properly)
+            
+            # For now, use mock mode
+            logger.debug("Using mock simulation (Sionna integration pending)")
+            return self._simulate_mock(ue_position, site_positions, cell_ids)
+        else:
+            return self._simulate_mock(ue_position, site_positions, cell_ids)
+    
+    def _simulate_mock(self,
+                      ue_position: np.ndarray,
+                      site_positions: np.ndarray,
+                      cell_ids: np.ndarray) -> Tuple[RTLayerFeatures,
+                                                      PHYFAPILayerFeatures,
+                                                      MACRRCLayerFeatures]:
+        """Mock simulation for testing."""
+        # RT features
+        rt_features = self.rt_extractor._extract_mock()
+        
+        # Reshape to single UE
+        for key in ['path_gains', 'path_delays', 'path_aoa_azimuth', 
+                   'path_aoa_elevation', 'path_aod_azimuth', 'path_aod_elevation',
+                   'path_doppler']:
+            setattr(rt_features, key, getattr(rt_features, key)[0:1, 0:1])
+        rt_features.rms_delay_spread = rt_features.rms_delay_spread[0:1, 0:1]
+        if rt_features.k_factor is not None:
+            rt_features.k_factor = rt_features.k_factor[0:1, 0:1]
+        rt_features.num_paths = rt_features.num_paths[0:1, 0:1]
+        
+        # PHY features
+        phy_features = self.phy_extractor.extract(rt_features)
+        
+        # Expand to multi-cell
+        num_cells = len(cell_ids)
+        phy_features.rsrp = np.random.uniform(-100, -60, (1, 1, num_cells))
+        phy_features.rsrq = np.random.uniform(-15, -5, (1, 1, num_cells))
+        phy_features.sinr = np.random.uniform(-5, 25, (1, 1, num_cells))
+        phy_features.cqi = np.random.randint(0, 16, (1, 1, num_cells))
+        phy_features.ri = np.random.randint(1, 5, (1, 1, num_cells))
+        phy_features.pmi = np.random.randint(0, 8, (1, 1, num_cells))
+        
+        # MAC/RRC features
+        ue_positions_batch = ue_position[np.newaxis, np.newaxis, :]  # [1, 1, 3]
+        mac_features = self.mac_extractor.extract(
+            phy_features, ue_positions_batch, site_positions, cell_ids
+        )
+        
+        return rt_features, phy_features, mac_features
+    
+    def _stack_scene_data(self, all_data: Dict[str, List]) -> Dict[str, np.ndarray]:
+        """Stack lists of features into arrays."""
+        stacked = {}
+        
+        # Positions and timestamps (simple stack)
+        stacked['positions'] = np.array(all_data['positions'])  # [N, 3]
+        stacked['timestamps'] = np.array(all_data['timestamps'])  # [N]
+        
+        # RT features
+        for key in all_data['rt'][0].keys():
+            arrays = [d[key] for d in all_data['rt']]
+            # Handle variable shapes (squeeze batch/rx dims)
+            arrays_squeezed = [np.squeeze(a) if a.size > 0 else a for a in arrays]
+            
+            try:
+                stacked[key] = np.stack(arrays_squeezed, axis=0)
+            except ValueError:
+                # Variable length (e.g., paths) - keep as list
+                stacked[key] = arrays_squeezed
+                logger.warning(f"Variable length array for {key}, storing as list")
+        
+        # PHY/FAPI features
+        for key in all_data['phy_fapi'][0].keys():
+            arrays = [d[key] for d in all_data['phy_fapi']]
+            arrays_squeezed = [np.squeeze(a) if a is not None and a.size > 0 else a 
+                              for a in arrays]
+            
+            if arrays_squeezed[0] is not None:
+                try:
+                    stacked[key] = np.stack(arrays_squeezed, axis=0)
+                except (ValueError, TypeError):
+                    stacked[key] = arrays_squeezed
+        
+        # MAC/RRC features
+        for key in all_data['mac_rrc'][0].keys():
+            arrays = [d[key] for d in all_data['mac_rrc']]
+            arrays_squeezed = [np.squeeze(a) if a is not None and a.size > 0 else a 
+                              for a in arrays]
+            
+            if arrays_squeezed[0] is not None:
+                try:
+                    stacked[key] = np.stack(arrays_squeezed, axis=0)
+                except (ValueError, TypeError):
+                    stacked[key] = arrays_squeezed
+        
+        return stacked
+    
+    def _apply_measurement_realism(self, scene_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """
+        Apply measurement dropout and quantization.
+        
+        Args:
+            scene_data: Scene data dictionary
+            
+        Returns:
+            scene_data_realistic: Data with dropout and quantization
+        """
+        if not self.config.quantization_enabled:
+            return scene_data
+        
+        # Apply dropout to PHY/FAPI measurements
+        phy_fapi_keys = [k for k in scene_data.keys() if k.startswith('phy_fapi/')]
+        phy_fapi_dict = {k: scene_data[k] for k in phy_fapi_keys if isinstance(scene_data[k], np.ndarray)}
+        
+        # Map keys to dropout rates
+        dropout_mapping = {
+            'phy_fapi/rsrp': 'rsrp',
+            'phy_fapi/rsrq': 'rsrq',
+            'phy_fapi/sinr': 'sinr',
+            'phy_fapi/cqi': 'cqi',
+            'phy_fapi/ri': 'ri',
+            'phy_fapi/pmi': 'pmi',
+        }
+        
+        dropout_rates = {k: self.config.measurement_dropout_rates.get(v, 0.0)
+                        for k, v in dropout_mapping.items()}
+        
+        phy_fapi_dropped = add_measurement_dropout(phy_fapi_dict, dropout_rates, seed=42)
+        
+        # Update scene_data
+        scene_data.update(phy_fapi_dropped)
+        
+        logger.debug(f"Applied measurement dropout: "
+                    f"{sum(dropout_rates.values())/len(dropout_rates)*100:.1f}% avg")
+        
+        return scene_data
+
+
+if __name__ == "__main__":
+    # Test data generator
+    print("Testing MultiLayerDataGenerator...")
+    
+    # Create test config
+    config = DataGenerationConfig(
+        scene_dir=Path("test_scenes"),
+        scene_metadata_path=Path("test_scenes/metadata.json"),
+        num_ue_per_tile=10,
+        num_reports_per_ue=5,
+        output_dir=Path("test_output"),
+    )
+    
+    # Create mock scene directory
+    config.scene_dir.mkdir(exist_ok=True)
+    config.output_dir.mkdir(exist_ok=True)
+    
+    # Write mock metadata
+    metadata = {
+        'scene_001': {
+            'bbox': {'x_min': -500, 'x_max': 500, 'y_min': -500, 'y_max': 500},
+            'sites': [
+                {'position': [0, 0, 30], 'cell_id': 1},
+                {'position': [500, 0, 30], 'cell_id': 2},
+            ],
+        }
+    }
+    with open(config.scene_metadata_path, 'w') as f:
+        json.dump(metadata, f)
+    
+    # Initialize generator
+    generator = MultiLayerDataGenerator(config)
+    
+    # Test UE trajectory sampling
+    trajectories = generator._sample_ue_trajectories(metadata['scene_001'])
+    print(f"✓ Sampled {len(trajectories)} UE trajectories")
+    print(f"  Trajectory shape: {trajectories[0].shape}")
+    
+    # Test single measurement simulation
+    ue_pos = np.array([100, 200, 1.5])
+    site_positions = np.array([[0, 0, 30], [500, 0, 30]])
+    cell_ids = np.array([1, 2])
+    rt_feat, phy_feat, mac_feat = generator._simulate_mock(ue_pos, site_positions, cell_ids)
+    print(f"✓ Simulated single measurement")
+    print(f"  RT features: {len(rt_feat.to_dict())} arrays")
+    print(f"  PHY features: {len(phy_feat.to_dict())} arrays")
+    print(f"  MAC features: {len(mac_feat.to_dict())} arrays")
+    
+    print("\nMultiLayerDataGenerator tests passed! ✓")

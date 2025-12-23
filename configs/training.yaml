@@ -1,0 +1,165 @@
+# Milestone 3: Map-Conditioned Transformer Training Configuration
+
+model:
+  name: "MapConditionedTransformer"
+  
+  # Radio Encoder (Temporal Transformer)
+  radio_encoder:
+    type: "SetTransformer"
+    d_model: 512
+    num_layers: 8
+    num_heads: 8
+    dim_feedforward: 2048
+    dropout: 0.1
+    
+    # Token Embedding
+    embedding:
+      cell_id_embed_dim: 64
+      beam_id_embed_dim: 32
+      time_embed_dim: 64
+      feature_dim: 256  # RT+PHY+MAC feature vector
+      
+    # Masking
+    use_token_masking: true  # For missing measurements
+    use_feature_masking: true  # For missing features within tokens
+    
+  # Map Encoder (Vision Transformer)
+  map_encoder:
+    type: "DualStreamViT"  # Separate encoders for radio + OSM maps
+    
+    radio_map_encoder:
+      backbone: "ViT-B/16"  # Vision Transformer Base, 16x16 patches
+      input_channels: 7  # [PathGain, ToA, AoA, RSRP, SINR, Throughput, BLER]
+      patch_size: 16
+      image_size: 256  # Assuming 512m at 2m/pixel = 256px
+      d_model: 768
+      num_layers: 6
+      num_heads: 12
+      
+    osm_map_encoder:
+      backbone: "ViT-B/16"
+      input_channels: 5  # [height, footprint, material, road, terrain]
+      patch_size: 16
+      image_size: 256
+      d_model: 768
+      num_layers: 6
+      num_heads: 12
+      
+    fusion_strategy: "concatenate"  # "concatenate", "cross_attention", "early_fusion"
+    
+  # Cross-Attention Fusion
+  fusion:
+    num_cross_attention_layers: 4
+    d_model: 768
+    num_heads: 12
+    dropout: 0.1
+    
+  # Output Heads
+  output:
+    # Coarse Head (Classification)
+    coarse:
+      grid_resolution: 32  # 32x32 grid cells
+      use_softmax: true
+      
+    # Fine Head (Regression)
+    fine:
+      type: "heteroscedastic"  # "simple", "heteroscedastic", "gmm"
+      num_gaussians: 3  # For GMM mode
+      predict_uncertainty: true
+
+# Training Configuration
+training:
+  # Data
+  data:
+    train_path: "data/processed/dataset.zarr"
+    val_path: null  # If null, use split from train_path
+    batch_size: 64
+    num_workers: 8
+    pin_memory: true
+    
+  # Optimization
+  optimizer:
+    name: "AdamW"
+    lr: 1e-4
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    
+  scheduler:
+    name: "CosineAnnealingLR"
+    T_max: 100  # epochs
+    eta_min: 1e-6
+    warmup_epochs: 5
+    
+  # Loss Function
+  loss:
+    coarse_weight: 1.0
+    fine_weight: 1.0
+    uncertainty_weight: 0.1  # For heteroscedastic loss
+    
+  # Regularization
+  regularization:
+    dropout: 0.1
+    label_smoothing: 0.05  # For coarse classification
+    
+  # Training Loop
+  epochs: 100
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  precision: "16-mixed"  # Mixed precision training
+  
+  # Callbacks
+  callbacks:
+    early_stopping:
+      monitor: "val/median_error_m"
+      patience: 15
+      mode: "min"
+      
+    model_checkpoint:
+      monitor: "val/median_error_m"
+      save_top_k: 3
+      mode: "min"
+      filename: "epoch{epoch:02d}-error{val/median_error_m:.2f}m"
+      
+    learning_rate_monitor:
+      logging_interval: "epoch"
+      
+  # Validation
+  validation:
+    check_val_every_n_epoch: 1
+    val_check_interval: null  # If set, validate within epoch
+    
+  # Logging
+  logging:
+    log_every_n_steps: 50
+    save_predictions_every_n_epochs: 5  # Save sample predictions
+
+# Weights & Biases Configuration
+wandb:
+  project: "transformer-ue-localization"
+  entity: null  # Your W&B username/team
+  name: null  # Auto-generated if null
+  tags:
+    - "transformer"
+    - "map-conditioned"
+    - "baseline"
+  notes: "Baseline training run with dual map conditioning"
+  save_code: true
+  log_model: true
+
+# Hardware
+hardware:
+  accelerator: "gpu"
+  devices: [0, 1]  # GPU IDs
+  strategy: "ddp"  # Distributed Data Parallel
+  num_nodes: 1
+  
+# Reproducibility
+seed: 42
+deterministic: false  # Set true for full reproducibility (slower)
+
+# Experiment Tracking
+experiment:
+  name: "baseline_dual_map"
+  version: 1
+  output_dir: "experiments"
+  checkpoint_dir: "checkpoints"

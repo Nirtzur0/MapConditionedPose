@@ -1,0 +1,90 @@
+# Milestone 1: Scene Generation Configuration
+# OSM → Sionna/Mitsuba Scene Pipeline
+
+scene_generation:
+  # City/Region Configuration
+  city:
+    name: "Boulder, Colorado"
+    bounding_box: null  # Auto-detect from name, or provide [min_lat, min_lon, max_lat, max_lon]
+    tiles:
+      num_tiles: 5
+      tile_size_m: 512  # meters per side
+      overlap_m: 50  # overlap for edge effects
+  
+  # OSM Data Extraction
+  osm:
+    building_types:
+      - "building"
+      - "residential"
+      - "commercial"
+      - "industrial"
+    road_types:
+      - "motorway"
+      - "trunk"
+      - "primary"
+      - "secondary"
+      - "tertiary"
+      - "residential"
+    terrain:
+      resolution_m: 2.0  # DEM resolution
+      source: "SRTM"  # or "ASTER", "Copernicus"
+  
+  # Material Domain Randomization
+  materials:
+    concrete:
+      epsilon_r: [5.0, 8.0]  # Range for random sampling
+      sigma: [0.01, 0.1]  # Conductivity [S/m]
+      roughness: [0.0, 0.3]
+    brick:
+      epsilon_r: [3.5, 5.5]
+      sigma: [0.005, 0.05]
+      roughness: [0.1, 0.4]
+    glass:
+      epsilon_r: [6.0, 8.0]
+      sigma: [0.0, 0.001]
+      roughness: [0.0, 0.1]
+    metal:
+      epsilon_r: [1.0, 1.0]
+      sigma: [1e6, 1e7]  # Conductor
+      roughness: [0.0, 0.2]
+    wood:
+      epsilon_r: [1.5, 3.0]
+      sigma: [0.001, 0.01]
+      roughness: [0.2, 0.5]
+  
+  # Base Station (Site) Configuration
+  sites:
+    placement_strategy: "grid"  # "grid", "random", "real_world"
+    num_sites_per_tile: 4
+    grid_spacing_m: 250
+    height_m: 25.0
+    height_variation_m: 5.0  # Random variation
+    
+    antenna:
+      type: "PanelArray"
+      num_rows: 8
+      num_cols: 8
+      polarization: "dual"  # "single", "dual", "cross"
+      pattern: "38.901"  # 3GPP antenna pattern
+      
+  # Output Format
+  output:
+    format: "mitsuba_xml"  # Compatible with Sionna RT
+    save_meshes: true
+    save_materials: true
+    save_metadata: true
+    coordinate_system: "UTM"  # or "WGS84"
+    
+  # Validation
+  validation:
+    check_site_los: true  # Verify at least some LoS paths
+    min_building_height_m: 3.0
+    max_building_height_m: 150.0
+    visualize: false  # 3D preview in Blender/Mitsuba
+
+# Processing
+processing:
+  num_workers: 8
+  batch_size: 1  # Process 1 tile at a time
+  cache_dir: "data/cache"
+  log_level: "INFO"

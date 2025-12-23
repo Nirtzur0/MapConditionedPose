@@ -1,0 +1,184 @@
+# Milestone 2: Multi-Layer Data Generation Configuration
+# Generate RT + PHY/FAPI + MAC/RRC features
+
+data_generation:
+  # Input Scenes
+  scenes:
+    root_dir: "data/raw/scenes"
+    scene_ids: []  # Empty = all scenes in root_dir
+    samples_per_scene: 100000
+    
+  # UE Sampling Strategy
+  ue_sampling:
+    strategy: "coverage_weighted"  # "uniform", "coverage_weighted", "constrained"
+    constraints:
+      min_distance_from_site_m: 10.0
+      max_distance_from_site_m: 1000.0
+      min_rsrp_dbm: -120.0  # Minimum serving cell RSRP
+      indoor_probability: 0.2  # 20% indoor UEs
+      on_roads_only: false  # If true, sample only on road network
+    
+    # Mobility Models
+    mobility:
+      stationary_prob: 0.6  # 60% static UEs
+      pedestrian_prob: 0.3  # 30% walking (1-2 m/s)
+      vehicular_prob: 0.1   # 10% driving (5-15 m/s)
+      
+  # Layer 1: RT (Ray Tracing) Features
+  rt_features:
+    solver: "PathTracer"  # or "Eikonal" for faster approximation
+    max_depth: 5  # Max reflections/diffractions
+    num_samples: 1e6  # Samples per scene for path tracing
+    
+    features:
+      - "path_gains"      # Complex path coefficients
+      - "path_delays"     # ToA per path
+      - "aoa_azimuth"     # Azimuth angle of arrival
+      - "aoa_zenith"      # Zenith angle of arrival
+      - "aod_azimuth"     # Azimuth angle of departure
+      - "aod_zenith"      # Zenith angle of departure
+      - "doppler"         # Per-path Doppler shifts
+      - "rms_delay_spread"  # RMS delay spread
+      - "k_factor"        # Rician K-factor
+    
+    frequency_ghz: 3.5  # Carrier frequency
+    bandwidth_mhz: 100
+    
+  # Layer 2: PHY/FAPI (Physical Layer) Features
+  phy_features:
+    channel_model: "TR38901"  # "UMa", "UMi", "RMa", "CDL", "TDL"
+    scenario: "UMa"  # Urban Macro
+    
+    ofdm:
+      subcarrier_spacing_khz: 30  # 5G NR
+      num_subcarriers: 3300  # 100 MHz BW
+      cyclic_prefix: "normal"
+      
+    features:
+      # FAPI Measurements
+      - "rsrp_serving"
+      - "rsrp_neighbors"  # Per neighbor cell (top-K=8)
+      - "rsrq_serving"
+      - "rsrq_neighbors"
+      - "rssi"
+      - "sinr"
+      - "snr"
+      # CSI Reports
+      - "cqi"  # 0-15
+      - "ri"   # Rank Indicator 1-8
+      - "pmi"  # Precoding Matrix Index
+      - "l1_rsrp_per_beam"  # 5G NR beam measurements
+      # Channel Characteristics
+      - "cir_compressed"  # CIR tap magnitudes, delays
+      - "csi_rank"
+      - "csi_condition_number"
+    
+    quantization:
+      rsrp_rsrq_step_db: 1.0  # 1 dB quantization
+      cqi_levels: 16  # 0-15
+      
+  # Layer 3: MAC/RRC (Protocol Layer) Features
+  mac_rrc_features:
+    features:
+      # MAC Layer
+      - "timing_advance"  # TA in 16*Ts units
+      - "ta_command"      # TAC over time
+      - "phr"             # Power Headroom Report
+      - "harq_ack_nack"   # HARQ statistics
+      # RRC Layer
+      - "serving_cell_id"
+      - "neighbor_cell_ids"  # Top-K=8
+      - "measurement_reports"  # A3/A5 events
+      - "handover_events"
+      # System-Level
+      - "throughput"
+      - "bler"
+      - "spectral_efficiency"
+      
+    timing_advance:
+      quantization_ts: 16  # 16*Ts ≈ 0.52 μs for 30 kHz SCS
+      
+    neighbor_list:
+      max_neighbors: 8  # 3GPP limit
+      rsrp_threshold_db: -130  # Min RSRP to report
+      
+  # Layer 4: RLC (Optional)
+  rlc_features:
+    enable: false  # Set to true if needed
+    features:
+      - "rtt_estimate"
+      - "retransmission_count"
+      - "packet_loss_rate"
+  
+  # Temporal Sequences
+  temporal:
+    sequence_length: 20  # Number of time steps per UE
+    duration_sec: 10.0   # Total duration
+    irregular_sampling: true  # Realistic measurement timing
+    measurement_period_ms:
+      l1_fapi: 40  # L1 measurements every 40ms
+      rrc: 200     # RRC measurements every 200ms
+    
+    feature_dropout:
+      enable: true
+      rates:
+        rsrp_neighbors: 0.2  # 20% missing
+        cqi: 0.1
+        pmi: 0.15
+        l1_rsrp_beams: 0.3
+  
+  # Precomputed Maps
+  radio_maps:
+    enable: true
+    resolution_m: 2.0  # 2m per pixel
+    height_m: 1.5      # Map height (typical UE height)
+    
+    features:
+      # RT Layer
+      - "path_gain"
+      - "toa"
+      - "aoa"
+      # PHY Layer
+      - "rsrp"
+      - "sinr"
+      - "snr"
+      # SYS Layer
+      - "throughput"
+      - "bler"
+      
+  osm_maps:
+    enable: true
+    resolution_m: 2.0
+    features:
+      - "building_height"
+      - "building_footprint"
+      - "material_class"
+      - "road_mask"
+      - "terrain_elevation"
+  
+  # Output Format
+  output:
+    format: "zarr"  # or "parquet" for tabular data
+    path: "data/processed/dataset.zarr"
+    compression: "blosc"
+    chunk_size: 1000  # Samples per chunk
+    
+    splits:
+      train: 0.7
+      val: 0.15
+      test: 0.15
+    
+    metadata:
+      save_scene_info: true
+      save_site_locations: true
+      save_statistics: true
+
+# Processing
+processing:
+  num_workers: 16
+  batch_size: 100
+  use_gpu: true
+  gpu_ids: [0, 1]
+  cache_dir: "data/cache"
+  log_level: "INFO"
+  checkpoint_every_n_samples: 10000
