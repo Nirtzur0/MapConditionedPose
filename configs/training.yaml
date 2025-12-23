@@ -55,27 +55,29 @@ model:
     dropout: 0.1
     
   # Output Heads
-  output:
-    # Coarse Head (Classification)
-    coarse:
-      grid_resolution: 32  # 32x32 grid cells
-      use_softmax: true
-      
-    # Fine Head (Regression)
-    fine:
-      type: "heteroscedastic"  # "simple", "heteroscedastic", "gmm"
-      num_gaussians: 3  # For GMM mode
-      predict_uncertainty: true
+  coarse_head:
+    grid_size: 32  # 32x32 grid cells
+    use_softmax: true
+    
+  fine_head:
+    type: "heteroscedastic"  # "simple", "heteroscedastic", "gmm"
+    num_gaussians: 3  # For GMM mode
+    predict_uncertainty: true
+    top_k: 5  # Number of top coarse predictions to refine
+
+# Dataset Configuration (required by model)
+dataset:
+  scene_extent: 856  # Scene size in meters (from Boulder scene)
 
 # Training Configuration
 training:
   # Data
   data:
-    train_path: "data/processed/dataset.zarr"
+    train_path: "data/processed/boulder_dataset/dataset_20251223_171211.zarr"
     val_path: null  # If null, use split from train_path
-    batch_size: 64
-    num_workers: 8
-    pin_memory: true
+    batch_size: 32  # Reduced for CPU training
+    num_workers: 4  # Reduced for CPU
+    pin_memory: false  # False for CPU training
     
   # Optimization
   optimizer:

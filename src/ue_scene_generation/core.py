@@ -15,32 +15,17 @@ logger = logging.getLogger(__name__)
 
 def _import_geo2sigmap(geo2sigmap_path: str):
     """
-    Import geo2sigmap Scene class avoiding circular imports.
+    Import geo2sigmap Scene class.
     
     Args:
-        geo2sigmap_path: Path to geo2sigmap/package/src
+        geo2sigmap_path: Path to geo2sigmap/package/src (unused, kept for API compat)
         
     Returns:
         Tuple of (Scene class, ITU_MATERIALS)
     """
-    # Load core module directly by file path
-    core_module_path = Path(geo2sigmap_path) / "scene_generation" / "core.py"
-    itu_module_path = Path(geo2sigmap_path) / "scene_generation" / "itu_materials.py"
-    
-    if not core_module_path.exists():
-        raise ImportError(f"Geo2SigMap not found at {geo2sigmap_path}")
-    
-    # Load core module
-    spec_core = importlib.util.spec_from_file_location("geo2sigmap_core", core_module_path)
-    geo2sigmap_core = importlib.util.module_from_spec(spec_core)
-    spec_core.loader.exec_module(geo2sigmap_core)
-    
-    # Load ITU materials module
-    spec_itu = importlib.util.spec_from_file_location("geo2sigmap_itu", itu_module_path)
-    geo2sigmap_itu = importlib.util.module_from_spec(spec_itu)
-    spec_itu.loader.exec_module(geo2sigmap_itu)
-    
-    return geo2sigmap_core.Scene, geo2sigmap_itu.ITU_MATERIALS
+    # Import from installed geo2sigmap package
+    from scene_generation.core import Scene, ITU_MATERIALS
+    return Scene, ITU_MATERIALS
 
 
 # Will be set during SceneGenerator initialization
@@ -60,6 +45,7 @@ class SceneGenerator:
         geo2sigmap_path: str,
         material_randomizer: Optional['MaterialRandomizer'] = None,
         site_placer: Optional['SitePlacer'] = None,
+        output_dir: Optional[Path] = None,
     ):
         """
         Initialize scene generator.
@@ -68,6 +54,7 @@ class SceneGenerator:
             geo2sigmap_path: Path to geo2sigmap/package/src
             material_randomizer: MaterialRandomizer instance (creates default if None)
             site_placer: SitePlacer instance (creates default if None)
+            output_dir: Base output directory for scenes (defaults to ./data/scenes)
         """
         # Import geo2sigmap components
         global Geo2SigMapScene, ITU_MATERIALS
@@ -85,6 +72,7 @@ class SceneGenerator:
         # Initialize components
         self.material_randomizer = material_randomizer or _MaterialRandomizer()
         self.site_placer = site_placer or _SitePlacer()
+        self.output_dir = output_dir or Path("./data/scenes")
         
         logger.info("SceneGenerator initialized with deep Geo2SigMap integration")
     
@@ -179,25 +167,61 @@ class SceneGenerator:
         Returns:
             List of site dictionaries with positions and configurations
         """
-        # Load scene XML to get dimensions
+        # Load scene XML to get dimensions/bounds
         xml_path = scene_dir / "scene.xml"
         if not xml_path.exists():
             logger.warning(f"Scene XML not found at {xml_path}, skipping site placement")
             return []
         
+        # Parse metadata for bounds
+        metadata_path = scene_dir / "metadata.json"
+        if metadata_path.exists():
+            import json
+            with open(metadata_path) as f:
+                meta = json.load(f)
+            bounds = meta.get('bounds', {})
+            # Convert to (xmin, ymin, xmax, ymax)
+            scene_bounds = (
+                bounds.get('x_min', -500),
+                bounds.get('y_min', -500),
+                bounds.get('x_max', 500),
+                bounds.get('y_max', 500)
+            )
+        else:
+            # Default bounds
+            scene_bounds = (-500, -500, 500, 500)
+        
         # Use site placer to determine positions
         sites = self.site_placer.place(
-            scene_dir=scene_dir,
-            strategy=site_config.get('strategy', 'grid'),
-            num_sites=site_config.get('num_sites', 4),
-            height_m=site_config.get('height_m', 25.0),
-            antenna_config=site_config.get('antenna', {}),
+            bounds=scene_bounds,
+            num_tx=site_config.get('num_tx', 3),
+            num_rx=site_config.get('num_rx', 0),
+            height_tx=site_config.get('height_m', 25.0),
+            isd_meters=site_config.get('isd'),
         )
         
-        # Update scene XML with site/antenna information
-        self._add_sites_to_xml(xml_path, sites)
+        # Convert Site objects to dicts
+        site_dicts = []
+        for site in sites:
+            site_dicts.append({
+                'site_id': site.site_id,
+                'site_type': site.site_type,
+                'position': site.position,
+                'height': site.position[2],
+                'antenna': {
+                    'pattern': site.antenna.pattern,
+                    'orientation': site.antenna.orientation,
+                    'polarization': site.antenna.polarization,
+                },
+                'cell_id': site.cell_id,
+                'sector_id': site.sector_id,
+                'power_dbm': site.power_dbm,
+            })
         
-        return sites
+        # Update scene XML with site/antenna information
+        self._add_sites_to_xml(xml_path, site_dicts)
+        
+        return site_dicts
     
     def _add_sites_to_xml(self, xml_path: Path, sites: List[Dict]) -> None:
         """
@@ -207,32 +231,10 @@ class SceneGenerator:
             xml_path: Path to scene.xml
             sites: List of site dictionaries
         """
-        import xml.etree.ElementTree as ET
-        
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        
-        # Add sites as sensors (for Sionna RT)
-        for site in sites:
-            sensor = ET.SubElement(root, 'sensor', type='perspective')
-            sensor.set('id', site['id'])
-            
-            # Position
-            transform = ET.SubElement(sensor, 'transform', name='to_world')
-            lookat = ET.SubElement(transform, 'lookat')
-            lookat.set('origin', f"{site['position'][0]}, {site['position'][1]}, {site['position'][2]}")
-            lookat.set('target', f"{site['position'][0]}, {site['position'][1]}, 0")
-            lookat.set('up', "0, 0, 1")
-            
-            # Store antenna config as metadata
-            metadata = ET.SubElement(sensor, 'metadata')
-            for key, value in site.get('antenna', {}).items():
-                meta = ET.SubElement(metadata, 'string', name=key)
-                meta.set('value', str(value))
-        
-        # Write updated XML
-        tree.write(xml_path, encoding='utf-8', xml_declaration=True)
-        logger.debug(f"Added {len(sites)} sites to {xml_path}")
+        # Sionna manages transmitters/receivers programmatically, not in XML
+        # We'll save site metadata to JSON instead
+        logger.debug(f"Site information will be stored in metadata.json, not scene.xml")
+        logger.debug(f"Sionna RT will add {len(sites)} transmitters programmatically")
     
     def _create_metadata(
         self,

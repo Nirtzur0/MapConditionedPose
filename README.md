@@ -49,8 +49,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
-pip install -r requirements-test.txt  # M1 dependencies
-pip install -r requirements-m2.txt    # M2 dependencies
+pip install -r requirements.txt  # All dependencies (M1-M5, testing, web)
 ```
 
 ### Run Tests
@@ -181,10 +180,11 @@ transformer-ue-localization/
 
 ## Documentation
 
-- [M1 Complete Guide](docs/M1_COMPLETE.md) - Scene generation deep dive
-- [M2 Complete Guide](M2_COMPLETE.md) - Data generation deep dive
-- [Project Status](PROJECT_STATUS.md) - Overall progress and roadmap
-- [Implementation Guide](IMPLEMENTATION_GUIDE.md) - Full architecture
+- [Quick Start Guide](QUICK_START.md) - Get running in 5 minutes
+- [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) - Full architecture and milestones
+- [System Integration Guide](docs/SYSTEM_INTEGRATION_GUIDE.md) - Data flow and architecture
+- [Project Status](docs/PROJECT_STATUS.md) - Overall progress and roadmap
+- [Milestone Documentation](docs/) - M1-M5 completion summaries
 
 ---
 
