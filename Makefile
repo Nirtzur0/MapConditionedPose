@@ -1,0 +1,81 @@
+.PHONY: help quick-test pipeline train clean setup test
+
+help:
+	@echo "Transformer UE Localization - Pipeline Commands"
+	@echo ""
+	@echo "Quick Start:"
+	@echo "  make setup          - Install dependencies"
+	@echo "  make quick-test     - Run quick end-to-end test (~15 min)"
+	@echo "  make pipeline       - Run full pipeline"
+	@echo ""
+	@echo "Individual Steps:"
+	@echo "  make scenes         - Generate 3D scenes only"
+	@echo "  make dataset        - Generate dataset only (requires scenes)"
+	@echo "  make train          - Train model only (requires dataset)"
+	@echo ""
+	@echo "Development:"
+	@echo "  make test           - Run test suite"
+	@echo "  make clean          - Remove generated data"
+	@echo "  make clean-all      - Remove data + checkpoints"
+	@echo ""
+	@echo "For more options, see: ./run_pipeline.sh --help"
+
+setup:
+	@echo "Setting up environment..."
+	python3 -m venv venv
+	. venv/bin/activate && pip install --upgrade pip
+	. venv/bin/activate && pip install -r requirements.txt
+	@echo "✓ Setup complete! Activate with: source venv/bin/activate"
+
+quick-test:
+	@echo "Running quick end-to-end test..."
+	./run_pipeline.sh --quick-test
+
+pipeline:
+	@echo "Running full pipeline..."
+	./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+
+scenes:
+	@echo "Generating scenes..."
+	. venv/bin/activate && python scripts/generate_scenes.py \
+		--bbox -105.28 40.014 -105.27 40.020 \
+		--output data/scenes/boulder_test \
+		--num-tx 3 \
+		--site-strategy grid
+
+dataset:
+	@echo "Generating dataset..."
+	. venv/bin/activate && python scripts/generate_dataset.py \
+		--scene-dir data/scenes/boulder_test \
+		--output-dir data/processed/boulder_dataset \
+		--num-trajectories 100 \
+		--num-ues 50
+
+train:
+	@echo "Training model..."
+	. venv/bin/activate && python scripts/train.py \
+		--config configs/training_simple.yaml
+
+test:
+	@echo "Running tests..."
+	. venv/bin/activate && pytest tests/ -v
+
+clean:
+	@echo "Cleaning generated data..."
+	rm -rf data/scenes/boulder_test
+	rm -rf data/scenes/quick_test
+	rm -rf data/processed/*_dataset
+	rm -rf data/synthetic/dataset_*
+	@echo "✓ Data cleaned"
+
+clean-all: clean
+	@echo "Cleaning checkpoints and logs..."
+	rm -rf checkpoints/
+	rm -rf lightning_logs/
+	rm -f pipeline_*.log
+	@echo "✓ All outputs cleaned"
+
+# Convenience targets
+run: pipeline
+test-quick: quick-test
+install: setup

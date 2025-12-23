@@ -37,7 +37,19 @@ This project implements an end-to-end pipeline for training transformer models t
 
 ## Quick Start
 
-### Installation
+### One-Command Pipeline (Easiest)
+
+```bash
+# Quick test (recommended for first run)
+./run_pipeline.sh --quick-test
+
+# Full pipeline
+./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+```
+
+See [PIPELINE.md](PIPELINE.md) for complete orchestration guide.
+
+### Manual Installation
 
 ```bash
 # Clone repository
