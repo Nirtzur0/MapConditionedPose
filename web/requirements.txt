@@ -1,0 +1,27 @@
+# Streamlit Web Interface Requirements
+
+# Core framework
+streamlit==1.29.0
+
+# Data visualization
+plotly==5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Map visualization (optional, for advanced features)
+folium==0.15.1
+streamlit-folium==0.15.1
+pydeck==0.8.0
+
+# PyTorch (already in main project, but listed for completeness)
+# torch>=2.0.0
+
+# Data handling
+zarr>=2.16.0
+
+# Utilities
+Pillow>=10.0.0
+python-dotenv==1.0.0
+
+# Export functionality (optional)
+reportlab==4.0.7
