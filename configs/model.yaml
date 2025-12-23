@@ -1,0 +1,139 @@
+# M3: Model Configuration
+
+model:
+  # Radio Encoder (Temporal Set Transformer)
+  radio_encoder:
+    num_cells: 512  # Max number of unique cell IDs
+    num_beams: 64   # Max number of beam IDs
+    d_model: 512    # Hidden dimension
+    nhead: 8        # Attention heads
+    num_layers: 6   # Transformer layers
+    dropout: 0.1
+    max_seq_len: 20 # Max measurement reports per sequence
+    
+    # Feature dimensions
+    rt_features_dim: 8    # path_gain, toa, aoa_az, aoa_el, aod_az, aod_el, doppler, rms_ds
+    phy_features_dim: 10  # rsrp, rsrq, sinr, cqi, ri, pmi, l1_rsrp (per beam, variable)
+    mac_features_dim: 6   # timing_advance, phr, serving_cell_id, throughput, bler, num_neighbors
+  
+  # Map Encoder (Vision Transformer)
+  map_encoder:
+    img_size: 512          # Map resolution (pixels)
+    patch_size: 16         # Patch size for ViT
+    in_channels: 9         # 5 (radio) + 4 (OSM)
+    d_model: 768           # Hidden dimension
+    nhead: 8               # Attention heads
+    num_layers: 12         # Transformer layers
+    dropout: 0.1
+    
+    # Channel configuration
+    radio_map_channels: 5  # path_gain, toa, snr, sinr, throughput
+    osm_map_channels: 4    # height, material_id, footprint_mask, road_mask
+  
+  # Cross-Attention Fusion
+  fusion:
+    d_radio: 512     # From radio encoder
+    d_map: 768       # From map encoder
+    d_fusion: 768    # Output dimension
+    nhead: 8
+    dropout: 0.1
+  
+  # Coarse Head (Grid Classification)
+  coarse_head:
+    grid_size: 32    # 32x32 grid cells
+    d_input: 768     # From fusion
+    dropout: 0.1
+  
+  # Fine Head (Offset Regression)
+  fine_head:
+    d_input: 768     # From fusion
+    d_hidden: 256
+    top_k: 5         # Number of candidate cells
+    patch_size: 64   # High-res patch size (pixels)
+    dropout: 0.1
+
+# Training configuration
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  
+  # Loss weights
+  loss:
+    coarse_weight: 1.0
+    fine_weight: 1.0
+    physics_weight: 0.1  # For M4
+  
+  # Optimizer
+  optimizer: adamw
+  scheduler: cosine_with_warmup
+  
+  # Regularization
+  dropout: 0.1
+  gradient_clip: 1.0
+  
+  # Data augmentation
+  augmentation:
+    rotation_degrees: 5
+    scale_range: [0.9, 1.1]
+    feature_dropout: 0.15
+    temporal_dropout: 0.25
+
+# Dataset configuration
+dataset:
+  zarr_path: "data/synthetic/dataset_*.zarr"
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  
+  # Map parameters
+  map_resolution: 1.0  # meters per pixel
+  scene_extent: 512    # meters (512x512m scenes)
+  
+  # Preprocessing
+  normalize_features: true
+  handle_missing_values: "mask"  # "mask", "zero", or "mean"
+
+# Validation/Testing
+evaluation:
+  metrics:
+    - median_error
+    - rmse
+    - percentile_67
+    - percentile_90
+    - percentile_95
+    - success_rate_5m
+    - success_rate_10m
+  
+  # Error analysis
+  error_bins: [0, 5, 10, 20, 50, 100, 200, 500]  # meters
+  
+  # Visualization frequency
+  viz_frequency: 5  # epochs
+
+# Infrastructure
+infrastructure:
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"  # Mixed precision training
+  num_workers: 4         # DataLoader workers
+  
+  # Checkpointing
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_median_error"
+    mode: "min"
+  
+  # Early stopping
+  early_stopping:
+    patience: 10
+    monitor: "val_median_error"
+    mode: "min"
+  
+  # Logging
+  logging:
+    use_wandb: true
+    project: "transformer-ue-localization"
+    log_every_n_steps: 50
