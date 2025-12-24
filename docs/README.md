@@ -14,6 +14,11 @@ Complete technical documentation for the Transformer-based UE Localization proje
 ### Project Management
 - **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current status, metrics, and roadmap
 
+### Sionna Integration
+- **[SIONNA_STATUS.md](SIONNA_STATUS.md)** - Current state of Sionna RT/PHY/SYS integration and how to run it
+- **[SIONNA_INTEGRATION_PLAN.md](SIONNA_INTEGRATION_PLAN.md)** - What’s left to validate real Sionna runs
+- **[SIONNA_IMPLEMENTATION_COMPLETE.md](SIONNA_IMPLEMENTATION_COMPLETE.md)** - Status correction and definition of done
+
 ---
 
 ## 🎯 Milestone Documentation
