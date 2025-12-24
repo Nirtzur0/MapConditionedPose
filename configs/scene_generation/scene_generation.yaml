@@ -7,15 +7,15 @@ scene_generation:
     - name: "Boulder, Colorado"
       bounding_box: [-105.30, 40.00, -105.25, 40.03]
     - name: "New York, New York"
-      bounding_box: [-74.05, 40.68, -73.90, 40.83]
+      bounding_box: [-73.99, 40.745, -73.97, 40.765]
     - name: "Los Angeles, California"
-      bounding_box: [-118.35, 34.00, -118.20, 34.10]
+      bounding_box: [-118.285, 34.045, -118.265, 34.060]
     - name: "Chicago, Illinois"
-      bounding_box: [-87.73, 41.83, -87.60, 41.92]
+      bounding_box: [-87.675, 41.87, -87.655, 41.885]
     - name: "Seattle, Washington"
-      bounding_box: [-122.40, 47.58, -122.30, 47.68]
+      bounding_box: [-122.365, 47.62, -122.345, 47.635]
     - name: "Austin, Texas"
-      bounding_box: [-97.80, 30.23, -97.70, 30.32]
+      bounding_box: [-97.765, 30.27, -97.745, 30.285]
   city:
     name: "Boulder, Colorado"
     bounding_box: null  # Auto-detect from name, or provide [min_lat, min_lon, max_lat, max_lon]
