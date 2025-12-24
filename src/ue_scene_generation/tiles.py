@@ -4,6 +4,7 @@ Handles spatial tiling, batch processing, and coordinate transformations
 """
 
 import logging
+import json
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 import numpy as np
@@ -64,6 +65,7 @@ class TileGenerator:
                 geo2sigmap_path=self.config['geo2sigmap']['package_path'],
                 material_randomizer=self.material_randomizer,
                 site_placer=self.site_placer,
+                output_dir=Path(self.config['output']['base_dir']),
             )
         return self._scene_generator
     
@@ -71,7 +73,8 @@ class TileGenerator:
         """Default configuration if no config file provided."""
         return {
             'geo2sigmap': {
-                'package_path': '/home/ubuntu/projects/geo2sigmap/package/src',
+                # Use in-repo fork to avoid external dependency
+                'package_path': str(Path(__file__).resolve().parents[1] / "geo2sigmap"),
             },
             'tiling': {
                 'tile_size_meters': 500,
@@ -79,6 +82,17 @@ class TileGenerator:
             },
             'osm': {
                 'building_levels': 5,
+            },
+            'site_placement': {
+                'strategy': 'grid',
+                'height_tx': 25.0,
+                'height_rx': 1.5,
+                'isd_m': None,
+            },
+            'terrain': {
+                'use_lidar': False,
+                'use_dem': False,
+                'hag_tiff_path': None,
             },
             'output': {
                 'base_dir': './data/scenes',
@@ -113,7 +127,7 @@ class TileGenerator:
         tiles_utm = self._create_tile_grid(bbox_wgs84, tile_size_meters, overlap_meters)
         
         logger.info(f"Generating {len(tiles_utm)} tiles ({tile_size_meters}m x {tile_size_meters}m)")
-        
+
         all_metadata = []
         for tile_idx, tile_utm in enumerate(tiles_utm):
             logger.info(f"Processing tile {tile_idx+1}/{len(tiles_utm)}")
@@ -125,9 +139,12 @@ class TileGenerator:
                 num_tx=num_tx_per_tile,
                 num_rx=num_rx_per_tile,
             )
-            
+
             all_metadata.append(metadata)
-        
+
+        # Write aggregated metadata for downstream data generation
+        self._write_metadata_index(all_metadata)
+
         logger.info(f"Generated {len(all_metadata)} tiles successfully")
         return all_metadata
     
@@ -265,18 +282,28 @@ class TileGenerator:
             Scene metadata dictionary
         """
         scene_id = f"scene_{tile_utm['tile_id']}"
-        
+
+        site_cfg = self.config.get('site_placement', {})
+        terrain_cfg = self.config.get('terrain', {})
+
         # Generate scene using SceneGenerator
         metadata = self.scene_generator.generate(
             polygon_points=tile_utm['polygon_wgs84'],
             scene_id=scene_id,
-            name=scene_id,
-            folder=self.config['output']['base_dir'],
-            building_levels=self.config['osm']['building_levels'],
-            num_tx_sites=num_tx,
-            num_rx_sites=num_rx,
+            site_config={
+                'strategy': site_cfg.get('strategy', 'grid'),
+                'num_tx': num_tx,
+                'num_rx': num_rx,
+                'height_m': site_cfg.get('height_tx', 25.0),
+                'isd': site_cfg.get('isd_m'),
+            },
+            terrain_config={
+                'use_lidar': terrain_cfg.get('use_lidar', False),
+                'use_dem': terrain_cfg.get('use_dem', False),
+                'hag_tiff_path': terrain_cfg.get('hag_tiff_path'),
+            },
         )
-        
+
         # Add tile-specific metadata
         metadata['tile'] = {
             'tile_id': tile_utm['tile_id'],
@@ -286,8 +313,22 @@ class TileGenerator:
             'utm_zone': tile_utm['utm_zone'],
             'hemisphere': tile_utm['hemisphere'],
         }
-        
+
         return metadata
+
+    def _write_metadata_index(self, tile_metadata_list: List[Dict]) -> None:
+        """
+        Persist aggregated metadata for downstream consumers (e.g., data generation).
+        """
+        output_dir = Path(self.config['output']['base_dir'])
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        index_path = output_dir / "metadata.json"
+        index = {meta['scene_id']: meta for meta in tile_metadata_list}
+        with open(index_path, 'w') as f:
+            json.dump(index, f, indent=2)
+
+        logger.info(f"Wrote aggregated metadata to {index_path}")
     
     def aggregate_metadata(
         self,

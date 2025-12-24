@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import json
 import importlib.util
+from pyproj import Transformer
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +100,11 @@ class SceneGenerator:
         """
         scene_dir = self.output_dir / scene_id
         scene_dir.mkdir(parents=True, exist_ok=True)
-        
+
         logger.info(f"Generating scene: {scene_id}")
+
+        # Compute projected bounds once for placement/metadata
+        bounds = self._compute_bounds(polygon_points)
         
         # Sample materials if not provided
         if materials is None:
@@ -127,10 +131,10 @@ class SceneGenerator:
             dem_terrain=use_dem,
             gen_lidar_terrain_only=False,
         )
-        
+
         # Add site placement
         if site_config:
-            sites = self._place_sites(scene_dir, site_config)
+            sites = self._place_sites(scene_dir, site_config, bounds)
         else:
             sites = []
         
@@ -141,6 +145,7 @@ class SceneGenerator:
             polygon_points=polygon_points,
             materials=materials,
             sites=sites,
+            bounds=bounds,
             terrain_config=terrain_cfg,
         )
         
@@ -156,6 +161,7 @@ class SceneGenerator:
         self,
         scene_dir: Path,
         site_config: Dict,
+        bounds: Dict,
     ) -> List[Dict]:
         """
         Place base stations in the scene.
@@ -167,29 +173,19 @@ class SceneGenerator:
         Returns:
             List of site dictionaries with positions and configurations
         """
-        # Load scene XML to get dimensions/bounds
+        # Load scene XML to ensure scene exists
         xml_path = scene_dir / "scene.xml"
         if not xml_path.exists():
             logger.warning(f"Scene XML not found at {xml_path}, skipping site placement")
             return []
-        
-        # Parse metadata for bounds
-        metadata_path = scene_dir / "metadata.json"
-        if metadata_path.exists():
-            import json
-            with open(metadata_path) as f:
-                meta = json.load(f)
-            bounds = meta.get('bounds', {})
-            # Convert to (xmin, ymin, xmax, ymax)
-            scene_bounds = (
-                bounds.get('x_min', -500),
-                bounds.get('y_min', -500),
-                bounds.get('x_max', 500),
-                bounds.get('y_max', 500)
-            )
-        else:
-            # Default bounds
-            scene_bounds = (-500, -500, 500, 500)
+
+        # Use precomputed projected bounds (meters)
+        scene_bounds = (
+            bounds.get('x_min', -500),
+            bounds.get('y_min', -500),
+            bounds.get('x_max', 500),
+            bounds.get('y_max', 500)
+        )
         
         # Use site placer to determine positions
         sites = self.site_placer.place(
@@ -243,18 +239,31 @@ class SceneGenerator:
         polygon_points: List[Tuple[float, float]],
         materials: Dict[str, str],
         sites: List[Dict],
+        bounds: Dict,
         terrain_config: Dict,
     ) -> Dict:
         """Create comprehensive scene metadata."""
         # Calculate bounding box
         lons = [p[0] for p in polygon_points]
         lats = [p[1] for p in polygon_points]
-        bbox = (min(lons), min(lats), max(lons), max(lats))
+        bbox_wgs84 = {
+            'lon_min': min(lons),
+            'lat_min': min(lats),
+            'lon_max': max(lons),
+            'lat_max': max(lats),
+        }
         
         metadata = {
             'scene_id': scene_id,
             'scene_dir': str(scene_dir),
-            'bbox': bbox,
+            # Keep both WGS84 bbox and projected meter bounds
+            'bbox_wgs84': bbox_wgs84,
+            'bbox': {
+                'x_min': bounds.get('x_min'),
+                'x_max': bounds.get('x_max'),
+                'y_min': bounds.get('y_min'),
+                'y_max': bounds.get('y_max'),
+            },
             'polygon': polygon_points,
             'materials': materials,
             'material_properties': {
@@ -264,6 +273,7 @@ class SceneGenerator:
             },
             'sites': sites,
             'num_sites': len(sites),
+            'bounds': bounds,
             'terrain': {
                 'type': 'lidar' if terrain_config.get('use_lidar') 
                        else 'dem' if terrain_config.get('use_dem') 
@@ -276,8 +286,47 @@ class SceneGenerator:
                 'metadata': str(scene_dir / 'metadata.json'),
             }
         }
-        
+
         return metadata
+
+    def _compute_bounds(self, polygon_points: List[Tuple[float, float]]) -> Dict:
+        """Compute projected bounds (meters) from lon/lat polygon."""
+        if not polygon_points:
+            return {}
+
+        # Use UTM zone derived from first point
+        lon0, lat0 = polygon_points[0]
+        transformer = Transformer.from_crs(
+            "EPSG:4326",
+            _get_utm_epsg_code(lon0, lat0),
+            always_xy=True,
+        )
+
+        xs, ys = [], []
+        for lon, lat in polygon_points:
+            x, y = transformer.transform(lon, lat)
+            xs.append(x)
+            ys.append(y)
+
+        return {
+            'x_min': float(min(xs)),
+            'x_max': float(max(xs)),
+            'y_min': float(min(ys)),
+            'y_max': float(max(ys)),
+            'utm_epsg': transformer.target_crs.to_string(),
+        }
+
+
+def _get_utm_epsg_code(lon: float, lat: float):
+    """Resolve UTM CRS using local copy of geo2sigmap utils (avoids external dependency)."""
+    try:
+        from geo2sigmap.utils import get_utm_epsg_code_from_gps
+        return get_utm_epsg_code_from_gps(lon, lat)
+    except Exception:
+        # Fallback: derive UTM zone manually
+        zone = int((lon + 180) / 6) + 1
+        hemisphere = 32600 if lat >= 0 else 32700
+        return hemisphere + zone
 
 
 if __name__ == "__main__":
