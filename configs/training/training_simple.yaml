@@ -42,15 +42,16 @@ model:
     dropout: 0.1
 
 dataset:
+  zarr_path: "data/processed/quick_test_dataset/dataset_20251224_131441.zarr"
   scene_extent: 856  # Scene size in meters
+  map_resolution: 1.0  # Meters per pixel
+  normalize_features: true
+  handle_missing_values: "mask"
 
 training:
-  data:
-    train_path: "data/processed/boulder_dataset/dataset_20251223_171211.zarr"
-    val_path: null
-    batch_size: 16  # Small batch for CPU
-    num_workers: 2
-    pin_memory: false
+  batch_size: 16  # Small batch for CPU
+  num_workers: 2
+  pin_memory: false
     
   optimizer: "adamw"
   learning_rate: 0.0001
@@ -63,8 +64,19 @@ training:
     coarse_weight: 1.0
     fine_weight: 1.0
     
-  epochs: 10  # Short run for testing
-  num_epochs: 10  # For trainer
+  epochs: 1  # Short test run
+  num_epochs: 1  # For trainer
+  gradient_clip: 1.0
+  gradient_clip_val: 1.0
+  precision: "32"  # Full precision for CPU
+  warmup_steps: 10
+    
+  loss:
+    coarse_weight: 1.0
+    fine_weight: 1.0
+    
+  epochs: 1  # Short test run
+  num_epochs: 1  # For trainer
   gradient_clip: 1.0
   gradient_clip_val: 1.0
   precision: "32"  # Full precision for CPU
@@ -81,14 +93,11 @@ training:
   logging:
     log_every_n_steps: 10
 
-wandb:
-  project: "transformer-ue-localization"
-  mode: "disabled"  # Disable W&B for testing
-
 infrastructure:
   accelerator: "cpu"
   devices: 1
   precision: "32"
+  num_workers: 2
   checkpoint:
     monitor: "train_loss_epoch"
     mode: "min"

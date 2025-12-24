@@ -106,7 +106,7 @@ class ZarrDatasetWriter:
         logger.info(f"ZarrDatasetWriter initialized: {self.store_path}")
         logger.info(f"  Chunk size: {chunk_size}, Compression: {compression}")
     
-    def append(self, scene_data: Dict[str, np.ndarray], scene_id: str):
+    def append(self, scene_data: Dict[str, np.ndarray], scene_id: str, scene_metadata: Optional[Dict] = None):
         """
         Append data from one scene to the dataset.
         
@@ -157,6 +157,14 @@ class ZarrDatasetWriter:
         scene_ids = [scene_id] * num_samples
         self.store['metadata/scene_ids'][self.current_idx:end_idx] = scene_ids
         
+        if scene_metadata and 'bbox' in scene_metadata:
+            bbox = scene_metadata['bbox']
+            bbox_array = np.array([bbox['x_min'], bbox['y_min'], bbox['x_max'], bbox['y_max']], dtype=np.float32)
+            self.store['metadata/scene_bbox'][self.current_idx:end_idx] = np.tile(bbox_array, (num_samples, 1))
+        else:
+            self.store['metadata/scene_bbox'][self.current_idx:end_idx] = np.zeros((num_samples, 4), dtype=np.float32)
+
+        
         # Update index and stats
         self.current_idx = end_idx
         self.stats['num_samples'] = end_idx
@@ -193,6 +201,7 @@ class ZarrDatasetWriter:
         
         # Metadata
         self._create_array('metadata/scene_ids', dtype='<U64', shape=(0,))  # Unicode string 64 chars
+        self._create_array('metadata/scene_bbox', dtype='float32', shape=(0, 4))
         self._create_array('metadata/ue_ids', dtype='int32', shape=(0,))
         
         num_arrays = len([k for k in self.store.keys()])

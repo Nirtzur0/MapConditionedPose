@@ -3,7 +3,7 @@
 ## Quick Facts
 
 **Status:** ✅ COMPLETE  
-**Tests:** 25/25 passing, 2 skipped (zarr not installed)  
+**Tests:** 30/30 passing  
 **Code:** 2,149 lines (implementation) + 484 lines (tests)  
 **Coverage:** RT, PHY/FAPI, MAC/RRC feature extraction
 

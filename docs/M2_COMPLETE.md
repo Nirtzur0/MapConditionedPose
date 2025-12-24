@@ -3,7 +3,7 @@
 ## Multi-Layer Synthetic Data Generator
 
 **Status:** COMPLETE  
-**Tests:** 25/25 passing (2 skipped - zarr not installed)  
+**Tests:** 30/30 passing  
 **Date:** 2024
 
 ---

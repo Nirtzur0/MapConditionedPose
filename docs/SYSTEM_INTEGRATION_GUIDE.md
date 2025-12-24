@@ -214,14 +214,18 @@ measurements = json.load(uploaded_file)
 
 #### Step 2: Preprocessing
 ```python
-# In inference_utils.py
+# Direct preprocessing (inference_utils.py removed - functionality integrated elsewhere)
 
 def preprocess_measurements(measurements):
-    """Convert JSON to tensor format."""
+    """Convert measurement dictionaries to tensor format.
+    
+    Note: This functionality is now handled by RadioLocalizationDataset
+    for training/inference. For custom preprocessing, use:
+    """
     features_list = []
     
     for meas in measurements:
-        # Extract all 15 features
+        # Extract all 15 features in the expected order
         features = [
             meas['timestamp'],
             float(meas['cell_id']),
@@ -236,10 +240,10 @@ def preprocess_measurements(measurements):
             meas.get('rsrp', -160.0),
             meas.get('rsrq', -40.0),
             meas.get('sinr', -20.0),
-            meas.get('cqi', 0.0),
-            meas.get('ri', 1.0),
+            float(meas.get('cqi', 0.0)),
+            float(meas.get('ri', 1.0)),
             # SYS features (2)
-            meas.get('timing_advance', 0.0),
+            float(meas.get('timing_advance', 0.0)),
             meas.get('phr', 0.0)
         ]
         features_list.append(features)
@@ -252,14 +256,20 @@ def preprocess_measurements(measurements):
 ```python
 # In Streamlit app
 
-# Load model (cached for performance)
+# Load model (cached for performance) - uses Lightning checkpoint
 @st.cache_resource
-def load_model_cached(model_path):
-    model = torch.load(model_path)
+def load_model(checkpoint_path: Path):
+    """Load trained Lightning model."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    model_wrapper = LitUELocalization.load_from_checkpoint(
+        checkpoint_path, map_location=device
+    )
+    model = model_wrapper.model
     model.eval()
-    return model
+    return model, device
 
-model = load_model_cached('checkpoints/best_model.pt')
+model, device = load_model(Path('checkpoints/best_model.pt'))
 
 # Preprocess
 measurements_tensor = preprocess_measurements(measurements)

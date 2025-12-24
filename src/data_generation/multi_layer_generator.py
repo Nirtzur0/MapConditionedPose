@@ -1,6 +1,5 @@
 """
-Multi-Layer Data Generator
-Orchestrates RT simulation, feature extraction, and dataset generation
+Orchestrates multi-layer radio propagation simulation, feature extraction, and dataset generation.
 """
 
 import numpy as np
@@ -25,7 +24,7 @@ try:
     ZARR_AVAILABLE = True
 except ImportError:
     ZARR_AVAILABLE = False
-    logger.warning("Zarr not available - dataset writing will fail without zarr package")
+    logger.warning("Zarr not available; dataset writing will fail without the zarr package.")
 
 # Try importing Sionna
 try:
@@ -34,94 +33,55 @@ try:
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
-    logger.warning("Sionna not available - MultiLayerDataGenerator will operate in mock mode")
+    logger.warning("Sionna not available; MultiLayerDataGenerator will operate in mock mode.")
 
 
 @dataclass
 class DataGenerationConfig:
-    """Configuration for multi-layer data generation."""
+    """Configuration for multi-layer data generation.
     
-    # Scene and tile info
-    scene_dir: Path
-    scene_metadata_path: Path
-    
-    # RF parameters
-    carrier_frequency_hz: float = 3.5e9
-    bandwidth_hz: float = 100e6
-    tx_power_dbm: float = 43.0
-    noise_figure_db: float = 9.0
-    
-    # Sionna RT parameters
-    use_mock_mode: bool = False  # Toggle between real and mock
-    max_depth: int = 5
-    num_samples: int = 1_000_000
-    enable_diffraction: bool = True
-    
-    # Sampling strategy
-    num_ue_per_tile: int = 100
-    ue_height_range: Tuple[float, float] = (1.5, 1.5)  # Fixed pedestrian height
-    ue_velocity_range: Tuple[float, float] = (0.0, 1.5)  # 0-1.5 m/s
-    
-    # Temporal sequence
-    num_reports_per_ue: int = 10
-    report_interval_ms: float = 200.0  # 200 ms between measurements
-    
-    # Feature extraction
-    enable_k_factor: bool = False
-    enable_beam_management: bool = True
-    num_beams: int = 64
-    max_neighbors: int = 8
-    
-    # Measurement realism
-    measurement_dropout_rates: Dict[str, float] = None
-    quantization_enabled: bool = True
-    
-    # Output
-    output_dir: Path = Path("data/synthetic")
-    zarr_chunk_size: int = 100
-    
-    def __post_init__(self):
-        if self.measurement_dropout_rates is None:
-            # Default 3GPP-like dropout rates
-            self.measurement_dropout_rates = {
-                'rsrp': 0.05,  # Serving cell: low dropout
-                'rsrq': 0.10,
-                'sinr': 0.10,
-                'cqi': 0.15,
-                'ri': 0.20,  # Less frequent reporting
-                'pmi': 0.25,
-                'neighbor_rsrp': 0.30,  # Neighbors: higher dropout
-            }
-        
-        # Convert paths to Path objects
-        self.scene_dir = Path(self.scene_dir)
-        self.scene_metadata_path = Path(self.scene_metadata_path)
-        self.output_dir = Path(self.output_dir)
-        
-    @classmethod
-    def from_yaml(cls, path: str) -> 'DataGenerationConfig':
-        """Load configuration from YAML file."""
-        with open(path, 'r') as f:
-            config_dict = yaml.safe_load(f)
-        return cls(**config_dict)
+    Attributes:
+        scene_dir: Directory containing M1 scenes.
+        scene_metadata_path: Path to scene metadata.
+        carrier_frequency_hz: Carrier frequency in Hz.
+        bandwidth_hz: System bandwidth in Hz.
+        tx_power_dbm: Transmit power in dBm.
+        noise_figure_db: Receiver noise figure in dB.
+        use_mock_mode: If True, uses mock data instead of Sionna.
+        max_depth: Max reflections/diffractions for ray tracing.
+        num_samples: Number of samples per source for path tracing.
+        enable_diffraction: Enable diffraction in ray tracing.
+        num_ue_per_tile: Number of UEs to sample per scene tile.
+        ue_height_range: Min/max UE height in meters.
+        ue_velocity_range: Min/max UE velocity in m/s.
+        num_reports_per_ue: Number of measurement reports per UE trajectory.
+        report_interval_ms: Time between reports in milliseconds.
+        enable_k_factor: Compute Rician K-factor.
+        enable_beam_management: Enable 5G NR beam management.
+        num_beams: Number of SSB beams.
+        max_neighbors: Max neighbor cells to report.
+        measurement_dropout_rates: Dictionary of dropout rates for measurements.
+        quantization_enabled: Enable 3GPP quantization.
+        output_dir: Output directory for the Zarr dataset.
+        zarr_chunk_size: Zarr chunk size (samples per chunk).
+    """
 
 
 class MultiLayerDataGenerator:
     """
     Orchestrates end-to-end data generation pipeline:
-    1. Load M1 scene in Sionna RT
-    2. Sample UE positions and trajectories
-    3. Run ray tracing (RT layer)
-    4. Extract PHY/FAPI features (L2)
-    5. Extract MAC/RRC features (L3)
-    6. Apply measurement realism (dropout, quantization)
-    7. Save to Zarr dataset
+    1. Loads M1 scene.
+    2. Samples UE positions and trajectories.
+    3. Runs ray tracing (RT layer).
+    4. Extracts PHY/FAPI features (L2).
+    5. Extracts MAC/RRC features (L3).
+    6. Applies measurement realism (dropout, quantization).
+    7. Saves to Zarr dataset.
     """
     
     def __init__(self, config: DataGenerationConfig):
         """
-        Args:
-            config: Data generation configuration
+        Initializes the data generator with a configuration.
         """
         self.config = config
         
@@ -144,7 +104,7 @@ class MultiLayerDataGenerator:
             enable_handover=False,
         )
         
-        # Initialize Zarr writer (only if available)
+        # Initialize Zarr writer
         self.zarr_writer = None
         if ZARR_AVAILABLE:
             self.zarr_writer = ZarrDatasetWriter(
@@ -152,7 +112,7 @@ class MultiLayerDataGenerator:
                 chunk_size=config.zarr_chunk_size,
             )
         else:
-            logger.warning("Zarr writer not available - install zarr package for dataset writing")
+            logger.warning("Zarr writer unavailable; install 'zarr' for dataset writing.")
         
         # Initialize counters
         self._rx_counter = 0
@@ -160,14 +120,14 @@ class MultiLayerDataGenerator:
         self._sionna_ok = 0
         self._sionna_fail = 0
         
-        logger.info(f"MultiLayerDataGenerator initialized: {config.scene_dir}")
+        logger.info(f"DataGenerator initialized for scene directory: {config.scene_dir}")
         logger.info(f"  Carrier freq: {config.carrier_frequency_hz/1e9:.2f} GHz")
         logger.info(f"  UEs per tile: {config.num_ue_per_tile}")
         logger.info(f"  Reports per UE: {config.num_reports_per_ue}")
         logger.info(f"  Sionna RT: {'enabled' if SIONNA_AVAILABLE else 'disabled'}")
     
     def _load_scene_metadata(self, scene_id: str) -> Dict:
-        """Load scene metadata from M1 output for a specific scene."""
+        """Loads scene metadata for a specific scene."""
         metadata_path = self.config.scene_dir / scene_id / "metadata.json"
         if not metadata_path.exists():
             logger.warning(f"Scene metadata not found: {metadata_path}")
@@ -176,21 +136,21 @@ class MultiLayerDataGenerator:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         
-        logger.info(f"Loaded scene metadata for {scene_id}: {len(metadata.get('sites', []))} sites")
+        logger.info(f"Loaded metadata for {scene_id} ({len(metadata.get('sites', []))} sites).")
         return metadata
     
     def generate_dataset(self, 
                         scene_ids: Optional[List[str]] = None,
                         num_scenes: Optional[int] = None) -> Path:
         """
-        Generate complete dataset from M1 scenes.
+        Generates a complete dataset from M1 scenes.
         
         Args:
-            scene_ids: List of scene IDs to process (if None, process all)
-            num_scenes: Limit number of scenes (for testing)
+            scene_ids: Specific scene IDs to process (defaults to all).
+            num_scenes: Limits the number of scenes processed (for testing).
             
         Returns:
-            output_path: Path to Zarr dataset
+            Path to the generated Zarr dataset.
         """
         # Find all scenes
         if scene_ids is None:
@@ -208,7 +168,7 @@ class MultiLayerDataGenerator:
             
             scene_path = self.config.scene_dir / scene_id / "scene.xml"
             if not scene_path.exists():
-                logger.warning(f"Scene not found: {scene_path}, skipping")
+                logger.warning(f"Scene file not found: {scene_path}, skipping.")
                 continue
             
             # Generate data for this scene
@@ -216,9 +176,9 @@ class MultiLayerDataGenerator:
             
             # Write to Zarr
             if self.zarr_writer is not None:
-                self.zarr_writer.append(scene_data, scene_id=scene_id)
+                self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
             else:
-                logger.warning("Zarr writer not available, skipping data write")
+                logger.warning("Zarr writer not available; skipping data write.")
         
         # Finalize dataset
         if self.zarr_writer is not None:
@@ -226,21 +186,21 @@ class MultiLayerDataGenerator:
             logger.info(f"Dataset generation complete: {output_path}")
             return output_path
         else:
-            logger.warning("Dataset generation complete but no data written (zarr not available)")
+            logger.warning("Dataset generation complete but no data written (Zarr not available).")
             return self.config.output_dir
     
     def generate_scene_data(self, 
                            scene_path: Path,
                            scene_id: str) -> Dict[str, np.ndarray]:
         """
-        Generate multi-layer data for a single scene.
+        Generates multi-layer data for a single scene.
         
         Args:
-            scene_path: Path to scene.xml
-            scene_id: Scene identifier
+            scene_path: Path to scene.xml.
+            scene_id: Identifier for the scene.
             
         Returns:
-            scene_data: Dict with all features and positions
+            Dictionary with all generated features and positions.
         """
         # Load scene-specific metadata
         scene_metadata = self._load_scene_metadata(scene_id)
@@ -249,7 +209,7 @@ class MultiLayerDataGenerator:
         if SIONNA_AVAILABLE:
             scene = self._load_sionna_scene(scene_path)
         else:
-            logger.warning("Sionna not available - using mock data")
+            logger.warning("Sionna unavailable; using mock data.")
             scene = None
         
         # Load site positions and cell IDs from metadata

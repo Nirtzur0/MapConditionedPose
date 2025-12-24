@@ -80,8 +80,9 @@ def main():
     callbacks = []
     
     # Checkpointing
+    checkpoint_dir = config['infrastructure'].get('checkpoint', {}).get('dirpath', 'checkpoints')
     checkpoint_callback = ModelCheckpoint(
-        dirpath='checkpoints/',
+        dirpath=checkpoint_dir,
         filename='model-{epoch:02d}-{train_loss_epoch:.2f}',
         monitor=config['infrastructure']['checkpoint']['monitor'],
         mode=config['infrastructure']['checkpoint']['mode'],

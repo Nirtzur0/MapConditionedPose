@@ -10,6 +10,8 @@ Complete technical documentation for the Transformer-based UE Localization proje
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture overview and design principles
 - **[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)** - Complete implementation guide with milestones
 - **[SYSTEM_INTEGRATION_GUIDE.md](SYSTEM_INTEGRATION_GUIDE.md)** - Data flow and component integration
+- **[PIPELINE.md](PIPELINE.md)** - End-to-end pipeline orchestration guide
+- **[PIPELINE_SUMMARY.md](PIPELINE_SUMMARY.md)** - Pipeline implementation summary
 
 ### Project Management
 - **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current status, metrics, and roadmap

@@ -9,7 +9,7 @@
    - Error handling and logging
    - Progress reporting
 
-2. **`run_pipeline.sh`** - Shell wrapper (Bash)
+2. **`run_pipeline.py`** - Shell wrapper (Bash)
    - Environment activation
    - Dependency checks
    - Colored output
@@ -31,7 +31,7 @@
 
 ### Simplest (One Command)
 ```bash
-./run_pipeline.sh --quick-test
+python run_pipeline.py --quick-test
 ```
 
 ### With Make (if available)
@@ -55,13 +55,13 @@ python run_pipeline.py \
 ### Skip Already-Done Steps
 ```bash
 # Already have scenes
-./run_pipeline.sh --skip-scenes
+python run_pipeline.py --skip-scenes
 
 # Already have dataset
-./run_pipeline.sh --skip-scenes --skip-dataset
+python run_pipeline.py --skip-scenes --skip-dataset
 
 # Training only
-./run_pipeline.sh --train-only
+python run_pipeline.py --train-only
 ```
 
 ## Pipeline Flow
@@ -108,7 +108,7 @@ python run_pipeline.py \
 
 ### Production Parameters (Example)
 ```bash
-./run_pipeline.sh \
+python run_pipeline.py \
     --bbox -105.30 40.00 -105.20 40.05 \
     --num-tx 20 \
     --num-trajectories 1000 \
@@ -179,36 +179,36 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Test everything works
-./run_pipeline.sh --quick-test
+python run_pipeline.py --quick-test
 
 # 3. Run on your area of interest
-./run_pipeline.sh --bbox <your-coords> --num-tx 5 --epochs 50
+python run_pipeline.py --bbox <your-coords> --num-tx 5 --epochs 50
 ```
 
 ### Iterative Development
 ```bash
 # Generate scenes once
-./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020
+python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020
 
 # Experiment with dataset parameters
-./run_pipeline.sh --skip-scenes --num-trajectories 200
-./run_pipeline.sh --skip-scenes --num-trajectories 500
-./run_pipeline.sh --skip-scenes --num-ues 200
+python run_pipeline.py --skip-scenes --num-trajectories 200
+python run_pipeline.py --skip-scenes --num-trajectories 500
+python run_pipeline.py --skip-scenes --num-ues 200
 
 # Try different training configs
-./run_pipeline.sh --skip-scenes --skip-dataset --epochs 20 --batch-size 8
-./run_pipeline.sh --skip-scenes --skip-dataset --config configs/training/training.yaml
+python run_pipeline.py --skip-scenes --skip-dataset --epochs 20 --batch-size 8
+python run_pipeline.py --skip-scenes --skip-dataset --config configs/training/training_simple.yaml
 ```
 
 ### Production Run
 ```bash
 # Clean everything and start fresh
-./run_pipeline.sh --clean --wandb --run-name "production_$(date +%Y%m%d)"
+python run_pipeline.py --clean --wandb --run-name "production_$(date +%Y%m%d)"
 ```
 
 ## Next Steps
 
-1. **Run quick test**: `./run_pipeline.sh --quick-test`
+1. **Run quick test**: `python run_pipeline.py --quick-test`
 2. **Check outputs**: Review generated scenes, dataset, and checkpoints
 3. **Adjust parameters**: Modify based on your requirements
 4. **Scale up**: Run with production parameters
@@ -217,6 +217,6 @@ pip install -r requirements.txt
 ## Support
 
 - **Documentation**: See [PIPELINE.md](PIPELINE.md)
-- **Help**: `./run_pipeline.sh --help` or `python run_pipeline.py --help`
+- **Help**: `python run_pipeline.py --help` or `python run_pipeline.py --help`
 - **Examples**: Check PIPELINE.md "Examples" section
 - **Troubleshooting**: See PIPELINE.md "Troubleshooting" section

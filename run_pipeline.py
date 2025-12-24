@@ -12,6 +12,9 @@ Usage:
     
     # Resume from existing scene/dataset
     python run_pipeline.py --skip-scenes --skip-dataset --train-only
+
+    # Train on multiple locations, evaluate on another
+    python run_pipeline.py --train-datasets data/processed/a.zarr data/processed/b.zarr --eval-dataset data/processed/c.zarr
 """
 
 import argparse
@@ -22,6 +25,7 @@ import time
 import os
 import re
 from pathlib import Path
+from typing import Dict, Optional
 from datetime import datetime
 import json
 import shutil
@@ -29,11 +33,191 @@ import yaml
 from easydict import EasyDict
 
 from src.utils.logging_utils import setup_logging
+from src.training import UELocalizationLightning
+
+# Import Optuna and Comet integration if available
+try:
+    import optuna
+    from optuna_integration.comet import CometPruner, CometCallback
+    COMET_AVAILABLE = True
+except ImportError:
+    COMET_AVAILABLE = False
+    print("optuna or optuna-integration not installed. Optimization will be disabled.")
+    print("Install with: pip install optuna optuna-integration")
 
 
 
 
 logger = logging.getLogger(__name__)
+
+
+def objective(trial: optuna.trial.Trial, args, base_config_path: Path):
+    """
+    Optuna objective function.
+    
+    This function is called for each trial in the study. It suggests
+    hyperparameters, creates and trains a model, and returns the
+    validation metric to be optimized.
+    """
+    print(f"Starting trial {trial.number}")
+
+    # 1. Load base config
+    with open(base_config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # 2. Suggest hyperparameters
+    # Radio Encoder
+    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [256, 512])
+    config['model']['radio_encoder']['nhead'] = trial.suggest_categorical('radio_nhead', [4, 8])
+    config['model']['radio_encoder']['num_layers'] = trial.suggest_int('radio_num_layers', 2, 6)
+    config['model']['radio_encoder']['dropout'] = trial.suggest_float('radio_dropout', 0.1, 0.3)
+
+    # Map Encoder
+    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [256, 512, 768])
+    config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8])
+    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 2, 6)
+    config['model']['map_encoder']['dropout'] = trial.suggest_float('map_dropout', 0.1, 0.3)
+
+    # Fusion
+    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [256, 512])
+    config['model']['fusion']['nhead'] = trial.suggest_categorical('fusion_nhead', [4, 8])
+    config['model']['fusion']['dropout'] = trial.suggest_float('fusion_dropout', 0.1, 0.3)
+    
+    # Training params
+    config['training']['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [16, 32, 64])
+
+
+    # 3. Create a temporary config file for the trial
+    trial_config_path = Path(f"configs/trial_{trial.number}_config.yaml")
+    with open(trial_config_path, 'w') as f:
+        yaml.dump(config, f)
+
+    # 4. Create model
+    model = UELocalizationLightning(str(trial_config_path))
+
+    # 5. Setup callbacks
+    callbacks = []
+    
+    # Optuna pruning callback
+    from optuna.integration import PyTorchLightningPruningCallback
+    pruning_callback = PyTorchLightningPruningCallback(trial, monitor="val_median_error")
+    callbacks.append(pruning_callback)
+
+    # Checkpointing
+    from pytorch_lightning.callbacks import ModelCheckpoint
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=f"checkpoints/trial_{trial.number}",
+        filename='best_model',
+        monitor=config['infrastructure']['checkpoint']['monitor'],
+        mode=config['infrastructure']['checkpoint']['mode'],
+        save_top_k=1,
+    )
+    callbacks.append(checkpoint_callback)
+    
+    # 6. Create trainer
+    import pytorch_lightning as pl
+    from pytorch_lightning.loggers import CometLogger
+
+    comet_logger = None
+    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        comet_logger = CometLogger(
+            api_key=os.environ.get('COMET_API_KEY'),
+            project_name=args.study_name,
+            workspace=os.environ.get('COMET_WORKSPACE'),
+        )
+        comet_logger.experiment.set_name(f"trial_{trial.number}")
+        comet_logger.experiment.log_parameters(trial.params)
+
+
+    trainer = pl.Trainer(
+        max_epochs=config['training']['num_epochs'],
+        accelerator=config['infrastructure']['accelerator'],
+        devices=config['infrastructure']['devices'],
+        precision=config['infrastructure']['precision'],
+        callbacks=callbacks,
+        logger=comet_logger,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+    )
+
+    # 7. Train
+    try:
+        trainer.fit(model)
+    except Exception as e:
+        logger.error(f"Trial {trial.number} failed with exception: {e}")
+        # Clean up temp config file
+        trial_config_path.unlink()
+        # Report failure to Optuna
+        raise optuna.exceptions.TrialPruned()
+
+
+    # 8. Return metric
+    # Clean up temp config file
+    trial_config_path.unlink()
+    
+    return checkpoint_callback.best_model_score.item()
+
+
+def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
+    """
+    Run Optuna hyperparameter optimization study.
+    """
+    # Comet ML setup
+    comet_pruner = None
+    comet_callback = None
+    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        comet_pruner = CometPruner()
+        comet_callback = CometCallback(
+            metric_name="val_median_error",
+            experiment_name=args.study_name,
+        )
+        logger.info("Comet ML integration enabled.")
+    else:
+        logger.warning("Comet ML integration disabled. Set COMET_API_KEY to enable.")
+        
+    # Create or load study
+    study = optuna.create_study(
+        study_name=args.study_name,
+        storage=args.storage,
+        direction='minimize',  # We want to minimize the localization error
+        pruner=comet_pruner,
+        load_if_exists=True,
+    )
+    
+    # Add objective function as a lambda to pass extra arguments
+    obj_fn = lambda trial: objective(trial, args, base_config_path)
+    
+    # Start optimization
+    try:
+        study.optimize(
+            obj_fn,
+            n_trials=args.n_trials,
+            callbacks=[comet_callback] if comet_callback else [],
+        )
+    except KeyboardInterrupt:
+        logger.info("Optimization stopped by user.")
+        
+    # Print results
+    logger.info(f"Study statistics: ")
+    logger.info(f"  Number of finished trials: {len(study.trials)}")
+    
+    pruned_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
+    complete_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
+    
+    logger.info(f"  Pruned trials: {len(pruned_trials)}")
+    logger.info(f"  Complete trials: {len(complete_trials)}")
+    
+    logger.info("Best trial:")
+    trial = study.best_trial
+    
+    logger.info(f"  Value: {trial.value}")
+    
+    logger.info("  Params: ")
+    for key, value in trial.params.items():
+        logger.info(f"    {key}: {value}")
+
+    return dict(trial.params)
 
 
 class PipelineOrchestrator:
@@ -48,9 +232,45 @@ class PipelineOrchestrator:
         self.scene_dir = self.project_root / "data" / "scenes" / args.scene_name
         self.dataset_dir = self.project_root / "data" / "processed" / f"{args.scene_name}_dataset"
         self.checkpoint_dir = self.project_root / "checkpoints" / args.run_name
+        self.train_dataset_paths = []
+        self.eval_dataset_path = None
+        self.eval_config_path = None
+        self.optuna_params: Optional[Dict[str, float]] = None
+        self.optuna_config_path: Optional[Path] = None
         
         # Create directories
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_data_output_path(self, config_path: Path) -> Optional[Path]:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        data_gen = config.get('data_generation', {})
+        output_path = data_gen.get('output', {}).get('path') or config.get('output', {}).get('path')
+        if not output_path:
+            return None
+        return self.project_root / output_path
+
+    def _run_dataset_generation_for_config(self, config_path: Path):
+        cmd = [sys.executable, "scripts/generate_dataset.py", "--config", str(config_path)]
+        dataset_dir = None
+        try:
+            with open(config_path, 'r') as f:
+                data_gen = EasyDict(yaml.safe_load(f)).data_generation
+            scene_dir_from_config = self.project_root / data_gen.scenes.root_dir
+            dataset_dir = self.project_root / Path(data_gen.output.path).parent
+            cmd.extend(["--scene-dir", str(scene_dir_from_config)])
+            cmd.extend(["--output-dir", str(dataset_dir)])
+        except Exception:
+            pass
+
+        if dataset_dir and self.args.clean and dataset_dir.exists():
+            logger.info(f"Cleaning existing dataset at {dataset_dir}")
+            shutil.rmtree(dataset_dir)
+        if dataset_dir:
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        self.run_command(cmd, "Dataset Generation")
         
     def log_section(self, title):
         """Log a section header"""
@@ -150,6 +370,30 @@ class PipelineOrchestrator:
         """Generate synthetic dataset from scenes using Sionna ray tracing"""
         if self.args.skip_dataset:
             logger.info("Skipping dataset generation (--skip-dataset)")
+            if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config or self.args.eval_dataset:
+                for config_path in self.args.train_data_configs or []:
+                    dataset_path = self._resolve_data_output_path(config_path)
+                    if dataset_path is None:
+                        raise RuntimeError(f"Could not resolve output path for: {config_path}")
+                    if not dataset_path.exists():
+                        raise RuntimeError(f"No dataset available to reuse at: {dataset_path}")
+                    self.train_dataset_paths.append(dataset_path)
+
+                if self.args.eval_data_config:
+                    self.eval_dataset_path = self._resolve_data_output_path(self.args.eval_data_config)
+                    if self.eval_dataset_path is None:
+                        raise RuntimeError(f"Could not resolve output path for: {self.args.eval_data_config}")
+                    if not self.eval_dataset_path.exists():
+                        raise RuntimeError(f"No dataset available to reuse at: {self.eval_dataset_path}")
+
+                if self.args.train_datasets:
+                    self.train_dataset_paths.extend([self.project_root / p for p in self.args.train_datasets])
+                if self.args.eval_dataset:
+                    self.eval_dataset_path = self.project_root / self.args.eval_dataset
+
+                if self.train_dataset_paths:
+                    self.dataset_path = self.train_dataset_paths[0]
+                return
             # Attempt to find the dataset path from the most recent data config if available
             if self.args.data_config:
                 with open(self.args.data_config, 'r') as f:
@@ -166,6 +410,38 @@ class PipelineOrchestrator:
             return
 
         self.log_section("STEP 2: Generate Dataset")
+
+        if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config or self.args.eval_dataset:
+            for config_path in self.args.train_data_configs or []:
+                logger.info(f"Using training data config: {config_path}")
+                self._run_dataset_generation_for_config(config_path)
+                dataset_path = self._resolve_data_output_path(config_path)
+                if dataset_path is None:
+                    raise RuntimeError(f"Could not resolve output path for: {config_path}")
+                if not dataset_path.exists():
+                    raise RuntimeError(f"Dataset not created at: {dataset_path}")
+                self.train_dataset_paths.append(dataset_path)
+
+            if self.args.eval_data_config:
+                logger.info(f"Using eval data config: {self.args.eval_data_config}")
+                self._run_dataset_generation_for_config(self.args.eval_data_config)
+                self.eval_dataset_path = self._resolve_data_output_path(self.args.eval_data_config)
+                if self.eval_dataset_path is None:
+                    raise RuntimeError(f"Could not resolve output path for: {self.args.eval_data_config}")
+                if not self.eval_dataset_path.exists():
+                    raise RuntimeError(f"Dataset not created at: {self.eval_dataset_path}")
+
+            if self.args.train_datasets:
+                self.train_dataset_paths.extend([self.project_root / p for p in self.args.train_datasets])
+            if self.args.eval_dataset:
+                self.eval_dataset_path = self.project_root / self.args.eval_dataset
+
+            if self.train_dataset_paths:
+                self.dataset_path = self.train_dataset_paths[0]
+                logger.info(f"Training datasets: {[p.name for p in self.train_dataset_paths]}")
+            if self.eval_dataset_path:
+                logger.info(f"Eval dataset: {self.eval_dataset_path.name}")
+            return
         
         cmd = [sys.executable, "scripts/generate_dataset.py"]
 
@@ -225,11 +501,14 @@ class PipelineOrchestrator:
         if self.args.skip_training:
             logger.info("Skipping training (--skip-training)")
             return
-            
-        self.log_section("STEP 3: Train Model")
+        
+        step_label = "STEP 4: Train Model" if self.args.optimize else "STEP 3: Train Model"
+        self.log_section(step_label)
         
         # Use existing config or create custom one
-        if self.args.config:
+        if self.optuna_config_path:
+            config_path = self.optuna_config_path
+        elif self.args.config:
             config_path = self.args.config
         else:
             config_path = self._create_training_config()
@@ -252,6 +531,89 @@ class PipelineOrchestrator:
         self.run_command(cmd, "Model Training")
         
         logger.info(f"Training complete. Checkpoints saved to {self.checkpoint_dir}")
+
+    def _apply_optuna_params(self, config: Dict, params: Dict[str, float]) -> Dict:
+        if not params:
+            return config
+
+        config['model']['radio_encoder']['d_model'] = params['radio_d_model']
+        config['model']['radio_encoder']['nhead'] = params['radio_nhead']
+        config['model']['radio_encoder']['num_layers'] = params['radio_num_layers']
+        config['model']['radio_encoder']['dropout'] = params['radio_dropout']
+
+        config['model']['map_encoder']['d_model'] = params['map_d_model']
+        config['model']['map_encoder']['nhead'] = params['map_nhead']
+        config['model']['map_encoder']['num_layers'] = params['map_num_layers']
+        config['model']['map_encoder']['dropout'] = params['map_dropout']
+
+        config['model']['fusion']['d_fusion'] = params['fusion_d_fusion']
+        config['model']['fusion']['nhead'] = params['fusion_nhead']
+        config['model']['fusion']['dropout'] = params['fusion_dropout']
+
+        config['training']['learning_rate'] = params['learning_rate']
+        config['training']['batch_size'] = params['batch_size']
+        return config
+
+    def step_3_optimize_model(self):
+        """Run Optuna hyperparameter optimization."""
+        if not self.args.optimize:
+            return
+
+        self.log_section("STEP 3: Optimize Model (Optuna)")
+
+        base_config_path = self._create_training_config()
+        self.optuna_params = run_optimization(self.args, base_config_path)
+
+        with open(base_config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        config = self._apply_optuna_params(config, self.optuna_params)
+
+        self.optuna_config_path = self.checkpoint_dir / "training_config_optuna.yaml"
+        with open(self.optuna_config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False)
+
+        logger.info(f"Optuna best config saved to: {self.optuna_config_path}")
+
+    def step_4_eval_model(self):
+        """Evaluate trained model on held-out dataset."""
+        if self.args.skip_eval:
+            logger.info("Skipping evaluation (--skip-eval)")
+            return
+        if self.eval_dataset_path is None:
+            logger.info("No eval dataset provided; skipping evaluation")
+            return
+        
+        step_label = "STEP 5: Evaluate Model" if self.args.optimize else "STEP 4: Evaluate Model"
+        self.log_section(step_label)
+
+        ckpt_path = self.checkpoint_dir / "last.ckpt"
+        if not ckpt_path.exists():
+            ckpt_candidates = sorted(self.checkpoint_dir.glob("*.ckpt"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not ckpt_candidates:
+                raise RuntimeError(f"No checkpoint found in {self.checkpoint_dir} for evaluation")
+            ckpt_path = ckpt_candidates[0]
+
+        base_config = self.checkpoint_dir / "training_config.yaml"
+        if not base_config.exists():
+            raise RuntimeError(f"Training config not found at {base_config}")
+
+        with open(base_config, 'r') as f:
+            config = yaml.safe_load(f)
+        if 'dataset' not in config:
+            config['dataset'] = {}
+        config['dataset']['test_zarr_paths'] = [str(self.eval_dataset_path)]
+        self.eval_config_path = self.checkpoint_dir / "eval_config.yaml"
+        with open(self.eval_config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False)
+
+        cmd = [
+            sys.executable,
+            "scripts/train.py",
+            "--config", str(self.eval_config_path),
+            "--test-only",
+            "--resume", str(ckpt_path),
+        ]
+        self.run_command(cmd, "Model Evaluation")
         
     def _create_training_config(self):
         """Create a custom training config based on pipeline parameters"""
@@ -266,7 +628,13 @@ class PipelineOrchestrator:
         # Update dataset configuration with all required fields
         if 'dataset' not in config:
             config['dataset'] = {}
-        config['dataset']['zarr_path'] = str(self.dataset_path)
+        if self.train_dataset_paths:
+            config['dataset']['train_zarr_paths'] = [str(p) for p in self.train_dataset_paths]
+            config['dataset']['val_zarr_paths'] = [str(p) for p in self.train_dataset_paths]
+        else:
+            config['dataset']['zarr_path'] = str(self.dataset_path)
+        if self.eval_dataset_path:
+            config['dataset']['test_zarr_paths'] = [str(self.eval_dataset_path)]
         config['dataset']['map_resolution'] = 2.0  # 2 meters per pixel
         config['dataset']['scene_extent'] = 856  # Scene size in meters
         config['dataset']['normalize_features'] = True
@@ -275,6 +643,8 @@ class PipelineOrchestrator:
             'run_name': self.args.run_name,
             'scene_name': self.args.scene_name,
             'dataset_path': str(self.dataset_path),
+            'train_dataset_paths': [str(p) for p in self.train_dataset_paths] if self.train_dataset_paths else None,
+            'eval_dataset_path': str(self.eval_dataset_path) if self.eval_dataset_path else None,
             'bbox': list(self.args.bbox),
             'num_tx': self.args.num_tx,
             'num_ues': self.args.num_ues,
@@ -300,6 +670,9 @@ class PipelineOrchestrator:
         if 'infrastructure' not in config:
             config['infrastructure'] = {}
         config['infrastructure']['num_workers'] = 0  # Disable multiprocessing for Zarr v3 compatibility
+        if 'checkpoint' not in config['infrastructure']:
+            config['infrastructure']['checkpoint'] = {}
+        config['infrastructure']['checkpoint']['dirpath'] = str(self.checkpoint_dir)
         if 'logging' not in config['infrastructure']:
             config['infrastructure']['logging'] = {}
         config['infrastructure']['logging']['log_every_n_steps'] = 1
@@ -324,9 +697,10 @@ class PipelineOrchestrator:
         logger.info(f"Created training config: {config_path}")
         return config_path
         
-    def step_4_generate_report(self):
+    def step_5_generate_report(self):
         """Generate pipeline execution report"""
-        self.log_section("STEP 4: Generate Report")
+        step_label = "STEP 6: Generate Report" if self.args.optimize else "STEP 5: Generate Report"
+        self.log_section(step_label)
         
         duration = time.time() - self.start_time
         
@@ -349,6 +723,8 @@ class PipelineOrchestrator:
                 "scenes": str(self.scene_dir),
                 "dataset": str(self.dataset_dir),
                 "checkpoints": str(self.checkpoint_dir),
+                "train_datasets": [str(p) for p in self.train_dataset_paths] if self.train_dataset_paths else None,
+                "eval_dataset": str(self.eval_dataset_path) if self.eval_dataset_path else None,
             },
             "steps_completed": []
         }
@@ -357,8 +733,12 @@ class PipelineOrchestrator:
             report["steps_completed"].append("Scene Generation")
         if not self.args.skip_dataset:
             report["steps_completed"].append("Dataset Generation")
+        if self.args.optimize:
+            report["steps_completed"].append("Hyperparameter Optimization")
         if not self.args.skip_training:
             report["steps_completed"].append("Model Training")
+        if self.eval_dataset_path is not None and not self.args.skip_eval:
+            report["steps_completed"].append("Model Evaluation")
             
         report_path = self.checkpoint_dir / "pipeline_report.json"
         with open(report_path, 'w') as f:
@@ -386,11 +766,17 @@ class PipelineOrchestrator:
             
             self.step_1_generate_scenes()
             self.step_2_generate_dataset()
-                
+            
+            if self.args.optimize:
+                self.step_3_optimize_model()
+            
             if not self.args.skip_training:
                 self.step_3_train_model()
+                self.step_4_eval_model()
+            elif self.eval_dataset_path is not None:
+                self.step_4_eval_model()
                 
-            self.step_4_generate_report()
+            self.step_5_generate_report()
             
             logger.info("✓ Pipeline completed successfully!")
             return 0
@@ -431,14 +817,22 @@ Examples:
                        help='Path to scene generation YAML config file')
     parser.add_argument('--data-config', type=Path, default=None,
                        help='Path to data generation YAML config file')
+    parser.add_argument('--train-data-configs', type=Path, nargs='+', default=None,
+                       help='Data generation configs for training (multi-location)')
+    parser.add_argument('--eval-data-config', type=Path, default=None,
+                       help='Data generation config for evaluation-only location')
     parser.add_argument('--skip-scenes', action='store_true',
                        help='Skip scene generation')
     parser.add_argument('--skip-dataset', action='store_true',
                        help='Skip dataset generation')
     parser.add_argument('--skip-training', action='store_true',
                        help='Skip training')
+    parser.add_argument('--skip-eval', action='store_true',
+                       help='Skip evaluation')
     parser.add_argument('--train-only', action='store_true',
                        help='Only run training (skip scenes and dataset)')
+    parser.add_argument('--eval-only', action='store_true',
+                       help='Only run evaluation (skip scenes, dataset, training)')
     parser.add_argument('--clean', action='store_true',
                        help='Clean existing outputs before running')
     
@@ -468,6 +862,10 @@ Examples:
                        help='Number of trajectories')
     parser.add_argument('--num-scenes', type=int, default=None,
                        help='Limit number of scenes to process')
+    parser.add_argument('--train-datasets', nargs='+', default=None,
+                       help='Paths to training Zarr datasets (skip generation)')
+    parser.add_argument('--eval-dataset', type=str, default=None,
+                       help='Path to evaluation Zarr dataset (skip generation)')
     
     # Training parameters
     parser.add_argument('--config', type=Path, default=None,
@@ -491,6 +889,18 @@ Examples:
     parser.add_argument('--run-name', type=str,
                        default=f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                        help='Run name for tracking')
+    parser.add_argument('--light-train', action='store_true',
+                       help='Use light training defaults for quick checks')
+
+    # Optimization parameters
+    parser.add_argument('--optimize', action='store_true',
+                          help='Enable hyperparameter optimization with Optuna')
+    parser.add_argument('--n-trials', type=int, default=50,
+                            help='Number of optimization trials to run')
+    parser.add_argument('--study-name', type=str, default='ue-localization-optimization',
+                            help='Name for the Optuna study')
+    parser.add_argument('--storage', type=str, default='sqlite:///optuna_study.db',
+                            help='Database URL for Optuna study storage')
     
     args = parser.parse_args()
     
@@ -505,11 +915,24 @@ Examples:
         args.scene_name = 'quick_test'
         args.run_name = 'quick_test'
         logger.info("Quick test mode enabled")
+
+    if args.light_train:
+        args.epochs = min(args.epochs, 2)
+        args.batch_size = min(args.batch_size, 8)
+        logger.info("Light training mode enabled")
     
     # Handle train-only mode
     if args.train_only:
         args.skip_scenes = True
         args.skip_dataset = True
+        args.skip_eval = True
+
+    if args.eval_only:
+        args.skip_scenes = True
+        args.skip_dataset = True
+        args.skip_training = True
+        if not (args.eval_dataset or args.eval_data_config):
+            raise ValueError("--eval-only requires --eval-dataset or --eval-data-config")
     
     return args
 
@@ -517,6 +940,7 @@ Examples:
 def main():
     args = parse_args()
     setup_logging(name=args.run_name)
+
     orchestrator = PipelineOrchestrator(args)
     sys.exit(orchestrator.run())
 

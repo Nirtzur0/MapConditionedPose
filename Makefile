@@ -18,7 +18,7 @@ help:
 	@echo "  make clean          - Remove generated data"
 	@echo "  make clean-all      - Remove data + checkpoints"
 	@echo ""
-	@echo "For more options, see: ./run_pipeline.sh --help"
+	@echo "For more options, see: python run_pipeline.py --help"
 
 setup:
 	@echo "Setting up environment..."
@@ -29,11 +29,11 @@ setup:
 
 quick-test:
 	@echo "Running quick end-to-end test..."
-	./run_pipeline.sh --quick-test
+	python run_pipeline.py --quick-test
 
 pipeline:
 	@echo "Running full pipeline..."
-	./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+	python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
 
 scenes:
 	@echo "Generating scenes..."

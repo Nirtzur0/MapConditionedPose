@@ -41,13 +41,23 @@ This project implements an end-to-end pipeline for training transformer models t
 
 ```bash
 # Quick test (recommended for first run)
-./run_pipeline.sh --quick-test
+python run_pipeline.py --quick-test
 
 # Full pipeline
-./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
 ```
 
 See [PIPELINE.md](PIPELINE.md) for complete orchestration guide.
+
+### Hyperparameter Optimization (Optuna)
+
+```bash
+# Install optional deps
+pip install optuna optuna-integration
+
+# Run Optuna study (then train + eval with best params)
+python run_pipeline.py --optimize --n-trials 20 --study-name ue-localization
+```
 
 ### Manual Installation
 
@@ -201,6 +211,7 @@ transformer-ue-localization/
 ## Documentation
 
 - [Quick Start Guide](QUICK_START.md) - Get running in 5 minutes
+- [Technical Architecture](docs/ARCHITECTURE.md) - System design and theory
 - [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) - Full architecture and milestones
 - [System Integration Guide](docs/SYSTEM_INTEGRATION_GUIDE.md) - Data flow and architecture
 - [Project Status](docs/PROJECT_STATUS.md) - Overall progress and roadmap

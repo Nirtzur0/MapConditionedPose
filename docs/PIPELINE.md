@@ -6,7 +6,7 @@ Complete end-to-end pipeline orchestration for the Transformer UE Localization p
 
 ### Option 1: Quick Test (Recommended for first run)
 ```bash
-./run_pipeline.sh --quick-test
+python run_pipeline.py --quick-test
 ```
 
 This runs a minimal pipeline:
@@ -18,7 +18,7 @@ This runs a minimal pipeline:
 
 ### Option 2: Full Pipeline
 ```bash
-./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
 ```
 
 ### Option 3: Direct Python
@@ -41,19 +41,19 @@ The orchestrator runs 4 main steps:
 ### Skip Already-Completed Steps
 ```bash
 # Use existing scenes, regenerate dataset and train
-./run_pipeline.sh --skip-scenes
+python run_pipeline.py --skip-scenes
 
 # Use existing dataset, just train
-./run_pipeline.sh --skip-scenes --skip-dataset
+python run_pipeline.py --skip-scenes --skip-dataset
 
 # Training only
-./run_pipeline.sh --train-only
+python run_pipeline.py --train-only
 ```
 
 ### Custom Parameters
 ```bash
 # Larger area with more transmitters
-./run_pipeline.sh \
+python run_pipeline.py \
     --bbox -105.30 40.00 -105.20 40.05 \
     --num-tx 10 \
     --num-trajectories 500 \
@@ -62,12 +62,12 @@ The orchestrator runs 4 main steps:
     --batch-size 32
 
 # Use custom training config
-./run_pipeline.sh --config configs/training/training.yaml
+python run_pipeline.py --config configs/training/training_simple.yaml
 ```
 
 ### Resume Training
 ```bash
-./run_pipeline.sh \
+python run_pipeline.py \
     --skip-scenes \
     --skip-dataset \
     --resume-checkpoint checkpoints/last.ckpt
@@ -76,12 +76,12 @@ The orchestrator runs 4 main steps:
 ### Clean Previous Outputs
 ```bash
 # Remove old outputs before running
-./run_pipeline.sh --clean --quick-test
+python run_pipeline.py --clean --quick-test
 ```
 
 ### Enable Wandb Logging
 ```bash
-./run_pipeline.sh --wandb --run-name "experiment_v1"
+python run_pipeline.py --wandb --run-name "experiment_v1"
 ```
 
 ## Parameters
@@ -200,21 +200,21 @@ pip install -r requirements.txt
 ### Development Workflow
 ```bash
 # 1. Quick test to verify everything works
-./run_pipeline.sh --quick-test
+python run_pipeline.py --quick-test
 
 # 2. Generate scenes for your area of interest
-./run_pipeline.sh --bbox -105.28 40.014 -105.27 40.020 --num-tx 5
+python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5
 
 # 3. Experiment with dataset parameters
-./run_pipeline.sh --skip-scenes --num-trajectories 200 --num-ues 100
+python run_pipeline.py --skip-scenes --num-trajectories 200 --num-ues 100
 
 # 4. Run full training
-./run_pipeline.sh --skip-scenes --skip-dataset --epochs 100 --wandb
+python run_pipeline.py --skip-scenes --skip-dataset --epochs 100 --wandb
 ```
 
 ### Production Run
 ```bash
-./run_pipeline.sh \
+python run_pipeline.py \
     --bbox -105.30 40.00 -105.20 40.05 \
     --num-tx 20 \
     --num-trajectories 1000 \

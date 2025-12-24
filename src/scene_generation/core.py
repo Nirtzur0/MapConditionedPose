@@ -25,7 +25,18 @@ def _import_geo2sigmap(geo2sigmap_path: str):
         Tuple of (Scene class, ITU_MATERIALS)
     """
     # Import from migrated geo2sigmap module
-    from geo2sigmap import Scene, ITU_MATERIALS
+    try:
+        # Try relative import first (when running as package)
+        from ..geo2sigmap import Scene, ITU_MATERIALS
+    except ImportError:
+        # Fallback to absolute import (when running tests)
+        import sys
+        from pathlib import Path
+        # Add src to path if not already there
+        src_path = Path(__file__).parent.parent
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+        from geo2sigmap import Scene, ITU_MATERIALS
     return Scene, ITU_MATERIALS
 
 

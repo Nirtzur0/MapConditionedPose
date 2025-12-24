@@ -9,13 +9,13 @@
 
 | Milestone | Status | Tests | Implementation |
 |-----------|--------|-------|----------------|
-| **M1: Scene Generation** | ✅ COMPLETE | 25/26 passing | 1,461 lines |
-| **M2: Data Generation** | ✅ COMPLETE | 25/27 passing | 2,149 lines |
-| **M3: Transformer Model** | 🔄 NEXT | - | Planned |
-| **M4: Training Pipeline** | ⏭️ PENDING | - | Planned |
-| **M5: Web UI** | ⏭️ PENDING | - | Planned |
+| **M1: Scene Generation** | ✅ COMPLETE | 18/18 passing | 1,461 lines |
+| **M2: Data Generation** | ✅ COMPLETE | 30/30 passing | 2,149 lines |
+| **M3: Transformer Model** | ✅ COMPLETE | 19/19 passing | ~2,000 lines |
+| **M4: Physics Loss** | ✅ COMPLETE | 17/17 passing | ~1,000 lines |
+| **M5: Web Interface** | ✅ COMPLETE | Manual testing | ~500 lines |
 
-**Total Implementation:** 3,610 lines of production code + 968 lines of tests
+**Total Implementation:** ~7,000+ lines of production code + 1,500+ lines of tests
 
 ---
 
@@ -47,9 +47,8 @@
 
 ### Test Results
 ```
-======================== 25 passed, 1 skipped in 0.25s ========================
+======================== 18 passed in 3.19s ========================
 ```
-- 1 skipped: requires shapely (geo2sigmap dependency, expected)
 
 ### Key Achievements
 - ✅ Deep integration with Geo2SigMap (not wrapper pattern)
@@ -87,9 +86,8 @@
 
 ### Test Results
 ```
-======================== 25 passed, 2 skipped in 0.11s ========================
+======================== 30 passed in 3.92s ========================
 ```
-- 2 skipped: requires zarr package (can be installed for production)
 
 ### Key Achievements
 - ✅ 3GPP-compliant measurements with proper quantization
@@ -97,6 +95,110 @@
 - ✅ Mock mode enables testing without Sionna/TensorFlow
 - ✅ Measurement realism (dropout, quantization, temporal sequences)
 - ✅ Zarr storage bridges TensorFlow (data gen) and PyTorch (training)
+
+---
+
+## M3: Transformer Model ✅
+
+**Purpose:** Dual-encoder transformer for UE localization with map conditioning.
+
+### Core Components
+
+1. **RadioEncoder** (~200 lines)
+   - Temporal sequence encoding of radio measurements
+   - Multi-head self-attention across time steps
+   - Protocol layer fusion (RT/PHY/MAC features)
+
+2. **MapEncoder** (~300 lines)
+   - Vision transformer for map conditioning
+   - Patch embedding of OSM/building data
+   - Spatial positional encoding
+
+3. **CrossAttentionFusion** (~150 lines)
+   - Cross-attention between radio and map features
+   - Multi-head attention mechanism
+   - Feature fusion for position prediction
+
+4. **PredictionHeads** (~200 lines)
+   - Coarse position prediction (regression)
+   - Fine position refinement
+   - Uncertainty estimation
+
+### Test Results
+```
+======================== 19 passed in 98.21s ========================
+```
+
+### Key Achievements
+- ✅ Dual-encoder architecture with cross-attention
+- ✅ Map-conditioned position prediction
+- ✅ Temporal sequence processing
+- ✅ PyTorch Lightning integration
+
+---
+
+## M4: Physics Loss ✅
+
+**Purpose:** Differentiable physics regularization using precomputed radio maps.
+
+### Core Components
+
+1. **DifferentiableLookup** (~100 lines)
+   - Bilinear sampling from radio maps
+   - Full gradient flow for backpropagation
+   - Coordinate normalization
+
+2. **PhysicsLoss** (~150 lines)
+   - Multi-feature weighted MSE loss
+   - Physics consistency constraints
+   - Configurable feature weights
+
+3. **RadioMapGenerator** (~200 lines)
+   - Sionna-based map generation
+   - 7 physics features (path_gain, snr, throughput, etc.)
+   - Zarr storage with compression
+
+4. **PositionRefinement** (~100 lines)
+   - Gradient-based inference-time refinement
+   - Confidence thresholding
+   - Extent clipping
+
+### Test Results
+```
+======================== 17 passed in 2.89s ========================
+```
+
+### Key Achievements
+- ✅ Differentiable radio map sampling
+- ✅ Physics-informed training loss
+- ✅ Inference-time position refinement
+- ✅ Multi-feature physics constraints
+
+---
+
+## M5: Web Interface ✅
+
+**Purpose:** Training monitoring and prediction visualization tools.
+
+### Core Components
+
+1. **Streamlit App** (~450 lines)
+   - Interactive map visualization
+   - GT vs predicted position comparison
+   - Error analysis (CDF, percentiles)
+   - Uncertainty ellipses
+
+2. **TensorBoard Integration**
+   - Real-time loss monitoring
+   - Learning rate scheduling
+   - Model graph visualization
+   - Hyperparameter tracking
+
+### Key Achievements
+- ✅ Streamlit map explorer with error analysis
+- ✅ TensorBoard training dashboard
+- ✅ Prediction uncertainty visualization
+- ✅ Production-ready monitoring tools
 
 ---
 
@@ -121,11 +223,28 @@
                          │ dataset.zarr (rt/phy/mac features)
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 M3: Transformer Model (NEXT)                    │
+│                 M3: Transformer Model ✅                       │
 │  Dual Encoder (Radio + Map) → Cross-Attention → Position      │
 │  + PyTorch Dataset from Zarr                                   │
 │  + Temporal + Spatial + Protocol Positional Encoding           │
 │  + Map Conditioning (Sionna + OSM)                             │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ predictions, losses
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                 M4: Physics Loss ✅                            │
+│  Differentiable Radio Maps → Physics Consistency Loss         │
+│  + Precomputed Sionna Maps (path_gain, snr, throughput)       │
+│  + Gradient-based Position Refinement                          │
+│  + Multi-feature Weighted MSE                                  │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ refined positions
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                 M5: Web Interface ✅                           │
+│  Streamlit Map Explorer + TensorBoard Monitoring              │
+│  + Prediction Visualization (GT vs Pred, error analysis)       │
+│  + Training Metrics Dashboard                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

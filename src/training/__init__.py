@@ -1,7 +1,7 @@
 """
 PyTorch Lightning Training Module
 
-Wraps UELocalizationModel for training with Lightning infrastructure.
+Wraps UELocalizationModel for Lightning training.
 """
 
 import torch
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 class UELocalizationLightning(pl.LightningModule):
     """Lightning wrapper for UE localization model.
     
-    Handles:
     - Training/validation/test loops
     - Optimizer configuration
     - Metrics logging
@@ -72,6 +71,7 @@ class UELocalizationLightning(pl.LightningModule):
         self._comet_logged = {'val': False, 'test': False}
 
     def _get_comet_experiment(self):
+        # Retrieve the Comet experiment object from the logger.
         logger = self.logger
         if logger is None:
             return None
@@ -89,13 +89,7 @@ class UELocalizationLightning(pl.LightningModule):
 
         data = np.asarray(data, dtype=np.float32)
         
-        # Debugging logs
-        logger.debug(f"Normalizing map data. Shape: {data.shape}, "
-                     f"Non-finite: {np.count_nonzero(~np.isfinite(data))}, "
-                     f"Min: {np.nanmin(data, initial=None)}, Max: {np.nanmax(data, initial=None)}, "
-                     f"Mean: {np.nanmean(data)}")
-
-        # For percentile calculation, treat infs as NaNs so they are ignored
+        # For percentile calculation, treat infs as NaNs to ignore them
         percentile_data = np.where(np.isinf(data), np.nan, data)
 
         if not np.isfinite(percentile_data).any():
@@ -103,8 +97,6 @@ class UELocalizationLightning(pl.LightningModule):
         
         vmin = np.nanpercentile(percentile_data, 2)
         vmax = np.nanpercentile(percentile_data, 98)
-
-        logger.debug(f"Normalization params: vmin={vmin}, vmax={vmax}")
 
         if vmax - vmin < 1e-6:
             # If dynamic range is negligible, it's a constant map.
@@ -115,9 +107,7 @@ class UELocalizationLightning(pl.LightningModule):
             else:
                 return np.zeros_like(data, dtype=np.float32)
 
-        # Handle NaNs and Infs in the original data for scaling.
-        # NaNs will be mapped to the min value (black).
-        # Infs will be mapped to the max value (white).
+        # Handle NaNs and Infs for scaling. NaNs map to min, Infs to max.
         safe_data = np.nan_to_num(data, nan=vmin, posinf=vmax, neginf=vmin)
         
         # Normalize and clip
@@ -197,16 +187,10 @@ class UELocalizationLightning(pl.LightningModule):
     
     def _extract_observed_features(self, measurements: Dict) -> torch.Tensor:
         """
-        Extract observed radio features from measurements.
+        Extract and summarize observed radio features from measurements.
         
-        Args:
-            measurements: Dict with RT/PHY/MAC features
-                - rt_features: (batch, seq_len, 8) [path_gain, toa, aoa_az, aoa_el, ...]
-                - phy_features: (batch, seq_len, 10) [rsrp, rsrq, snr, sinr, ...]
-                - mac_features: (batch, seq_len, 6) [throughput, bler, ...]
-                
         Returns:
-            observed: (batch, 7) features [path_gain, toa, aoa, snr, sinr, throughput, bler]
+            Aggregated features: [batch, 7] (path_gain, toa, aoa, snr, sinr, throughput, bler)
         """
         batch_size = measurements['rt_features'].shape[0]
         device = measurements['rt_features'].device
@@ -217,8 +201,8 @@ class UELocalizationLightning(pl.LightningModule):
         # RT features: path_gain (0), toa (1), aoa_azimuth (2)
         rt_features = measurements['rt_features']  # (batch, seq_len, 8)
         path_gain = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        toa = (rt_features[:, :, 1] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        aoa = (rt_features[:, :, 2] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        toa = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        aoa = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         
         # PHY features: snr (2), sinr (3)
         phy_features = measurements['phy_features']  # (batch, seq_len, 10)
@@ -236,11 +220,9 @@ class UELocalizationLightning(pl.LightningModule):
         return observed
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
-        """Training step."""
-        # Forward pass
+        """Run a single training step."""
         outputs = self.forward(batch)
         
-        # Compute losses
         targets = {
             'position': batch['position'],
             'cell_grid': batch['cell_grid'],
@@ -249,27 +231,15 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Add physics loss if enabled
         if self.use_physics_loss and 'radio_maps' in batch:
-            # Extract predicted position (best candidate from fine head)
-            pred_position = outputs['predicted_position']  # (batch, 2)
+            pred_position = outputs['predicted_position']
+            observed_features = batch.get('observed_features', self._extract_observed_features(batch['measurements']))
             
-            # Extract observed features from measurements
-            # Assume batch['observed_features'] contains: [path_gain, toa, aoa, snr, sinr, throughput, bler]
-            # If not provided, need to extract from measurements
-            if 'observed_features' in batch:
-                observed_features = batch['observed_features']
-            else:
-                # Extract mean features from measurements (simplified)
-                # In practice, should aggregate across temporal measurements
-                observed_features = self._extract_observed_features(batch['measurements'])
-            
-            # Compute physics loss
             physics_loss = self.physics_loss_fn(
                 predicted_xy=pred_position,
                 observed_features=observed_features,
-                radio_maps=batch['radio_maps'],  # (batch, C, H, W)
+                radio_maps=batch['radio_maps'],
             )
             
-            # Add to total loss
             losses['physics_loss'] = physics_loss
             losses['loss'] = losses['loss'] + self.lambda_phys * physics_loss
         
@@ -283,11 +253,9 @@ class UELocalizationLightning(pl.LightningModule):
         return losses['loss']
     
     def validation_step(self, batch: Dict, batch_idx: int):
-        """Validation step."""
-        # Forward pass
+        """Run a single validation step."""
         outputs = self.forward(batch)
         
-        # Compute losses
         targets = {
             'position': batch['position'],
             'cell_grid': batch['cell_grid'],
@@ -310,7 +278,7 @@ class UELocalizationLightning(pl.LightningModule):
         # Compute errors
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        errors = torch.norm(pred_pos - true_pos, dim=-1)  # [B]
+        errors = torch.norm(pred_pos - true_pos, dim=-1)
 
         if batch_idx == 0 and self._last_val_sample is None:
             self._last_val_sample = {
@@ -335,7 +303,7 @@ class UELocalizationLightning(pl.LightningModule):
         return losses['loss']
     
     def on_validation_epoch_end(self):
-        """Aggregate validation metrics."""
+        """Aggregate validation metrics at epoch end."""
         if not self.validation_step_outputs:
             return
         
@@ -379,21 +347,20 @@ class UELocalizationLightning(pl.LightningModule):
         self.validation_step_outputs.clear()
     
     def test_step(self, batch: Dict, batch_idx: int):
-        """Test step."""
-        # Forward pass
+        """Run a single test step."""
         outputs = self.forward(batch)
         
         # Compute errors
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        errors = torch.norm(pred_pos - true_pos, dim=-1)  # [B]
+        errors = torch.norm(pred_pos - true_pos, dim=-1)
         
-        # Store
+        # Store results
         self.test_step_outputs.append({
             'errors': errors,
             'predictions': pred_pos,
             'ground_truth': true_pos,
-            'uncertainties': outputs['fine_uncertainties'][:, 0, :],  # Best prediction
+            'uncertainties': outputs['fine_uncertainties'][:, 0, :],
         })
 
         if batch_idx == 0 and self._last_test_sample is None:
@@ -407,7 +374,7 @@ class UELocalizationLightning(pl.LightningModule):
         return errors
     
     def on_test_epoch_end(self):
-        """Aggregate test metrics."""
+        """Aggregate test metrics at epoch end."""
         if not self.test_step_outputs:
             return
         
@@ -427,7 +394,7 @@ class UELocalizationLightning(pl.LightningModule):
         success_20m = (all_errors <= 20.0).float().mean() * 100
         success_50m = (all_errors <= 50.0).float().mean() * 100
         
-        # Log
+        # Log metrics
         self.log('test_median_error', median_error)
         self.log('test_mean_error', mean_error)
         self.log('test_rmse', rmse)
@@ -506,29 +473,40 @@ class UELocalizationLightning(pl.LightningModule):
         
         return optimizer
     
-    def train_dataloader(self):
-        """Create training dataloader."""
+    def _build_dataset(self, split: str):
         dataset_config = self.config['dataset']
-        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
-            dataset = CombinedRadioLocalizationDataset(
-                zarr_paths=dataset_config['zarr_paths'],
-                split='train',
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-            )
-        else:
-            dataset = RadioLocalizationDataset(
-                zarr_path=dataset_config['zarr_path'],
-                split='train',
+        split_key = f"{split}_zarr_paths"
+        zarr_paths = dataset_config.get(split_key) or dataset_config.get('zarr_paths')
+        zarr_path = dataset_config.get(f"{split}_zarr_path") or dataset_config.get('zarr_path')
+
+        if zarr_paths:
+            return CombinedRadioLocalizationDataset(
+                zarr_paths=zarr_paths,
+                split=split,
                 map_resolution=dataset_config['map_resolution'],
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
             )
 
-        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        return RadioLocalizationDataset(
+            zarr_path=zarr_path,
+            split=split,
+            map_resolution=dataset_config['map_resolution'],
+            scene_extent=dataset_config['scene_extent'],
+            normalize=dataset_config['normalize_features'],
+            handle_missing=dataset_config['handle_missing_values'],
+        )
+
+    def train_dataloader(self):
+        """Create training dataloader."""
+        dataset = self._build_dataset('train')
+
+        num_batches = max(
+            1,
+            (len(dataset) + self.config['training']['batch_size'] - 1)
+            // self.config['training']['batch_size'],
+        )
         logger.info(f"Training samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
@@ -542,27 +520,13 @@ class UELocalizationLightning(pl.LightningModule):
     
     def val_dataloader(self):
         """Create validation dataloader."""
-        dataset_config = self.config['dataset']
-        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
-            dataset = CombinedRadioLocalizationDataset(
-                zarr_paths=dataset_config['zarr_paths'],
-                split='val',
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-            )
-        else:
-            dataset = RadioLocalizationDataset(
-                zarr_path=dataset_config['zarr_path'],
-                split='val',
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-            )
+        dataset = self._build_dataset('val')
 
-        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        num_batches = max(
+            1,
+            (len(dataset) + self.config['training']['batch_size'] - 1)
+            // self.config['training']['batch_size'],
+        )
         logger.info(f"Validation samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
@@ -576,27 +540,13 @@ class UELocalizationLightning(pl.LightningModule):
     
     def test_dataloader(self):
         """Create test dataloader."""
-        dataset_config = self.config['dataset']
-        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
-            dataset = CombinedRadioLocalizationDataset(
-                zarr_paths=dataset_config['zarr_paths'],
-                split='test',
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-            )
-        else:
-            dataset = RadioLocalizationDataset(
-                zarr_path=dataset_config['zarr_path'],
-                split='test',
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-            )
+        dataset = self._build_dataset('test')
 
-        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        num_batches = max(
+            1,
+            (len(dataset) + self.config['training']['batch_size'] - 1)
+            // self.config['training']['batch_size'],
+        )
         logger.info(f"Test samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
