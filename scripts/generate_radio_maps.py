@@ -14,7 +14,7 @@ import argparse
 import logging
 from pathlib import Path
 import yaml
-from typing import List
+from typing import List, Optional
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
@@ -24,7 +24,6 @@ try:
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
-    logger.warning("Sionna not available. Install with: pip install sionna")
 
 from src.physics_loss import RadioMapGenerator, RadioMapConfig
 
@@ -70,10 +69,51 @@ def extract_cell_sites(scene: 'sn.rt.Scene') -> List[dict]:
     return cell_sites
 
 
+def _save_radio_map_plots(
+    radio_map: 'np.ndarray',
+    feature_names: List[str],
+    output_dir: Path,
+    scene_id: str,
+):
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        logger.warning("matplotlib not available; skipping radio map plots")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    num_features = radio_map.shape[0]
+    cols = min(3, num_features)
+    rows = int(np.ceil(num_features / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+    axes = np.atleast_1d(axes).reshape(rows, cols)
+
+    for idx in range(rows * cols):
+        r, c = divmod(idx, cols)
+        ax = axes[r, c]
+        if idx >= num_features:
+            ax.axis('off')
+            continue
+        data = radio_map[idx]
+        ax.imshow(data, cmap='inferno')
+        title = feature_names[idx] if idx < len(feature_names) else f"ch_{idx}"
+        ax.set_title(title)
+        ax.axis('off')
+
+    fig.tight_layout()
+    out_path = output_dir / f"{scene_id}_radio_maps.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def generate_radio_map_for_scene(
     scene_path: Path,
     output_dir: Path,
     config: RadioMapConfig,
+    save_plots: bool = False,
+    plots_dir: Optional[Path] = None,
 ) -> Path:
     """
     Generate radio map for a single scene.
@@ -102,6 +142,11 @@ def generate_radio_map_for_scene(
         logger.info(f"Generating radio map for {scene_id}...")
         radio_map = generator.generate_for_scene(scene, cell_sites, show_progress=True)
         
+        # Save optional debug plots
+        if save_plots:
+            plot_dir = plots_dir or (output_dir / "plots")
+            _save_radio_map_plots(radio_map, config.features, plot_dir, scene_id)
+
         # Save to Zarr
         metadata = {
             'scene_path': str(scene_path),
@@ -122,6 +167,8 @@ def generate_radio_maps_parallel(
     output_dir: Path,
     config: RadioMapConfig,
     num_workers: int = 1,
+    save_plots: bool = False,
+    plots_dir: Optional[Path] = None,
 ) -> List[Path]:
     """
     Generate radio maps for multiple scenes in parallel.
@@ -140,13 +187,26 @@ def generate_radio_maps_parallel(
     if num_workers == 1:
         # Sequential processing
         for scene_path in tqdm(scene_paths, desc="Generating radio maps"):
-            output_path = generate_radio_map_for_scene(scene_path, output_dir, config)
+            output_path = generate_radio_map_for_scene(
+                scene_path,
+                output_dir,
+                config,
+                save_plots=save_plots,
+                plots_dir=plots_dir,
+            )
             output_paths.append(output_path)
     else:
         # Parallel processing
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {
-                executor.submit(generate_radio_map_for_scene, scene_path, output_dir, config): scene_path
+                executor.submit(
+                    generate_radio_map_for_scene,
+                    scene_path,
+                    output_dir,
+                    config,
+                    save_plots,
+                    plots_dir,
+                ): scene_path
                 for scene_path in scene_paths
             }
             
@@ -209,6 +269,16 @@ def main():
         default='*.xml',
         help='File pattern for scene files (default: *.xml)'
     )
+    parser.add_argument(
+        '--save-plots',
+        action='store_true',
+        help='Save debug plots of radio maps'
+    )
+    parser.add_argument(
+        '--plots-dir',
+        type=str,
+        help='Directory for radio map plots (default: <output_dir>/plots)'
+    )
     
     args = parser.parse_args()
     
@@ -239,6 +309,7 @@ def main():
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = Path(args.plots_dir) if args.plots_dir else None
     
     # Check Sionna availability
     if not SIONNA_AVAILABLE:
@@ -252,6 +323,8 @@ def main():
         output_dir,
         config,
         num_workers=args.parallel,
+        save_plots=args.save_plots,
+        plots_dir=plots_dir,
     )
     
     logger.info(f"Successfully generated {len(output_paths)} radio maps")

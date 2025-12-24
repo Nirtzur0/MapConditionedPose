@@ -78,12 +78,12 @@ M5: Web UI for inspection and demos
 
 ## Documentation 📚
 
-- `QUICK_START.md` - Short start guide
-- `docs/README.md` - Documentation index
-- `docs/PIPELINE.md` - Pipeline usage and options
-- `docs/IMPLEMENTATION_GUIDE.md` - Design + milestones
-- `docs/SYSTEM_INTEGRATION_GUIDE.md` - Data flow and integration
-- `docs/PROJECT_STATUS.md` - Current status and roadmap
+- [QUICK_START.md](QUICK_START.md) - Short start guide
+- [docs/README.md](docs/README.md) - Documentation index
+- [docs/PIPELINE.md](docs/PIPELINE.md) - Pipeline usage and options
+- [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) - Design + milestones
+- [docs/SYSTEM_INTEGRATION_GUIDE.md](docs/SYSTEM_INTEGRATION_GUIDE.md) - Data flow and integration
+- [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) - Current status and roadmap
 
 ## Key Directories
 

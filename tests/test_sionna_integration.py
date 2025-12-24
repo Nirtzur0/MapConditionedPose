@@ -31,7 +31,8 @@ def test_sionna_config_loading():
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    assert 'sionna_rt' in config
-    assert 'rf_parameters' in config
-    assert 'antenna_arrays' in config
-    assert 'sampling' in config
+    assert 'scene_dir' in config
+    assert 'carrier_frequency_hz' in config
+    assert 'bandwidth_hz' in config
+    assert 'num_samples' in config
+    assert 'output_dir' in config

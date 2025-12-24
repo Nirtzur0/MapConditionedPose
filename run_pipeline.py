@@ -41,6 +41,7 @@ try:
     from optuna_integration.comet import CometPruner, CometCallback
     COMET_AVAILABLE = True
 except ImportError:
+    optuna = None
     COMET_AVAILABLE = False
     print("optuna or optuna-integration not installed. Optimization will be disabled.")
     print("Install with: pip install optuna optuna-integration")
@@ -51,7 +52,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def objective(trial: optuna.trial.Trial, args, base_config_path: Path):
+def objective(trial, args, base_config_path: Path):
     """
     Optuna objective function.
     
@@ -163,6 +164,8 @@ def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
     """
     Run Optuna hyperparameter optimization study.
     """
+    if optuna is None:
+        raise RuntimeError("Optuna is not installed. Install with: pip install optuna optuna-integration")
     # Comet ML setup
     comet_pruner = None
     comet_callback = None
@@ -247,20 +250,40 @@ class PipelineOrchestrator:
 
         data_gen = config.get('data_generation', {})
         output_path = data_gen.get('output', {}).get('path') or config.get('output', {}).get('path')
-        if not output_path:
+        output_dir = config.get('output_dir')
+        if output_path:
+            return self.project_root / output_path
+        if output_dir:
+            return self._latest_dataset_in_dir(self.project_root / output_dir)
+        return None
+
+    def _latest_dataset_in_dir(self, output_dir: Path) -> Optional[Path]:
+        if not output_dir.exists():
             return None
-        return self.project_root / output_path
+        zarr_files = sorted(output_dir.glob("dataset_*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return zarr_files[0] if zarr_files else None
 
     def _run_dataset_generation_for_config(self, config_path: Path):
         cmd = [sys.executable, "scripts/generate_dataset.py", "--config", str(config_path)]
         dataset_dir = None
+        scene_dir_from_config = None
+        raw_config = None
         try:
             with open(config_path, 'r') as f:
-                data_gen = EasyDict(yaml.safe_load(f)).data_generation
-            scene_dir_from_config = self.project_root / data_gen.scenes.root_dir
-            dataset_dir = self.project_root / Path(data_gen.output.path).parent
-            cmd.extend(["--scene-dir", str(scene_dir_from_config)])
-            cmd.extend(["--output-dir", str(dataset_dir)])
+                raw_config = yaml.safe_load(f)
+            if 'data_generation' in raw_config:
+                data_gen = EasyDict(raw_config).data_generation
+                scene_dir_from_config = self.project_root / data_gen.scenes.root_dir
+                dataset_dir = self.project_root / Path(data_gen.output.path).parent
+                cmd.extend(["--scene-dir", str(scene_dir_from_config)])
+                cmd.extend(["--output-dir", str(dataset_dir)])
+            else:
+                scene_dir_from_config = self.project_root / raw_config.get('scene_dir')
+                dataset_dir = self.project_root / raw_config.get('output_dir')
+                if scene_dir_from_config:
+                    cmd.extend(["--scene-dir", str(scene_dir_from_config)])
+                if dataset_dir:
+                    cmd.extend(["--output-dir", str(dataset_dir)])
         except Exception:
             pass
 
@@ -271,6 +294,42 @@ class PipelineOrchestrator:
             dataset_dir.mkdir(parents=True, exist_ok=True)
 
         self.run_command(cmd, "Dataset Generation")
+
+        self._maybe_generate_radio_maps(raw_config, scene_dir_from_config)
+
+    def _maybe_generate_radio_maps(self, raw_config: Optional[Dict], scene_dir: Optional[Path]):
+        if not raw_config or not scene_dir:
+            return
+
+        debug_flag = False
+        output_dir = None
+        if 'data_generation' in raw_config:
+            debug_flag = raw_config['data_generation'].get('debug_radio_maps', False)
+            output_dir = raw_config['data_generation'].get('radio_maps_output_dir')
+        else:
+            debug_flag = raw_config.get('debug_radio_maps', False)
+            output_dir = raw_config.get('radio_maps_output_dir')
+
+        if not debug_flag:
+            return
+
+        output_dir = output_dir or "data/radio_maps_debug"
+        plots_dir = Path(output_dir) / "plots"
+
+        cmd = [
+            sys.executable,
+            "scripts/generate_radio_maps.py",
+            "--scenes-dir",
+            str(scene_dir),
+            "--output-dir",
+            str(self.project_root / output_dir),
+            "--pattern",
+            "**/scene_*/scene.xml",
+            "--save-plots",
+            "--plots-dir",
+            str(self.project_root / plots_dir),
+        ]
+        self.run_command(cmd, "Radio Map Debug Plots")
         
     def log_section(self, title):
         """Log a section header"""
@@ -319,6 +378,42 @@ class PipelineOrchestrator:
             logger.info(f"Using scene config file: {self.args.scene_config}")
             with open(self.args.scene_config, 'r') as f:
                 config = EasyDict(yaml.safe_load(f)).scene_generation
+            cities = getattr(config, "cities", None)
+            if cities:
+                for city_cfg in cities:
+                    city = EasyDict(city_cfg)
+                    city_cmd = [sys.executable, "scripts/scene_generation/generate_scenes.py"]
+
+                    if city.get('bounding_box'):
+                        city_cmd.extend(["--bbox"] + [str(c) for c in city.bounding_box])
+                        scene_slug = city.get('slug') or city.get('name', 'custom_bbox')
+                        scene_slug = scene_slug.replace(", ", "_").replace(" ", "_").lower()
+                    elif city.get('name'):
+                        city_cmd.extend(["--area", city.name])
+                        scene_slug = city.name.replace(", ", "_").replace(" ", "_").lower()
+                    else:
+                        raise RuntimeError("Each city entry needs name or bounding_box")
+
+                    scene_dir = self.project_root / "data" / "scenes" / scene_slug
+                    city_cmd.extend(["--output", str(scene_dir)])
+
+                    tiles_cfg = city.get('tiles') or config.city.tiles
+                    if tiles_cfg and tiles_cfg.num_tiles > 0:
+                        city_cmd.append("--tiles")
+                        city_cmd.extend(["--tile-size", str(tiles_cfg.tile_size_m)])
+                        city_cmd.extend(["--overlap", str(tiles_cfg.overlap_m)])
+
+                    sites_cfg = city.get('sites') or config.sites
+                    if sites_cfg:
+                        city_cmd.extend(["--num-tx", str(sites_cfg.num_sites_per_tile)])
+                        city_cmd.extend(["--site-strategy", sites_cfg.placement_strategy])
+
+                    if self.args.clean and scene_dir.exists():
+                        logger.info(f"Cleaning existing scenes at {scene_dir}")
+                        shutil.rmtree(scene_dir)
+
+                    self.run_command(city_cmd, f"Scene Generation ({scene_slug})")
+                return
 
             if config.city.name:
                 cmd.extend(["--area", config.city.name])
@@ -328,10 +423,11 @@ class PipelineOrchestrator:
             self.scene_dir = self.project_root / "data" / "scenes" / config.city.name.replace(", ", "_").replace(" ", "_").lower()
             cmd.extend(["--output", str(self.scene_dir)])
 
-            if config.tiles and config.tiles.num_tiles > 0:
+            tiles_cfg = config.city.tiles
+            if tiles_cfg and tiles_cfg.num_tiles > 0:
                 cmd.append("--tiles")
-                cmd.extend(["--tile-size", str(config.tiles.tile_size_m)])
-                cmd.extend(["--overlap", str(config.tiles.overlap_m)])
+                cmd.extend(["--tile-size", str(tiles_cfg.tile_size_m)])
+                cmd.extend(["--overlap", str(tiles_cfg.overlap_m)])
 
             if config.sites:
                 cmd.extend(["--num-tx", str(config.sites.num_sites_per_tile)])
@@ -396,10 +492,8 @@ class PipelineOrchestrator:
                 return
             # Attempt to find the dataset path from the most recent data config if available
             if self.args.data_config:
-                with open(self.args.data_config, 'r') as f:
-                    config = EasyDict(yaml.safe_load(f))
-                self.dataset_path = self.project_root / config.data_generation.output.path
-                if not self.dataset_path.exists():
+                self.dataset_path = self._resolve_data_output_path(self.args.data_config)
+                if self.dataset_path is None or not self.dataset_path.exists():
                      raise RuntimeError(f"No dataset available to reuse at: {self.dataset_path}")
             else: # Fallback to original behavior
                 zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -482,9 +576,15 @@ class PipelineOrchestrator:
 
         # Verify dataset was created
         if self.args.data_config:
-             with open(self.args.data_config, 'r') as f:
-                config = EasyDict(yaml.safe_load(f))
-             self.dataset_path = self.project_root / config.data_generation.output.path
+            with open(self.args.data_config, 'r') as f:
+                config = yaml.safe_load(f)
+            if 'data_generation' in config:
+                self.dataset_path = self.project_root / config['data_generation']['output']['path']
+            else:
+                output_dir = self.project_root / config.get('output_dir')
+                self.dataset_path = self._latest_dataset_in_dir(output_dir)
+                if self.dataset_path is None:
+                    raise RuntimeError(f"No dataset created in: {output_dir}")
         else:
             zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not zarr_files:

@@ -1,131 +1,51 @@
-# Sionna-Based Data Generation Configuration
+# Sionna data generation config
+# Matches DataGenerationConfig in src/data_generation/multi_layer_generator.py
 
-scene:
-  tile_size: 512  # meters
-  scene_dir: "data/scenes"
-  use_mock_mode: false  # Set to true to disable Sionna and use mock data
+scene_dir: data/scenes
+scene_metadata_path: data/scenes/metadata.json
 
-sionna_rt:
-  # Ray tracing parameters
-  max_depth: 5  # Maximum number of reflections
-  num_samples: 1_000_000  # Ray samples (1M for testing, 10M for production)
-  
-  # Propagation components
-  los: true  # Line-of-sight
-  reflection: true  # Specular reflections
-  diffraction: true  # Knife-edge diffraction (slower but important)
-  scattering: false  # Diffuse scattering (very slow)
-  edge_diffraction: false  # Edge diffraction (advanced)
-  
-  # Performance
-  enable_diffraction: true  # Toggle for speed vs accuracy
-  
-rf_parameters:
-  carrier_frequency_hz: 3500000000  # 3.5 GHz (sub-6) as integer
-  bandwidth_hz: 100000000  # 100 MHz
-  tx_power_dbm: 43.0  # Base station transmit power
-  noise_figure_db: 9.0  # Receiver noise figure
+# RF parameters
+carrier_frequency_hz: 3.5e9
+bandwidth_hz: 100e6
+tx_power_dbm: 43.0
+noise_figure_db: 9.0
 
-antenna_arrays:
-  # Base station antennas (sub-6 GHz)
-  bs_sub6:
-    num_rows: 8
-    num_cols: 8
-    vertical_spacing: 0.5  # λ/2
-    horizontal_spacing: 0.5
-    pattern: "iso"  # Isotropic (can use "3gpp" for sector pattern)
-    polarization: "dual"  # Cross-polarized
-  
-  # Base station antennas (mmWave, > 10 GHz)
-  bs_mmwave:
-    num_rows: 16
-    num_cols: 16
-    vertical_spacing: 0.5
-    horizontal_spacing: 0.5
-    pattern: "iso"
-    polarization: "dual"
-  
-  # UE antenna
-  ue:
-    num_rows: 1
-    num_cols: 2  # Dual antenna (typical smartphone)
-    vertical_spacing: 0.5
-    horizontal_spacing: 0.5
-    pattern: "iso"
-    polarization: "dual"
+# Sionna RT parameters
+use_mock_mode: false
+max_depth: 5
+num_samples: 1_000_000
+enable_diffraction: true
 
-site_configuration:
-  # Default site parameters (can be overridden per scene)
-  default_azimuth: 0.0  # degrees
-  default_downtilt: 10.0  # degrees (electrical downtilt)
-  default_height: 25.0  # meters above ground
+# Sampling strategy
+num_ue_per_tile: 100
+ue_height_range: [1.5, 1.5]
+ue_velocity_range: [0.0, 1.5]
 
-sampling:
-  num_ue_per_tile: 100  # Number of UE positions to sample (increase for production)
-  ue_height: 1.5  # meters (pedestrian)
-  
-  # Spatial constraints
-  min_distance_from_bs: 10.0  # meters
-  max_distance_from_bs: 1000.0  # meters
-  
-  # Distribution strategy
-  distribution: "uniform"  # Options: "uniform", "coverage_weighted", "clustered"
-  exclude_indoor: true  # Use building footprints to exclude indoor positions
+# Temporal sequence
+num_reports_per_ue: 10
+report_interval_ms: 200.0
 
-temporal_sequence:
-  num_reports_per_ue: 10  # Number of measurement reports per UE
-  report_interval_ms: 200.0  # 200 ms between measurements
-  add_time_jitter: true  # Randomize report times
-  jitter_std_ms: 50.0  # Standard deviation of time jitter
+# Feature extraction
+enable_k_factor: false
+enable_beam_management: true
+num_beams: 64
+max_neighbors: 8
 
-feature_extraction:
-  # RT layer
-  enable_k_factor: false  # Rician K-factor (expensive to compute)
-  
-  # PHY layer
-  enable_beam_management: true  # Per-beam RSRP (5G NR)
-  num_beams: 64  # Number of SSB beams
-  
-  # SYS layer
-  max_neighbors: 8  # Maximum number of neighbor cells to report
-  
-measurement_realism:
-  # Quantization (3GPP compliance)
-  quantization_enabled: true
-  rsrp_step_db: 1.0  # RSRP quantization
-  timing_advance_resolution_ts: 16  # TA resolution in Ts units
-  angle_step_deg: 1.0  # Angle quantization
-  
-  # Noise and errors
-  add_measurement_noise: true
-  shadow_fading_std_db: 8.0  # Log-normal shadow fading
-  nlos_bias_mean_ns: 50.0  # NLoS ToA bias
-  nlos_bias_std_ns: 20.0
-  
-  # Dropout (missing measurements)
-  measurement_dropout_rates:
-    rsrp: 0.0  # Always present
-    rsrq: 0.05  # 5% dropout
-    timing_advance: 0.15  # 15% dropout
-    aoa: 0.30  # 30% dropout (noisy measurement)
-    neighbor_cells: 0.10  # 10% dropout
+# Measurement realism
+measurement_dropout_rates:
+  rsrp: 0.0
+  rsrq: 0.05
+  sinr: 0.10
+  cqi: 0.15
+  ri: 0.20
+  pmi: 0.25
+  neighbor_rsrp: 0.10
+quantization_enabled: true
 
-output:
-  output_dir: "data/processed/sionna_dataset"
-  zarr_chunk_size: 100  # Samples per chunk
-  compression: "zstd"  # Compression codec
-  compression_level: 3  # Balance speed vs size
+# Output
+output_dir: data/processed/sionna_dataset
+zarr_chunk_size: 100
 
-# Validation thresholds
-validation:
-  min_rsrp_dbm: -120  # Minimum valid RSRP
-  max_rsrp_dbm: -30  # Maximum valid RSRP
-  min_paths: 1  # Minimum number of paths
-  max_rms_delay_spread_ns: 1000  # Maximum RMS-DS
-
-# Performance tuning
-performance:
-  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  progress_bar: true
-  save_intermediate: false  # Save after each scene
-  num_workers: 1  # Parallel processing (experimental)
+# Debug radio maps
+debug_radio_maps: true
+radio_maps_output_dir: data/radio_maps_debug

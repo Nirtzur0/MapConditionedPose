@@ -154,8 +154,8 @@ class MultiLayerDataGenerator:
         """
         # Find all scenes
         if scene_ids is None:
-            scene_dirs = sorted(self.config.scene_dir.glob("scene_*"))
-            scene_ids = [d.name for d in scene_dirs]
+            scene_dirs = sorted(self.config.scene_dir.rglob("scene_*"))
+            scene_ids = [str(d.relative_to(self.config.scene_dir)) for d in scene_dirs]
         
         if num_scenes is not None:
             scene_ids = scene_ids[:num_scenes]
@@ -176,7 +176,7 @@ class MultiLayerDataGenerator:
             
             # Write to Zarr
             if self.zarr_writer is not None:
-                self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+                self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=None)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
         

@@ -3,11 +3,24 @@
 
 scene_generation:
   # City/Region Configuration
+  cities:
+    - name: "Boulder, Colorado"
+      bounding_box: [-105.30, 40.00, -105.25, 40.03]
+    - name: "New York, New York"
+      bounding_box: [-74.05, 40.68, -73.90, 40.83]
+    - name: "Los Angeles, California"
+      bounding_box: [-118.35, 34.00, -118.20, 34.10]
+    - name: "Chicago, Illinois"
+      bounding_box: [-87.73, 41.83, -87.60, 41.92]
+    - name: "Seattle, Washington"
+      bounding_box: [-122.40, 47.58, -122.30, 47.68]
+    - name: "Austin, Texas"
+      bounding_box: [-97.80, 30.23, -97.70, 30.32]
   city:
     name: "Boulder, Colorado"
     bounding_box: null  # Auto-detect from name, or provide [min_lat, min_lon, max_lat, max_lon]
     tiles:
-      num_tiles: 5
+      num_tiles: 0
       tile_size_m: 512  # meters per side
       overlap_m: 50  # overlap for edge effects
   
@@ -80,7 +93,7 @@ scene_generation:
     check_site_los: true  # Verify at least some LoS paths
     min_building_height_m: 3.0
     max_building_height_m: 150.0
-    visualize: false  # 3D preview in Blender/Mitsuba
+    visualize: true  # 3D preview in Blender/Mitsuba
 
 # Processing
 processing:
