@@ -1,0 +1,97 @@
+# Full-Size Training Configuration - Larger Model
+
+model:
+  name: "MapConditionedTransformer"
+  
+  radio_encoder:
+    num_cells: 8
+    num_beams: 64
+    d_model: 512  # 2x larger
+    nhead: 16     # 2x more heads
+    num_layers: 8  # 2x more layers
+    dropout: 0.1
+    max_seq_len: 100
+    rt_features_dim: 10
+    phy_features_dim: 8
+    mac_features_dim: 6
+    
+  map_encoder:
+    img_size: 256
+    patch_size: 16
+    in_channels: 12
+    d_model: 512  # 2x larger
+    nhead: 16     # 2x more heads
+    num_layers: 8  # 2x more layers
+    dropout: 0.1
+    radio_map_channels: 7
+    osm_map_channels: 5
+    
+  fusion:
+    d_fusion: 512  # 2x larger
+    nhead: 16
+    dropout: 0.1
+    
+  coarse_head:
+    grid_size: 32
+    dropout: 0.1
+    
+  fine_head:
+    type: "heteroscedastic"
+    top_k: 5
+    d_hidden: 256  # 2x larger
+    dropout: 0.1
+
+dataset:
+  scene_extent: 856
+  zarr_path: "data/processed/quick_test_dataset/dataset_20251223_230733.zarr"
+  sequence_length: 16
+  map_resolution: 1.0
+  normalize_features: true
+  handle_missing_values: "zero"
+
+training:
+  batch_size: 16
+  
+  data:
+    train_path: "data/processed/quick_test_dataset/dataset_20251223_230733.zarr"
+    val_path: null
+    batch_size: 16  # Keep reasonable for CPU
+    num_workers: 4
+    pin_memory: false
+    
+  optimizer: "adamw"
+  learning_rate: 0.0001
+  weight_decay: 0.01
+    
+  scheduler: "cosine_with_warmup"
+  warmup_steps: 50
+  
+  num_epochs: 100
+  gradient_clip: 1.0
+  
+  loss:
+    coarse_weight: 1.0
+    fine_weight: 1.0
+    physics_weight: 0.1  # Enable physics loss
+
+infrastructure:
+  accelerator: "cpu"
+  devices: 1
+  precision: "32"
+  num_workers: 4
+  
+  checkpoint:
+    monitor: "train_loss_epoch"
+    mode: "min"
+    save_top_k: 3
+    
+  early_stopping:
+    monitor: "train_loss_epoch"
+    patience: 20
+    mode: "min"
+    
+  logging:
+    use_wandb: false
+    use_comet: true
+    project: "ue-localization"
+    log_every_n_steps: 1

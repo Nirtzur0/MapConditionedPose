@@ -139,7 +139,8 @@ transformer-ue-localization/
 │       ├── training_config.yaml      # Generated config
 │       └── *.ckpt                    # Model weights
 │
-└── pipeline_*.log                    # Detailed logs
+└── logs/
+    └── pipeline_*.log                # Detailed logs
 ```
 
 ## Key Features

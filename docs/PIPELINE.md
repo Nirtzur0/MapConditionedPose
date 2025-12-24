@@ -142,7 +142,7 @@ checkpoints/
 
 Each run generates:
 - **Console output**: Real-time progress
-- **Log file**: `pipeline_YYYYMMDD_HHMMSS.log` in project root
+- **Log file**: `logs/pipeline_YYYYMMDD_HHMMSS.log`
 - **Pipeline report**: JSON summary in checkpoint directory
 
 ## Error Handling
@@ -229,7 +229,7 @@ pip install -r requirements.txt
 ### Debugging
 ```bash
 # Run with verbose logging
-python run_pipeline.py --quick-test 2>&1 | tee debug.log
+python run_pipeline.py --quick-test 2>&1 | tee logs/debug.log
 
 # Test individual steps
 python scripts/generate_scenes.py --area "Boulder, CO" --output data/scenes/test

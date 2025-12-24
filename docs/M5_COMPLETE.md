@@ -1,314 +1,142 @@
 # 📡 UE Localization - Milestone 5 Complete! ✅
 
-## Web-Based Visualization Interface (Streamlit)
+## Visualization Tools
 
-Beautiful, minimal-code visualization interface for transformer-based UE positioning.
+Focused, practical tools for training monitoring and prediction exploration.
 
 ### 🎉 What's Implemented
 
-✅ **Streamlit Single-Page App** (~500 lines of Python)
-- 🏠 Overview page with architecture visualization
-- 📊 Metrics dashboard with CDF plots and comparison tables
-- 🔍 Live inference mode with file upload
-- 📈 Analysis tools (feature importance, error breakdown, ablations)
+✅ **TensorBoard Integration** (PyTorch Lightning built-in)
+- Real-time loss curves (total, coarse, fine)
+- Learning rate monitoring  
+- Gradient histograms
+- Model computational graph
+- Hyperparameter tracking
+- All metrics logged automatically
 
-✅ **Interactive Visualizations** (Plotly)
-- Error CDF curves with percentile markers
-- Measurement timeline with cell/beam tracking
-- Predicted position heatmaps
-- Feature importance bar charts
-- Scenario-based error analysis
+✅ **Streamlit Map Explorer** (~450 lines of Python)
+- Interactive map showing GT vs Predictions
+- Error visualization with color-coded markers
+- Uncertainty ellipses
+- Error distribution analysis (histogram, CDF)
+- Percentile metrics (P50, P90, P95)
 
-✅ **Live Inference**
-- Upload JSON measurements
-- Generate demo data
-- Real-time predictions with uncertainty
-- Top-K candidate positions
+### Quick Start
 
-✅ **Deployment Ready**
-- Dockerfile for containerization
-- Streamlit config with custom theme
-- One-command setup script
-- Production-ready configuration
-
-### 🚀 Quick Start
-
-#### Option 1: Run Script (Recommended)
 ```bash
-cd web
-./run.sh
+# Start both monitoring tools
+./start_monitoring.sh
+
+# Or individually:
+tensorboard --logdir lightning_logs --port 6006
+streamlit run web/app.py --server.port 8501
 ```
 
-#### Option 2: Manual Setup
-```bash
-cd web
-pip install -r requirements.txt
-streamlit run streamlit_app.py
-```
+- **TensorBoard**: `http://localhost:6006` (training metrics)
+- **Streamlit**: `http://localhost:8501` (prediction explorer)
 
-#### Option 3: Docker
-```bash
-cd web
-docker build -t ue-localization-web .
-docker run -p 8501:8501 ue-localization-web
-```
-
-The app will open in your browser at **http://localhost:8501**
-
-### 📁 File Structure
+### File Structure
 
 ```
 web/
-├── streamlit_app.py           # Main app (~500 lines) ✅
-├── requirements.txt           # Python dependencies ✅
-├── README.md                  # Documentation ✅
-├── Dockerfile                 # Container config ✅
-├── run.sh                     # Quick start script ✅
-├── demo_measurements.json     # Sample data ✅
-└── .streamlit/
-    └── config.toml           # Theme config ✅
+├── app.py                      # Focused map explorer (~450 lines) ✅
+├── demo_measurements.json      # Sample data
+├── requirements.txt            # Dependencies
+└── README.md                   # Usage docs
+
+start_monitoring.sh             # Launch both tools ✅
+scripts/train.py                # Training with TensorBoard enabled ✅
 ```
 
-### 🎨 Features Showcase
+### Features
 
-#### 1. Overview Page
-- System architecture diagram
-- Model status indicator
-- Scene metadata
-- Quick performance stats
+#### 1. Map Visualization (Streamlit)
+- **Green circles**: Ground truth UE positions
+- **Red X markers**: Model predictions (color = error magnitude)
+- **Red lines**: Error vectors connecting GT to prediction
+- **Orange ellipses**: Uncertainty regions (1-sigma)
+- Interactive zoom/pan with Plotly
 
-#### 2. Metrics Dashboard
-- **Error CDF Plot** - Positioning error distribution
-- **Percentile Table** - 50th, 67th, 90th, 95th percentiles
-- **Success Rates** - Performance @5m and @10m
-- **Model Comparison** - vs baselines
+#### 2. TensorBoard (Training Monitoring)
+- Real-time loss curves (total, coarse, fine)
+- Learning rate schedules
+- Gradient histograms and norms
+- Model computational graph
+- Hyperparameter tracking
 
-#### 3. Live Inference
-- **Input Options:**
-  - Generate demo data (adjustable time steps)
-  - Upload JSON file
-  - Manual entry (future)
-- **Visualization:**
-  - Measurement timeline by cell
-  - Predicted position heatmap
-  - Uncertainty estimates
-  - Top-K candidates
+#### 3. Error Analysis (Streamlit)
+- Error histograms
+- Cumulative distribution function (CDF)
+- Key percentiles: P50, P90, P95
+- Success rates at different thresholds
+- Per-sample inspection
 
-#### 4. Analysis Tools
-- **Feature Importance** - SHAP-style visualization
-- **Error by Scenario** - LoS, NLoS, Urban Canyon, etc.
-- **Ablation Studies** - Component impact analysis
+### Design Philosophy
 
-### 📊 Demo Data Format
+**"Do one thing and do it well"**
 
-Upload measurements as JSON:
+- Use PyTorch's built-in TensorBoard for training metrics
+- Use custom Streamlit app for spatial prediction exploration
+- No redundant pages with fake data
+- Focus on maximum intuition from visualization
 
-```json
-{
-  "scene_id": "demo_city_tile_01",
-  "measurements": [
-    {
-      "timestamp": 0.0,
-      "cell_id": 101,
-      "beam_id": 5,
-      "rsrp": -82.3,
-      "rsrq": -11.5,
-      "sinr": 14.2,
-      "cqi": 10,
-      "ri": 2,
-      "timing_advance": 98,
-      "path_gain": -78.5,
-      "toa": 0.856e-6,
-      "aoa_azimuth": 42.3
-    }
-  ]
-}
-```
+### Example Usage
 
-See `demo_measurements.json` for a complete example.
-
-### 🎯 Why Streamlit?
-
-| Aspect | Streamlit ✅ | React + FastAPI |
-|--------|-------------|-----------------|
-| **Code** | ~500 lines Python | ~2000+ lines (JS+Python) |
-| **Setup** | 5 minutes | 2-3 hours |
-| **Deployment** | 1 command | Docker Compose + nginx |
-| **Maintenance** | Single file | Multiple services |
-| **UI** | Beautiful default | Custom styling needed |
-| **Learning Curve** | Minimal | React + API design |
-
-### 🚀 Deployment Options
-
-#### 1. Local Development
+**Training with TensorBoard:**
 ```bash
-streamlit run streamlit_app.py
+python scripts/train.py --config configs/training_simple.yaml
+
+# In another terminal:
+tensorboard --logdir lightning_logs
 ```
 
-#### 2. Streamlit Cloud (Free!) ⭐
-1. Push to GitHub
-2. Visit [share.streamlit.io](https://share.streamlit.io)
-3. Connect repository
-4. One-click deploy
-5. Get free public URL!
-
-#### 3. Docker Container
+**Exploring Predictions:**
 ```bash
-docker build -t ue-localization-web .
-docker run -p 8501:8501 ue-localization-web
+streamlit run web/app.py
+
+# Select dataset from sidebar
+# Toggle predictions/uncertainty
+# Adjust number of samples
+# View interactive map
 ```
 
-#### 4. Custom Server
+### Technical Details
+
+**Data Loading:**
+- Loads zarr datasets from `data/processed/quick_test_dataset/`
+- Reads ground truth positions (ue_x, ue_y)
+- Extracts RT measurements for model input
+
+**Model Inference:**
+- Loads trained checkpoint from `checkpoints/best_model.pt`
+- Runs real predictions on selected samples
+- Extracts position, uncertainty, and heatmaps
+- Caches results for fast exploration
+
+**Visualization:**
+- Plotly for interactive maps
+- Color-coded error intensity
+- Uncertainty visualization with ellipses
+- Error distribution histograms and CDFs
+
+### Dependencies
+
 ```bash
-streamlit run streamlit_app.py \
-    --server.port 8080 \
-    --server.address 0.0.0.0 \
-    --server.headless true
+pip install tensorboard streamlit plotly numpy pandas torch pytorch-lightning zarr
 ```
 
-### ⚙️ Configuration
+### Status
 
-#### Custom Theme
-Edit `.streamlit/config.toml`:
-```toml
-[theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#262730"
-font = "sans serif"
-```
+- ✅ TensorBoard logging enabled in training
+- ✅ Focused Streamlit map explorer implemented
+- ✅ Real model inference on real data
+- ✅ Interactive error visualization
+- ✅ Uncertainty visualization
+- ✅ Launch script for both tools
+- ✅ Documentation updated
 
-#### Model Path
-Edit `streamlit_app.py` line ~58:
-```python
-model_path = Path("../checkpoints/best_model.pt")
-```
+### Archived
 
-#### Data Paths
-The app looks for:
-- `../data/test_metrics.json` - Performance metrics
-- `../data/scenes_metadata.json` - Scene information
-- `../checkpoints/best_model.pt` - Trained model
+- `web/streamlit_app.py` - Old 844-line multi-page app (removed)
+- Replaced with focused 450-line map explorer
 
-### 📈 Performance
-
-- **Cold Start:** ~2-3 seconds
-- **Inference:** 40-50ms (GPU) / 100-200ms (CPU)
-- **Page Load:** <1 second
-- **Memory:** ~500MB with model loaded
-
-### 🔧 Troubleshooting
-
-#### Model Not Found
-**Issue:** `Model not found at checkpoints/best_model.pt`
-
-**Solution:** The app automatically runs in demo mode without a trained model. To use your own model:
-```bash
-# Ensure model exists
-ls ../checkpoints/best_model.pt
-
-# Or train a model first
-cd ..
-python scripts/train.py
-```
-
-#### Import Errors
-**Issue:** `ModuleNotFoundError: No module named 'streamlit'`
-
-**Solution:**
-```bash
-pip install -r requirements.txt
-```
-
-#### Port Already in Use
-**Issue:** `Address already in use`
-
-**Solution:**
-```bash
-streamlit run streamlit_app.py --server.port 8502
-```
-
-### 🎓 Usage Examples
-
-#### Example 1: Upload Measurements
-1. Navigate to "🔍 Live Inference"
-2. Select "Upload JSON"
-3. Choose `demo_measurements.json`
-4. Click "Run Inference"
-5. View prediction heatmap and results
-
-#### Example 2: Generate Demo Data
-1. Navigate to "🔍 Live Inference"
-2. Select "Generate Demo Data"
-3. Adjust slider for number of time steps
-4. Click "Generate Measurements"
-5. Click "Run Inference"
-
-#### Example 3: View Metrics
-1. Navigate to "📊 Metrics Dashboard"
-2. See error CDF plot
-3. Check percentile table
-4. Compare with baselines
-
-### 🛠️ Customization
-
-#### Add Custom Page
-```python
-def show_custom_page():
-    st.header("Custom Analysis")
-    st.write("Your custom content here")
-    
-# Add to navigation
-if page == "Custom":
-    show_custom_page()
-```
-
-#### Add Custom Plot
-```python
-import plotly.graph_objects as go
-
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=[1,2,3], y=[4,5,6]))
-fig.update_layout(title="Custom Plot")
-st.plotly_chart(fig, use_container_width=True)
-```
-
-### 📝 Next Steps
-
-- [ ] Add real-time streaming mode
-- [ ] Integrate Folium for interactive maps
-- [ ] Add export to PDF functionality
-- [ ] Implement attention weight visualization
-- [ ] Add model comparison A/B testing
-
-### 📚 Documentation
-
-- **Main README:** `../README.md`
-- **Implementation Guide:** `../IMPLEMENTATION_GUIDE.md`
-- **Streamlit Docs:** https://docs.streamlit.io
-- **Plotly Docs:** https://plotly.com/python/
-
-### 🎖️ Milestone Summary
-
-**M5: Web-Based Visualization Interface** ✅
-
-- ✅ Streamlit app structure (4 pages)
-- ✅ Interactive visualizations (Plotly)
-- ✅ Live inference mode
-- ✅ Metrics dashboard
-- ✅ Analysis tools
-- ✅ Deployment configuration
-- ✅ Documentation
-
-**Status:** Complete and production-ready!
-
-**Lines of Code:** ~500 (vs 2000+ for React approach)
-
-**Development Time:** 2-3 hours (vs 2-3 weeks for full-stack)
-
-**Maintainability:** ⭐⭐⭐⭐⭐ Single Python file, minimal dependencies
-
----
-
-**Built with ❤️ using Streamlit** 🎈

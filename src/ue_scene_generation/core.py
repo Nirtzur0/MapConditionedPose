@@ -23,8 +23,8 @@ def _import_geo2sigmap(geo2sigmap_path: str):
     Returns:
         Tuple of (Scene class, ITU_MATERIALS)
     """
-    # Import from installed geo2sigmap package
-    from scene_generation.core import Scene, ITU_MATERIALS
+    # Import from migrated geo2sigmap module
+    from geo2sigmap import Scene, ITU_MATERIALS
     return Scene, ITU_MATERIALS
 
 

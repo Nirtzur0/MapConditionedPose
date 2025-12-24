@@ -51,6 +51,12 @@ class DataGenerationConfig:
     tx_power_dbm: float = 43.0
     noise_figure_db: float = 9.0
     
+    # Sionna RT parameters
+    use_mock_mode: bool = False  # Toggle between real and mock
+    max_depth: int = 5
+    num_samples: int = 1_000_000
+    enable_diffraction: bool = True
+    
     # Sampling strategy
     num_ue_per_tile: int = 100
     ue_height_range: Tuple[float, float] = (1.5, 1.5)  # Fixed pedestrian height
@@ -360,15 +366,176 @@ class MultiLayerDataGenerator:
         Returns:
             (rt_features, phy_features, mac_features)
         """
-        if SIONNA_AVAILABLE and scene is not None:
-            # Configure TX and RX in Sionna
-            # (Simplified: would need to set up transmitters/receivers properly)
+        if not SIONNA_AVAILABLE or scene is None:
+            logger.debug("Sionna not available or no scene, using mock simulation")
+            return self._simulate_mock(ue_position, site_positions, cell_ids)
+        
+        try:
+            # Setup receiver at UE position
+            rx = self._setup_receiver(scene, ue_position)
             
-            # For now, use mock mode
-            logger.debug("Using mock simulation (Sionna integration pending)")
+            # Compute propagation paths using Sionna RT
+            logger.debug(f"Computing paths for UE at {ue_position}")
+            paths = scene.compute_paths(
+                max_depth=getattr(self.config, 'max_depth', 5),
+                num_samples=getattr(self.config, 'num_samples', 10_000_000),
+                los=True,
+                reflection=True,
+                diffraction=getattr(self.config, 'enable_diffraction', True),
+                scattering=False,
+                edge_diffraction=False
+            )
+            
+            # Extract RT features
+            rt_features = self.rt_extractor.extract(paths)
+            
+            # Compute channel matrices
+            channel_freq = scene.compute_channel(paths)
+            channel_matrix = channel_freq.numpy() if hasattr(channel_freq, 'numpy') else None
+            
+            # Extract PHY features
+            phy_features = self.phy_extractor.extract(
+                rt_features=rt_features,
+                channel_matrix=channel_matrix,
+                interference_matrices=None
+            )
+            
+            # Extract SYS features
+            mac_features = self.mac_extractor.extract(
+                phy_features=phy_features,
+                ue_positions=ue_position[np.newaxis, :],
+                site_positions=site_positions,
+                cell_ids=cell_ids
+            )
+            
+            # Remove receiver for next iteration
+            scene.remove(rx)
+            
+            return rt_features, phy_features, mac_features
+            
+        except Exception as e:
+            logger.error(f"Sionna simulation failed: {e}")
+            logger.warning("Falling back to mock simulation")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
-        else:
-            return self._simulate_mock(ue_position, site_positions, cell_ids)
+    
+    def _load_sionna_scene(self, scene_path: Path) -> Any:
+        """
+        Load Mitsuba XML scene into Sionna RT.
+        
+        Args:
+            scene_path: Path to scene.xml (Mitsuba format)
+            
+        Returns:
+            Sionna RT Scene object
+        """
+        if not SIONNA_AVAILABLE:
+            logger.warning("Sionna not available, cannot load scene")
+            return None
+            
+        from sionna.rt import load_scene
+        
+        logger.info(f"Loading Sionna scene from {scene_path}")
+        scene = load_scene(str(scene_path))
+        
+        # Apply scene-level settings
+        scene.frequency = self.config.carrier_frequency_hz
+        scene.synthetic_array = True
+        
+        logger.info(f"Scene loaded: frequency={self.config.carrier_frequency_hz/1e9:.2f} GHz")
+        return scene
+    
+    def _setup_transmitters(self, scene: Any, 
+                           site_positions: np.ndarray,
+                           site_metadata: Dict) -> List[Any]:
+        """
+        Setup cell site transmitters with antenna arrays.
+        
+        Args:
+            scene: Sionna RT Scene
+            site_positions: [num_sites, 3] positions (x, y, z) in meters
+            site_metadata: Site configuration
+            
+        Returns:
+            List of Sionna Transmitter objects
+        """
+        if not SIONNA_AVAILABLE or scene is None:
+            return []
+            
+        from sionna.rt import Transmitter, PlanarArray
+        
+        transmitters = []
+        
+        for site_idx, pos in enumerate(site_positions):
+            # Create antenna array based on frequency
+            if self.config.carrier_frequency_hz < 10e9:
+                # Sub-6 GHz: 8x8 array, vertical polarization
+                array = PlanarArray(
+                    num_rows=8, num_cols=8,
+                    vertical_spacing=0.5, horizontal_spacing=0.5,
+                    pattern="iso", polarization="V"
+                )
+            else:
+                # mmWave: 16x16 array, vertical polarization
+                array = PlanarArray(
+                    num_rows=16, num_cols=16,
+                    vertical_spacing=0.5, horizontal_spacing=0.5,
+                    pattern="iso", polarization="V"
+                )
+            
+            
+            # Get site-specific metadata
+            if isinstance(site_metadata, list) and site_idx < len(site_metadata):
+                meta = site_metadata[site_idx]
+                azimuth = meta.get('orientation', [0, 0, 0])[0] if 'orientation' in meta else 0.0
+                downtilt = meta.get('orientation', [0, 10, 0])[1] if 'orientation' in meta else 10.0
+            else:
+                azimuth = site_metadata.get(f'site_{site_idx}_azimuth', 0.0)
+                downtilt = site_metadata.get(f'site_{site_idx}_downtilt', 10.0)
+            
+            tx = Transmitter(
+                name=f"BS_{site_idx}",
+                position=pos if isinstance(pos, list) else pos.tolist(),
+                orientation=[azimuth, downtilt, 0.0],
+                antenna_array=array
+            )
+            
+            scene.add(tx)
+            transmitters.append(tx)
+            logger.debug(f"Added transmitter BS_{site_idx} at {pos}")
+        
+        return transmitters
+    
+    def _setup_receiver(self, scene: Any, ue_position: np.ndarray) -> Any:
+        """
+        Setup UE receiver at given position.
+        
+        Args:
+            scene: Sionna RT Scene
+            ue_position: [3] position in meters
+            
+        Returns:
+            Sionna Receiver object
+        """
+        if not SIONNA_AVAILABLE or scene is None:
+            return None
+            
+        from sionna.rt import Receiver, PlanarArray
+        
+        ue_array = PlanarArray(
+            num_rows=1, num_cols=2,
+            vertical_spacing=0.5, horizontal_spacing=0.5,
+            pattern="iso", polarization="V"
+        )
+        
+        rx = Receiver(
+            name="UE",
+            position=ue_position.tolist(),
+            orientation=[0.0, 0.0, 0.0],
+            antenna=ue_array
+        )
+        
+        scene.add(rx)
+        return rx
     
     def _simulate_mock(self,
                       ue_position: np.ndarray,

@@ -185,7 +185,7 @@ This is what happens when you use the Streamlit app!
 
 #### Step 1: User Uploads Measurements
 ```python
-# In Streamlit app (web/streamlit_app.py)
+# In Streamlit app (web/app.py)
 
 # User either:
 # - Uploads demo_measurements.json

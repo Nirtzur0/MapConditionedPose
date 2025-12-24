@@ -26,13 +26,19 @@ numcodecs>=0.12.0 # Compression codecs for Zarr
 pandas>=2.0.0
 
 # =============================================================================
-# Geo2SigMap Dependencies (Scene Generation)
+# Scene Generation Dependencies (Migrated from Geo2SigMap)
 # =============================================================================
 osmnx>=2.0.0      # OpenStreetMap data
 shapely>=2.0.0    # Geometric operations
 rasterio>=1.3.0   # Geospatial raster data
 open3d>=0.17.0    # 3D geometry processing
 triangle          # Delaunay triangulation
+pyvista>=0.43.0   # 3D visualization and mesh processing
+geopandas>=0.14.0 # Geospatial data processing
+tqdm>=4.65.0      # Progress bars
+requests>=2.31.0  # HTTP requests
+scipy>=1.11.0     # Scientific computing (for interpolation)
+importlib_resources>=6.0.0  # Resource file access
 
 # =============================================================================
 # Experiment Tracking & Logging
@@ -68,8 +74,8 @@ reportlab>=4.0.0  # PDF export
 # 1. Generate training data from scratch (M2)
 # 2. Generate radio maps for physics loss (M4)
 #
-# sionna>=0.15.0
-# tensorflow>=2.13.0  # Required by Sionna
+sionna>=0.15.0
+tensorflow>=2.13.0  # Required by Sionna
 #
 # Note: The system works in mock mode without Sionna for testing
 # Precomputed data can be used for training without installing Sionna

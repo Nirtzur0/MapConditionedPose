@@ -4,14 +4,19 @@ Training Script for UE Localization Model
 Usage:
     python scripts/train.py --config configs/model.yaml
     python scripts/train.py --config configs/model.yaml --resume checkpoints/last.ckpt
+    
+View training:
+    Comet ML dashboard: https://www.comet.com/
+    (Set COMET_API_KEY environment variable)
 """
 
 import argparse
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import WandbLogger, CometLogger
 from pathlib import Path
 import yaml
+import os
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -70,7 +75,7 @@ def main():
     # Checkpointing
     checkpoint_callback = ModelCheckpoint(
         dirpath='checkpoints/',
-        filename='model-{epoch:02d}-{val_median_error:.2f}m',
+        filename='model-{epoch:02d}-{train_loss_epoch:.2f}',
         monitor=config['infrastructure']['checkpoint']['monitor'],
         mode=config['infrastructure']['checkpoint']['mode'],
         save_top_k=config['infrastructure']['checkpoint']['save_top_k'],
@@ -93,17 +98,45 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
     
-    # Setup logger
-    logger = None
-    if config['infrastructure']['logging']['use_wandb']:
+    # Setup loggers
+    loggers = []
+    
+    # Comet ML (primary logger)
+    if config['infrastructure']['logging'].get('use_comet', False):
+        comet_api_key = os.environ.get('COMET_API_KEY')
+        if comet_api_key:
+            project = config['infrastructure']['logging'].get('project', 'ue-localization')
+            comet_logger = CometLogger(
+                api_key=comet_api_key,
+                project_name=project,
+                experiment_name=args.run_name,
+                workspace=os.environ.get('COMET_WORKSPACE'),
+            )
+            loggers.append(comet_logger)
+            print(f"\n📊 Comet ML logging enabled")
+            print(f"   Project: {project}")
+            print(f"   View at: https://www.comet.com/{os.environ.get('COMET_WORKSPACE', 'your-workspace')}/{project}\n")
+        else:
+            print("\n⚠️  Comet ML enabled in config but COMET_API_KEY not found")
+            print("   Get your API key from: https://www.comet.com/api/my/settings/")
+            print("   Set it with: export COMET_API_KEY=your-key-here")
+            raise ValueError("COMET_API_KEY required when use_comet=true")
+    
+    # WandB (optional alternative)
+    if config['infrastructure']['logging'].get('use_wandb', False):
         project = args.wandb_project or config['infrastructure']['logging']['project']
-        logger = WandbLogger(
+        wandb_logger = WandbLogger(
             project=project,
             name=args.run_name,
-            log_model=False,  # Don't upload checkpoints automatically
+            log_model=False,
         )
-        # Log config
-        logger.experiment.config.update(config)
+        wandb_logger.experiment.config.update(config)
+        loggers.append(wandb_logger)
+        print(f"📈 WandB logging to project: {project}\n")
+    
+    # Ensure at least one logger
+    if not loggers:
+        raise ValueError("No loggers configured. Enable use_comet or use_wandb in config.")
     
     # Create trainer
     trainer = pl.Trainer(
@@ -112,7 +145,7 @@ def main():
         devices=config['infrastructure']['devices'],
         precision=config['infrastructure']['precision'],
         callbacks=callbacks,
-        logger=logger,
+        logger=loggers,
         gradient_clip_val=config['training']['gradient_clip'],
         log_every_n_steps=config['infrastructure']['logging']['log_every_n_steps'],
         enable_progress_bar=True,

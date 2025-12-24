@@ -90,12 +90,12 @@ infrastructure:
   devices: 1
   precision: "32"
   checkpoint:
-    monitor: "val_median_error"
+    monitor: "train_loss_epoch"
     mode: "min"
     save_top_k: 1
   early_stopping:
-    monitor: "val_median_error"
-    patience: 5
+    monitor: "train_loss_epoch"
+    patience: 10
     mode: "min"
   logging:
     use_wandb: false

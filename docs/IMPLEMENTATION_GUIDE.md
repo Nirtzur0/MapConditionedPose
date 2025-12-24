@@ -465,7 +465,7 @@ Integrate physics-consistency loss using precomputed Sionna radio maps with diff
 
 ---
 
-### Milestone 5: Web-Based Visualization Interface (Streamlit)
+### Milestone 5: Visualization Tools (TensorBoard + Streamlit)
 
 **Duration:** 2-3 weeks  
 **Status:** ✅ Complete
@@ -534,7 +534,7 @@ zarr>=2.16.0               # Data loading
 #### Implementation
 
 **Single File App:**
-`web/streamlit_app.py` (~500 lines, fully functional)
+`web/app.py` (~450 lines, focused map explorer)
 
 **Key Features:**
 ```python
@@ -606,7 +606,7 @@ streamlit run streamlit_app.py \
 **Files Created:**
 ```
 web/
-├── streamlit_app.py          # Main application (~500 lines)
+├── app.py                    # Focused map explorer (~450 lines)
 ├── requirements.txt          # Python dependencies
 ├── README.md                 # Usage documentation
 ├── Dockerfile                # Container deployment

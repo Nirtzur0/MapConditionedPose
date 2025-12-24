@@ -130,6 +130,9 @@ class ZarrDatasetWriter:
         # Write data
         end_idx = self.current_idx + num_samples
         
+        # Resize all arrays to accommodate new data
+        self._resize_arrays(end_idx)
+        
         # Positions
         if 'positions' in scene_data:
             pos = scene_data['positions']
@@ -225,6 +228,23 @@ class ZarrDatasetWriter:
             
             self._create_array(key, dtype=dtype, shape=shape)
     
+    def _resize_arrays(self, new_size: int):
+        """Resize all arrays to accommodate more data."""
+        def resize_group(group):
+            for key in group.keys():
+                item = group[key]
+                if isinstance(item, zarr.core.Array):
+                    # Resize first dimension
+                    current_shape = list(item.shape)
+                    if current_shape[0] < new_size:
+                        current_shape[0] = new_size
+                        item.resize(tuple(current_shape))
+                elif hasattr(item, 'keys'):
+                    # Recursively resize nested groups
+                    resize_group(item)
+        
+        resize_group(self.store)
+    
     def _create_array(self, 
                      name: str,
                      dtype: Any,
@@ -249,14 +269,35 @@ class ZarrDatasetWriter:
         else:
             chunks = tuple([self.chunk_size] + list(shape[1:]))
         
-        # Create array with zarr v3 simplified API
-        # Note: zarr v3 has different compression API, using basic for compatibility
-        arr = self.store.create_array(
+        # Get compressor for zarr v2
+        compressor = None
+        if self.compression and NUMCODECS_AVAILABLE:
+            if self.compression == 'blosc':
+                compressor = Blosc(cname='lz4', clevel=self.compression_level, shuffle=Blosc.BITSHUFFLE)
+            elif self.compression == 'gzip':
+                compressor = GZip(level=self.compression_level)
+            elif self.compression == 'lz4':
+                compressor = LZ4(acceleration=1)
+        
+        # Create resizable array with zarr v2 API
+        # Set maxshape to None for unlimited growth along first dimension
+        if len(shape) == 1:
+            maxshape = (None,)
+        elif len(shape) == 2:
+            maxshape = (None, shape[1])
+        elif len(shape) == 3:
+            maxshape = (None, shape[1], shape[2])
+        else:
+            maxshape = tuple([None] + list(shape[1:]))
+        
+        arr = self.store.create_dataset(
             name,
             shape=shape,
+            maxshape=maxshape,
             chunks=chunks,
             dtype=dtype,
             fill_value=fill_value if fill_value is not None else 0,
+            compressor=compressor,
             overwrite=True,
         )
         

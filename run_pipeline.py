@@ -24,13 +24,16 @@ from datetime import datetime
 import json
 import shutil
 
+# Create logs directory if it doesn't exist
+Path("logs").mkdir(exist_ok=True)
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+        logging.FileHandler(f'logs/pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -147,8 +150,8 @@ class PipelineOrchestrator:
             "--output-dir", str(self.dataset_dir),
             "--carrier-freq", str(self.args.carrier_freq),
             "--bandwidth", str(self.args.bandwidth),
-            "--num-ues", str(self.args.num_ues),
-            "--num-trajectories", str(self.args.num_trajectories),
+            "--num-ue", str(self.args.num_ues),
+            "--num-reports", str(self.args.num_trajectories // 10),  # Convert trajectories to reports
         ]
         
         if self.args.num_scenes:
@@ -156,8 +159,8 @@ class PipelineOrchestrator:
             
         self.run_command(cmd, "Dataset Generation")
         
-        # Verify dataset was created
-        zarr_files = list(self.dataset_dir.glob("*.zarr"))
+        # Verify dataset was created - use the most recent one
+        zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not zarr_files:
             raise RuntimeError(f"No dataset created in: {self.dataset_dir}")
             
@@ -205,15 +208,37 @@ class PipelineOrchestrator:
             import yaml
             config = yaml.safe_load(f)
         
-        # Update with pipeline parameters
-        config['training']['data']['train_path'] = str(self.dataset_path)
+        # Update dataset configuration with all required fields
+        if 'dataset' not in config:
+            config['dataset'] = {}
+        config['dataset']['zarr_path'] = str(self.dataset_path)
+        config['dataset']['map_resolution'] = 2.0  # 2 meters per pixel
+        config['dataset']['scene_extent'] = 856  # Scene size in meters
+        config['dataset']['normalize_features'] = True
+        config['dataset']['handle_missing_values'] = 'mask'
+        
+        # Update training parameters
+        if 'training' not in config:
+            config['training'] = {}
+        if 'data' not in config['training']:
+            config['training']['data'] = {}
+            
         config['training']['data']['batch_size'] = self.args.batch_size
-        config['training']['data']['num_workers'] = self.args.num_workers
+        config['training']['data']['num_workers'] = 0  # Disable multiprocessing for Zarr v3 compatibility
         config['training']['epochs'] = self.args.epochs
         config['training']['num_epochs'] = self.args.epochs
         config['training']['learning_rate'] = self.args.learning_rate
+        config['training']['batch_size'] = self.args.batch_size
         
+        # Update infrastructure settings
+        if 'infrastructure' not in config:
+            config['infrastructure'] = {}
+        config['infrastructure']['num_workers'] = 0  # Disable multiprocessing for Zarr v3 compatibility
+        
+        # Update wandb settings
         if self.args.wandb:
+            if 'wandb' not in config:
+                config['wandb'] = {}
             config['wandb']['mode'] = 'online'
         
         # Save config

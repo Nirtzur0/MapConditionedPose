@@ -124,19 +124,24 @@ class RadioLocalizationDataset(Dataset):
                 - cell_grid: [1] ground truth coarse grid cell index
         """
         # Get actual index in Zarr store
-        zarr_idx = self.indices[idx]
+        zarr_idx = int(self.indices[idx])  # Convert numpy int64 to Python int
         
-        # Load ground truth position
-        position = torch.tensor(
-            self.store['positions'][zarr_idx],
-            dtype=torch.float32
-        )  # [2] or [3] if including height
+        # Load ground truth position from individual arrays
+        ue_x = float(self.store['positions/ue_x'][zarr_idx])
+        ue_y = float(self.store['positions/ue_y'][zarr_idx])
+        position = torch.tensor([ue_x, ue_y], dtype=torch.float32)
         
         # Convert to grid cell for coarse supervision
         grid_size = 32  # From config
         cell_size = self.scene_extent / grid_size
-        grid_x = int(position[0] / cell_size)
-        grid_y = int(position[1] / cell_size)
+        # Clip positions to valid range [0, scene_extent]
+        clamped_x = max(0, min(position[0].item(), self.scene_extent - 1))
+        clamped_y = max(0, min(position[1].item(), self.scene_extent - 1))
+        grid_x = int(clamped_x / cell_size)
+        grid_y = int(clamped_y / cell_size)
+        # Ensure grid indices are within bounds
+        grid_x = max(0, min(grid_x, grid_size - 1))
+        grid_y = max(0, min(grid_y, grid_size - 1))
         cell_grid = torch.tensor(
             grid_y * grid_size + grid_x,
             dtype=torch.long
@@ -145,9 +150,27 @@ class RadioLocalizationDataset(Dataset):
         # Load measurement sequence
         measurements = self._load_measurements(zarr_idx)
         
-        # Load maps
+        # Load maps and resize to model's expected dimensions (256x256)
         radio_map = self._load_radio_map(zarr_idx)
         osm_map = self._load_osm_map(zarr_idx)
+        
+        # Resize maps if needed (model expects 256x256)
+        target_size = 256
+        if radio_map.shape[1] != target_size or radio_map.shape[2] != target_size:
+            radio_map = torch.nn.functional.interpolate(
+                radio_map.unsqueeze(0),
+                size=(target_size, target_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+        
+        if osm_map.shape[1] != target_size or osm_map.shape[2] != target_size:
+            osm_map = torch.nn.functional.interpolate(
+                osm_map.unsqueeze(0),
+                size=(target_size, target_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
         
         return {
             'measurements': measurements,
@@ -159,103 +182,115 @@ class RadioLocalizationDataset(Dataset):
     
     def _load_measurements(self, idx: int) -> Dict[str, torch.Tensor]:
         """Load temporal measurement sequence."""
+        zarr_idx = idx  # Use zarr_idx consistently
+        
         # RT layer features
         rt_data = {}
-        if 'rt_layer' in self.store:
-            rt_group = self.store['rt_layer']
+        if 'rt' in self.store:
+            rt_group = self.store['rt']
             rt_features = []
             
-            # Collect all RT features
-            if 'path_gain' in rt_group:
-                rt_features.append(rt_group['path_gain'][idx])
-            if 'toa' in rt_group:
-                rt_features.append(rt_group['toa'][idx])
-            if 'aoa_azimuth' in rt_group:
-                rt_features.append(rt_group['aoa_azimuth'][idx])
-            if 'aoa_zenith' in rt_group:
-                rt_features.append(rt_group['aoa_zenith'][idx])
-            if 'aod_azimuth' in rt_group:
-                rt_features.append(rt_group['aod_azimuth'][idx])
-            if 'aod_zenith' in rt_group:
-                rt_features.append(rt_group['aod_zenith'][idx])
-            if 'doppler' in rt_group:
-                rt_features.append(rt_group['doppler'][idx])
+            # Collect all RT features based on actual dataset structure
+            # The generator creates: path_gains, path_delays, path_aoa/aod_azimuth/elevation, path_doppler, rms_delay_spread, k_factor, num_paths
+            if 'path_gains' in rt_group:
+                gains = np.abs(rt_group['path_gains'][zarr_idx])  # Take magnitude of complex gains
+                rt_features.append(np.mean(gains))  # Average gain
+                
+            if 'path_delays' in rt_group:
+                delays = rt_group['path_delays'][zarr_idx]
+                rt_features.append(np.mean(delays))  # Average delay
+                
+            if 'path_aoa_azimuth' in rt_group:
+                rt_features.append(np.mean(rt_group['path_aoa_azimuth'][zarr_idx]))
+                
+            if 'path_aoa_elevation' in rt_group:
+                rt_features.append(np.mean(rt_group['path_aoa_elevation'][zarr_idx]))
+                
+            if 'path_aod_azimuth' in rt_group:
+                rt_features.append(np.mean(rt_group['path_aod_azimuth'][zarr_idx]))
+                
+            if 'path_aod_elevation' in rt_group:
+                rt_features.append(np.mean(rt_group['path_aod_elevation'][zarr_idx]))
+                
+            if 'path_doppler' in rt_group:
+                rt_features.append(np.mean(rt_group['path_doppler'][zarr_idx]))
+                
             if 'rms_delay_spread' in rt_group:
-                rt_features.append(rt_group['rms_delay_spread'][idx])
+                rt_features.append(rt_group['rms_delay_spread'][zarr_idx])
+                
+            if 'k_factor' in rt_group:
+                rt_features.append(rt_group['k_factor'][zarr_idx])
+                
+            if 'num_paths' in rt_group:
+                rt_features.append(float(rt_group['num_paths'][zarr_idx]))
             
             if rt_features:
                 rt_data['features'] = torch.tensor(
-                    np.stack(rt_features, axis=-1),
+                    np.array(rt_features, dtype=np.float32),
                     dtype=torch.float32
-                )
+                ).unsqueeze(0)  # Add sequence dimension [1, num_features]
         
         # PHY/FAPI layer features
         phy_data = {}
-        if 'phy_fapi_layer' in self.store:
-            phy_group = self.store['phy_fapi_layer']
+        if 'phy_fapi' in self.store:
+            phy_group = self.store['phy_fapi']
             phy_features = []
             
-            if 'rsrp_serving' in phy_group:
-                phy_features.append(phy_group['rsrp_serving'][idx])
-            if 'rsrq_serving' in phy_group:
-                phy_features.append(phy_group['rsrq_serving'][idx])
+            # Load features based on actual dataset structure
+            if 'rsrp' in phy_group:
+                rsrp = phy_group['rsrp'][zarr_idx]
+                phy_features.append(np.mean(rsrp) if rsrp.size > 0 else -120.0)
+                
+            if 'rsrq' in phy_group:
+                rsrq = phy_group['rsrq'][zarr_idx]
+                phy_features.append(np.mean(rsrq) if rsrq.size > 0 else -20.0)
+                
             if 'sinr' in phy_group:
-                phy_features.append(phy_group['sinr'][idx])
+                sinr = phy_group['sinr'][zarr_idx]
+                phy_features.append(np.mean(sinr) if sinr.size > 0 else -10.0)
+                
             if 'cqi' in phy_group:
-                phy_features.append(phy_group['cqi'][idx])
+                cqi = phy_group['cqi'][zarr_idx]
+                phy_features.append(np.mean(cqi) if cqi.size > 0 else 7.0)
+                
             if 'ri' in phy_group:
-                phy_features.append(phy_group['ri'][idx])
+                ri = phy_group['ri'][zarr_idx]
+                phy_features.append(np.mean(ri) if ri.size > 0 else 1.0)
+                
             if 'pmi' in phy_group:
-                phy_features.append(phy_group['pmi'][idx])
-            
-            # L1-RSRP per beam (may be variable length)
-            if 'l1_rsrp_beams' in phy_group:
-                beams = phy_group['l1_rsrp_beams'][idx]
-                # Pad or truncate to fixed length (e.g., 8 beams)
-                max_beams = 8
-                if len(beams) < max_beams:
-                    beams = np.pad(beams, (0, max_beams - len(beams)), constant_values=-np.inf)
-                else:
-                    beams = beams[:max_beams]
-                phy_features.extend(beams)
+                pmi = phy_group['pmi'][zarr_idx]
+                phy_features.append(np.mean(pmi) if pmi.size > 0 else 0.0)
             
             if phy_features:
                 phy_data['features'] = torch.tensor(
-                    np.array(phy_features),
+                    np.array(phy_features, dtype=np.float32),
                     dtype=torch.float32
                 )
         
         # MAC/RRC layer features
         mac_data = {}
-        if 'mac_rrc_layer' in self.store:
-            mac_group = self.store['mac_rrc_layer']
+        if 'mac_rrc' in self.store:
+            mac_group = self.store['mac_rrc']
             mac_features = []
             
-            if 'timing_advance' in mac_group:
-                mac_features.append(mac_group['timing_advance'][idx])
-            if 'phr' in mac_group:
-                mac_features.append(mac_group['phr'][idx])
             if 'serving_cell_id' in mac_group:
-                mac_data['serving_cell_id'] = torch.tensor(
-                    mac_group['serving_cell_id'][idx],
-                    dtype=torch.long
-                )
+                mac_features.append(float(mac_group['serving_cell_id'][zarr_idx]))
+                
+            if 'timing_advance' in mac_group:
+                mac_features.append(float(mac_group['timing_advance'][zarr_idx]))
+                
+            if 'phr' in mac_group:
+                mac_features.append(float(mac_group['phr'][zarr_idx]))
+                
             if 'throughput' in mac_group:
-                mac_features.append(mac_group['throughput'][idx])
+                mac_features.append(float(mac_group['throughput'][zarr_idx]))
+                
             if 'bler' in mac_group:
-                mac_features.append(mac_group['bler'][idx])
-            
-            # Neighbor cell IDs and RSRP (variable length)
-            if 'neighbor_cells' in mac_group:
-                neighbors = mac_group['neighbor_cells'][idx]
-                mac_data['neighbor_cell_ids'] = torch.tensor(
-                    neighbors,
-                    dtype=torch.long
-                )
+                mac_features.append(float(mac_group['bler'][zarr_idx]))
             
             if mac_features:
                 mac_data['features'] = torch.tensor(
-                    np.array(mac_features),
+                    np.array(mac_features, dtype=np.float32),
                     dtype=torch.float32
                 )
         
@@ -284,24 +319,28 @@ class RadioLocalizationDataset(Dataset):
         # Create mask (True = valid, False = missing)
         seq_len = max(
             rt_data.get('features', torch.empty(0, 0)).shape[0],
-            phy_data.get('features', torch.empty(0)).shape[0],
             1
         )
         mask = torch.ones(seq_len, dtype=torch.bool)
         
         # Handle missing values based on strategy
         if self.handle_missing == 'mask':
-            # NaN detection
+            # NaN detection for sequence data only (rt_features)
             if 'features' in rt_data:
                 mask &= ~torch.isnan(rt_data['features']).any(dim=-1)
-            if 'features' in phy_data:
-                mask &= ~torch.isnan(phy_data['features'])
+            # For non-sequence data (phy, mac), just zero out NaNs
+            if 'features' in phy_data and 'features' in phy_data:
+                phy_data['features'] = torch.nan_to_num(phy_data['features'], nan=0.0)
+            if 'features' in mac_data:
+                mac_data['features'] = torch.nan_to_num(mac_data['features'], nan=0.0)
         elif self.handle_missing == 'zero':
             # Replace NaN with zero
             if 'features' in rt_data:
                 rt_data['features'] = torch.nan_to_num(rt_data['features'], nan=0.0)
             if 'features' in phy_data:
                 phy_data['features'] = torch.nan_to_num(phy_data['features'], nan=0.0)
+            if 'features' in mac_data:
+                mac_data['features'] = torch.nan_to_num(mac_data['features'], nan=0.0)
         
         # Normalize if requested
         if self.normalize and self.norm_stats:
@@ -309,10 +348,36 @@ class RadioLocalizationDataset(Dataset):
             phy_data = self._normalize_features(phy_data, 'phy')
             mac_data = self._normalize_features(mac_data, 'mac')
         
+        # Pad/truncate features to match model expectations
+        # Model expects: rt=10, phy=8, mac=6 (from training_simple.yaml)
+        rt_features = rt_data.get('features', torch.zeros(seq_len, 10))
+        if rt_features.shape[-1] < 10:
+            # Pad to 10 features
+            padding = torch.zeros(rt_features.shape[0], 10 - rt_features.shape[-1])
+            rt_features = torch.cat([rt_features, padding], dim=-1)
+        elif rt_features.shape[-1] > 10:
+            rt_features = rt_features[..., :10]
+            
+        phy_features = phy_data.get('features', torch.zeros(8))
+        if len(phy_features) < 8:
+            # Pad to 8 features
+            padding = torch.zeros(8 - len(phy_features))
+            phy_features = torch.cat([phy_features, padding], dim=0)
+        elif len(phy_features) > 8:
+            phy_features = phy_features[:8]
+            
+        mac_features = mac_data.get('features', torch.zeros(6))
+        if len(mac_features) < 6:
+            # Pad to 6 features
+            padding = torch.zeros(6 - len(mac_features))
+            mac_features = torch.cat([mac_features, padding], dim=0)
+        elif len(mac_features) > 6:
+            mac_features = mac_features[:6]
+        
         return {
-            'rt_features': rt_data.get('features', torch.zeros(seq_len, 8)),
-            'phy_features': phy_data.get('features', torch.zeros(10)),
-            'mac_features': mac_data.get('features', torch.zeros(6)),
+            'rt_features': rt_features,
+            'phy_features': phy_features,
+            'mac_features': mac_features,
             'cell_ids': cell_ids if len(cell_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'beam_ids': beam_ids if len(beam_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'timestamps': timestamps if len(timestamps) > 0 else torch.arange(seq_len, dtype=torch.float32),
@@ -320,11 +385,11 @@ class RadioLocalizationDataset(Dataset):
         }
     
     def _load_radio_map(self, idx: int) -> torch.Tensor:
-        """Load precomputed Sionna radio map [5, H, W]."""
+        """Load precomputed Sionna radio map [7, H, W] (padded if needed)."""
         if 'radio_maps' not in self.store:
-            # Return dummy map if not available
+            # Return dummy map if not available - pad to 7 channels
             H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(5, H, W, dtype=torch.float32)
+            return torch.zeros(7, H, W, dtype=torch.float32)
         
         # Load all radio map channels
         radio_map = self.store['radio_maps'][idx]  # [H, W, C] or [C, H, W]
@@ -337,21 +402,26 @@ class RadioLocalizationDataset(Dataset):
         return radio_map[:5]  # path_gain, toa, snr, sinr, throughput
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
-        """Load OSM building/geometry map [4, H, W]."""
+        """Load OSM building/geometry map [5, H, W] (padded if needed)."""
         if 'osm_maps' not in self.store:
-            # Return dummy map if not available
+            # Return dummy map if not available - pad to 5 channels
             H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(4, H, W, dtype=torch.float32)
+            return torch.zeros(5, H, W, dtype=torch.float32)
         
         # Load OSM map channels
         osm_map = self.store['osm_maps'][idx]  # [H, W, C] or [C, H, W]
         osm_map = torch.tensor(osm_map, dtype=torch.float32)
         
         # Ensure channel-first format [C, H, W]
-        if osm_map.shape[-1] <= 4:  # Likely [H, W, C]
+        if osm_map.shape[-1] <= 5:  # Likely [H, W, C]
             osm_map = osm_map.permute(2, 0, 1)
         
-        return osm_map[:4]  # height, material, footprint, road
+        # Pad to 5 channels if needed
+        if osm_map.shape[0] < 5:
+            padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
+            osm_map = torch.cat([osm_map, padding], dim=0)
+        
+        return osm_map[:5]  # height, material, footprint, road, terrain
     
     def _normalize_features(
         self,

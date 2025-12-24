@@ -199,67 +199,99 @@ class RTFeatureExtractor:
             logger.warning("Sionna not available - returning mock RT features")
             return self._extract_mock()
         
-        # Extract path-level features from Sionna Paths
-        # paths.a: [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, max_num_paths, num_time_steps]
-        # paths.tau: delays [batch_size, num_rx, num_tx, max_num_paths]
+        try:
+            # Extract path-level features from Sionna Paths
+            # Convert TensorFlow tensors to numpy
+            import tensorflow as tf
+            
+            # Complex path gains: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+            path_gains_complex = paths.a.numpy() if hasattr(paths.a, 'numpy') else np.array(paths.a)
+            
+            # Path delays: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]
+            path_delays = paths.tau.numpy() if hasattr(paths.tau, 'numpy') else np.array(paths.tau)
+            
+            # Angles (in radians)
+            path_aoa_azimuth = paths.phi_r.numpy() if hasattr(paths.phi_r, 'numpy') else np.array(paths.phi_r)
+            path_aoa_elevation = paths.theta_r.numpy() if hasattr(paths.theta_r, 'numpy') else np.array(paths.theta_r)
+            path_aod_azimuth = paths.phi_t.numpy() if hasattr(paths.phi_t, 'numpy') else np.array(paths.phi_t)
+            path_aod_elevation = paths.theta_t.numpy() if hasattr(paths.theta_t, 'numpy') else np.array(paths.theta_t)
+            
+            # Doppler (if available)
+            if hasattr(paths, 'doppler'):
+                path_doppler = paths.doppler.numpy() if hasattr(paths.doppler, 'numpy') else np.array(paths.doppler)
+            else:
+                path_doppler = np.zeros_like(path_delays)
+            
+            # Average over antennas to get per-path gains
+            # From [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, time_steps]
+            # To [batch, num_rx, num_paths]
+            path_gains_magnitude = np.abs(path_gains_complex)
+            
+            # Handle different tensor shapes (static vs time-varying)
+            if len(path_gains_magnitude.shape) == 7:  # Has time dimension
+                path_gains_avg = np.mean(path_gains_magnitude[..., 0], axis=(2, 4))  # Take first time step
+            elif len(path_gains_magnitude.shape) == 6:  # No time dimension
+                path_gains_avg = np.mean(path_gains_magnitude, axis=(2, 4))
+            else:
+                logger.warning(f"Unexpected path gains shape: {path_gains_magnitude.shape}")
+                path_gains_avg = path_gains_magnitude
+            
+            # Average delays and angles over antennas
+            if len(path_delays.shape) > 4:
+                path_delays_avg = np.mean(path_delays, axis=(2, 4))
+                path_aoa_az_avg = np.mean(path_aoa_azimuth, axis=(2, 4))
+                path_aoa_el_avg = np.mean(path_aoa_elevation, axis=(2, 4))
+                path_aod_az_avg = np.mean(path_aod_azimuth, axis=(2, 4))
+                path_aod_el_avg = np.mean(path_aod_elevation, axis=(2, 4))
+                path_doppler_avg = np.mean(path_doppler, axis=(2, 4))
+            else:
+                path_delays_avg = path_delays
+                path_aoa_az_avg = path_aoa_azimuth
+                path_aoa_el_avg = path_aoa_elevation
+                path_aod_az_avg = path_aod_azimuth
+                path_aod_el_avg = path_aod_elevation
+                path_doppler_avg = path_doppler
+            
+            # Ensure we have the right final shape: [batch, num_rx, num_paths]
+            # Sometimes need to average over num_tx dimension
+            if len(path_gains_avg.shape) > 3:
+                path_gains_avg = np.mean(path_gains_avg, axis=2)
+                path_delays_avg = np.mean(path_delays_avg, axis=2)
+                path_aoa_az_avg = np.mean(path_aoa_az_avg, axis=2)
+                path_aoa_el_avg = np.mean(path_aoa_el_avg, axis=2)
+                path_aod_az_avg = np.mean(path_aod_az_avg, axis=2)
+                path_aod_el_avg = np.mean(path_aod_el_avg, axis=2)
+                path_doppler_avg = np.mean(path_doppler_avg, axis=2)
+            
+            # Compute aggregate statistics
+            rms_delay_spread = self._compute_rms_ds(path_gains_avg, path_delays_avg)
+            
+            k_factor = None
+            if self.compute_k_factor:
+                k_factor = self._compute_k_factor(path_gains_avg)
+            
+            # Count valid paths (non-zero gain)
+            num_paths = np.sum(np.abs(path_gains_avg) > 1e-10, axis=-1)
+            
+            return RTLayerFeatures(
+                path_gains=path_gains_avg,
+                path_delays=path_delays_avg,
+                path_aoa_azimuth=path_aoa_az_avg,
+                path_aoa_elevation=path_aoa_el_avg,
+                path_aod_azimuth=path_aod_az_avg,
+                path_aod_elevation=path_aod_el_avg,
+                path_doppler=path_doppler_avg,
+                rms_delay_spread=rms_delay_spread,
+                k_factor=k_factor,
+                num_paths=num_paths,
+                carrier_frequency_hz=self.carrier_frequency_hz,
+                bandwidth_hz=self.bandwidth_hz,
+            )
         
-        # Average over antennas to get per-path gains
-        path_gains = paths.a.numpy()  # Complex amplitudes
-        path_gains_avg = np.mean(path_gains, axis=(2, 4))  # [batch, num_rx, num_tx, num_paths, time]
-        
-        # Take first time step (static scene) and average over TX
-        path_gains_static = path_gains_avg[..., 0]  # [batch, num_rx, num_tx, num_paths]
-        path_gains_final = np.mean(path_gains_static, axis=2)  # [batch, num_rx, num_paths]
-        
-        # Delays
-        path_delays = paths.tau.numpy()  # [batch, num_rx, num_tx, num_paths]
-        path_delays_final = np.mean(path_delays, axis=2)  # [batch, num_rx, num_paths]
-        
-        # Angles (AoA, AoD)
-        # paths.theta_r, phi_r: RX angles (elevation, azimuth)
-        # paths.theta_t, phi_t: TX angles
-        path_aoa_azimuth = paths.phi_r.numpy()  # [batch, num_rx, num_tx, num_paths]
-        path_aoa_elevation = paths.theta_r.numpy()
-        path_aod_azimuth = paths.phi_t.numpy()
-        path_aod_elevation = paths.theta_t.numpy()
-        
-        # Average over TX dimension
-        path_aoa_azimuth = np.mean(path_aoa_azimuth, axis=2)
-        path_aoa_elevation = np.mean(path_aoa_elevation, axis=2)
-        path_aod_azimuth = np.mean(path_aod_azimuth, axis=2)
-        path_aod_elevation = np.mean(path_aod_elevation, axis=2)
-        
-        # Doppler (if available, otherwise zero)
-        if hasattr(paths, 'doppler'):
-            path_doppler = paths.doppler.numpy()
-            path_doppler = np.mean(path_doppler, axis=2)
-        else:
-            path_doppler = np.zeros_like(path_delays_final)
-        
-        # Compute aggregate statistics
-        rms_delay_spread = self._compute_rms_ds(path_gains_final, path_delays_final)
-        
-        k_factor = None
-        if self.compute_k_factor:
-            k_factor = self._compute_k_factor(path_gains_final)
-        
-        # Count valid paths (non-zero gain)
-        num_paths = np.sum(np.abs(path_gains_final) > 1e-10, axis=-1)
-        
-        return RTLayerFeatures(
-            path_gains=path_gains_final,
-            path_delays=path_delays_final,
-            path_aoa_azimuth=path_aoa_azimuth,
-            path_aoa_elevation=path_aoa_elevation,
-            path_aod_azimuth=path_aod_azimuth,
-            path_aod_elevation=path_aod_elevation,
-            path_doppler=path_doppler,
-            rms_delay_spread=rms_delay_spread,
-            k_factor=k_factor,
-            num_paths=num_paths,
-            carrier_frequency_hz=self.carrier_frequency_hz,
-            bandwidth_hz=self.bandwidth_hz,
-        )
+        except Exception as e:
+            logger.error(f"Failed to extract RT features from Sionna paths: {e}")
+            logger.warning("Falling back to mock RT features")
+            return self._extract_mock()
     
     def _compute_rms_ds(self, gains: np.ndarray, delays: np.ndarray) -> np.ndarray:
         """

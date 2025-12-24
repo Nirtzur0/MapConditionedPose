@@ -7,6 +7,7 @@ __version__ = "0.1.0"
 __author__ = "Your Name"
 __license__ = "MIT"
 
-from . import models, training, inference, utils
+# Lazy imports to avoid circular dependencies
+# from . import models, training, utils
 
-__all__ = ["models", "training", "inference", "utils"]
+__all__ = ["models", "training", "utils"]
