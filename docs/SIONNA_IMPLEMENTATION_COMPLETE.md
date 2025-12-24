@@ -18,12 +18,12 @@
 
 ## Files to Know
 - Code: `src/data_generation/features.py`, `src/data_generation/multi_layer_generator.py`
-- Config: `configs/data_generation_sionna.yaml`
+- Config: `configs/data_generation/data_generation_sionna.yaml`
 - Tests: `tests/test_sionna_integration.py` (mock-centric; add real-Sionna regression after first success)
 
 ## Definition of Done
 - Real Sionna run completes on at least one scene with timing and sample stats captured.
-- Defaults in `configs/data_generation_sionna.yaml` are validated for sub-6 and mmWave presets.
+- Defaults in `configs/data_generation/data_generation_sionna.yaml` are validated for sub-6 and mmWave presets.
 - Dataset script exposes a clear “mock vs. Sionna” switch with graceful errors when Sionna is missing.
 - Regression test (skipped when Sionna absent) verifies non-mock outputs using a tiny Mitsuba fixture.
 

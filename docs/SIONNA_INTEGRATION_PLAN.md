@@ -26,7 +26,7 @@ See `docs/SIONNA_STATUS.md` for the live status and quick instructions.
 2) **Tighten defaults by band**
    - Sub-6: 8x8 planar, 0.5λ spacing, ~10° downtilt.
    - mmWave: 16x16 planar, consider narrower beams; start with smaller ray counts for speed.
-   - Lock these in `configs/data_generation_sionna.yaml`.
+   - Lock these in `configs/data_generation/data_generation_sionna.yaml`.
 
 3) **User-facing toggle**
    - Add a CLI/config flag for `use_mock_mode` in the dataset script.
@@ -41,14 +41,14 @@ See `docs/SIONNA_STATUS.md` for the live status and quick instructions.
 ## Key Entry Points
 - `src/data_generation/multi_layer_generator.py`: `_load_sionna_scene`, `_setup_transmitters`, `_setup_receiver`, `_simulate_measurement`.
 - `src/data_generation/features.py`: `RTFeatureExtractor.extract` + PHY/MAC extraction (real + mock).
-- `configs/data_generation_sionna.yaml`: Sionna-specific knobs (ray counts, antennas, sampling).
+- `configs/data_generation/data_generation_sionna.yaml`: Sionna-specific knobs (ray counts, antennas, sampling).
 - `tests/test_sionna_integration.py`: Smoke tests (currently mock-focused).
 
 ---
 
 ## Definition of Done
 - Real Sionna run completes on at least one scene with logged timing and sample stats.
-- Defaults in `configs/data_generation_sionna.yaml` produce stable results for sub-6 and mmWave presets.
+- Defaults in `configs/data_generation/data_generation_sionna.yaml` produce stable results for sub-6 and mmWave presets.
 - Dataset script exposes a clear “mock vs. Sionna” switch with graceful errors.
 - Regression test in place (skipped if Sionna absent) that verifies non-mock outputs.
 

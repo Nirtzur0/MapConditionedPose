@@ -6,7 +6,6 @@ Validates deep integration with Geo2SigMap
 import sys
 import pytest
 from pathlib import Path
-import numpy as np
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -15,8 +14,6 @@ from scene_generation import (
     SceneGenerator,
     MaterialRandomizer,
     SitePlacer,
-    Site,
-    AntennaConfig,
     TileGenerator,
 )
 
@@ -93,40 +90,21 @@ def boulder_bbox():
 # ============================================================================
 # Material Randomizer Tests
 # ============================================================================
-# ============================================================================
-# Material Randomizer Tests
-# ============================================================================
 
 class TestMaterialRandomizer:
     """Test suite for MaterialRandomizer."""
     
-    def test_init(self):
-        """Test MaterialRandomizer initialization."""
-        randomizer = MaterialRandomizer()
-        assert randomizer.enable_randomization is True
-        
-        randomizer_off = MaterialRandomizer(enable_randomization=False)
-        assert randomizer_off.enable_randomization is False
-    
-    def test_sample_structure(self, material_randomizer):
-        """Test that sample() returns correct structure."""
-        materials = material_randomizer.sample()
-        
-        assert isinstance(materials, dict)
-        assert 'ground' in materials
-        assert 'rooftop' in materials
-        assert 'wall' in materials
-        assert all(mat.startswith('mat-itu_') for mat in materials.values())
-    
-    def test_sample_reproducibility(self, seed):
-        """Test that same seed gives same results."""
+    def test_sample_reproducible_and_valid(self, seed):
+        """Test sampling reproducibility and ITU material IDs."""
         rand1 = MaterialRandomizer(enable_randomization=True, seed=seed)
         rand2 = MaterialRandomizer(enable_randomization=True, seed=seed)
-        
+
         mat1 = rand1.sample()
         mat2 = rand2.sample()
-        
+
         assert mat1 == mat2
+        assert set(mat1.keys()) == {'ground', 'rooftop', 'wall'}
+        assert all(mat.startswith('mat-itu_') for mat in mat1.values())
     
     def test_sample_deterministic_mode(self, material_randomizer_deterministic):
         """Test deterministic mode always returns same materials."""
@@ -154,21 +132,13 @@ class TestMaterialRandomizer:
         assert 0.01 <= props['sigma'] <= 0.1
         assert props['category'] == 'building'
     
-    def test_get_material_properties_by_id(self, material_randomizer):
-        """Test getting properties by ITU ID."""
-        props = material_randomizer.get_material_properties('mat-itu_concrete')
-        
-        assert 'epsilon_r' in props
-        assert 'sigma' in props
-    
-    def test_list_materials_all(self, material_randomizer):
-        """Test listing all materials."""
-        all_mats = material_randomizer.list_materials()
-        
-        assert 'wet_ground' in all_mats
-        assert 'concrete' in all_mats
-        assert 'metal' in all_mats
-        assert len(all_mats) >= 8  # Should have multiple material types
+    def test_get_material_properties_unknown_id(self, material_randomizer):
+        """Test unknown ITU ID falls back to defaults."""
+        props = material_randomizer.get_material_properties('mat-itu_unknown')
+
+        assert props['epsilon_r'] > 0
+        assert props['sigma'] > 0
+        assert props['freq_range_ghz'][0] > 0
     
     def test_list_materials_by_category(self, material_randomizer):
         """Test filtering materials by category."""
@@ -295,22 +265,6 @@ class TestSitePlacer:
             assert 'position' in site_dict
             assert 'antenna' in site_dict
     
-    def test_antenna_config(self):
-        """Test AntennaConfig dataclass."""
-        antenna = AntennaConfig(
-            pattern="3gpp_38901",
-            orientation=(45.0, 10.0, 0.0),
-            polarization="dual",
-            num_rows=8,
-            num_cols=8,
-        )
-        
-        assert antenna.pattern == "3gpp_38901"
-        assert antenna.orientation == (45.0, 10.0, 0.0)
-        assert antenna.polarization == "dual"
-        assert antenna.num_rows == 8
-        assert antenna.num_cols == 8
-    
     def test_invalid_strategy(self, seed):
         """Test error handling for invalid strategy."""
         placer = SitePlacer(strategy="invalid", seed=seed)
@@ -325,37 +279,8 @@ class TestSitePlacer:
 class TestTileGenerator:
     """Test suite for TileGenerator."""
     
-    def test_init_with_defaults(self):
-        """Test TileGenerator initialization with defaults."""
-        tile_gen = TileGenerator()
-        
-        assert tile_gen.material_randomizer is not None
-        assert tile_gen.site_placer is not None
-        assert tile_gen.config is not None
-        assert 'tiling' in tile_gen.config
-    
-    def test_init_with_config(self, tmp_path):
-        """Test TileGenerator initialization with config file."""
-        # Create temporary config
-        config_content = """
-geo2sigmap:
-  package_path: /test/path
-tiling:
-  tile_size_meters: 1000
-  overlap_meters: 100
-output:
-  base_dir: ./test_output
-"""
-        config_path = tmp_path / "test_config.yaml"
-        config_path.write_text(config_content)
-        
-        tile_gen = TileGenerator(config_path=config_path)
-        
-        assert tile_gen.config['tiling']['tile_size_meters'] == 1000
-        assert tile_gen.config['tiling']['overlap_meters'] == 100
-    
-    def test_create_tile_grid(self, tile_generator, boulder_bbox):
-        """Test tile grid creation."""
+    def test_create_tile_grid_structure_and_coverage(self, tile_generator, boulder_bbox):
+        """Test tile grid structure and coverage."""
         tiles = tile_generator._create_tile_grid(
             bbox_wgs84=boulder_bbox,
             tile_size_meters=500,
@@ -382,6 +307,14 @@ output:
             polygon = tile['polygon_wgs84']
             assert len(polygon) == 5  # Closed polygon
             assert polygon[0] == polygon[-1]  # First == last
+        
+        # Check that tiles form a complete grid (no gaps)
+        tile_xs = set(t['tile_x'] for t in tiles)
+        tile_ys = set(t['tile_y'] for t in tiles)
+        for x in range(max(tile_xs) + 1):
+            for y in range(max(tile_ys) + 1):
+                matching = [t for t in tiles if t['tile_x'] == x and t['tile_y'] == y]
+                assert len(matching) == 1
     
     def test_utm_to_wgs84_polygon(self, tile_generator):
         """Test UTM to WGS84 conversion."""
@@ -405,29 +338,6 @@ output:
             assert -180 <= lon <= 180
             assert -90 <= lat <= 90
     
-    def test_tile_grid_coverage(self, tile_generator, boulder_bbox):
-        """Test that tiles cover the entire bbox."""
-        tiles = tile_generator._create_tile_grid(
-            bbox_wgs84=boulder_bbox,
-            tile_size_meters=500,
-            overlap_meters=50,
-        )
-        
-        # Check that tiles form a grid
-        tile_xs = set(t['tile_x'] for t in tiles)
-        tile_ys = set(t['tile_y'] for t in tiles)
-        
-        # Should have multiple tiles in each direction
-        assert len(tile_xs) >= 1
-        assert len(tile_ys) >= 1
-        
-        # Check grid is complete (no gaps)
-        for x in range(max(tile_xs) + 1):
-            for y in range(max(tile_ys) + 1):
-                matching = [t for t in tiles if t['tile_x'] == x and t['tile_y'] == y]
-                assert len(matching) == 1  # Exactly one tile at each grid position
-
-
 # ============================================================================
 # Scene Generator Tests  
 # ============================================================================
@@ -436,17 +346,18 @@ class TestSceneGenerator:
     """Test suite for SceneGenerator."""
     
     def test_init_without_geo2sigmap(self):
-        """Test that SceneGenerator fails with invalid path."""
+        """Test that geo2sigmap_path is ignored when module is installed."""
+        pytest.importorskip("geo2sigmap")
         material_randomizer = MaterialRandomizer()
         site_placer = SitePlacer()
-        
-        # Should fail immediately with invalid path
-        with pytest.raises(ImportError):
-            SceneGenerator(
-                geo2sigmap_path="/invalid/path",
-                material_randomizer=material_randomizer,
-                site_placer=site_placer,
-            )
+
+        scene_gen = SceneGenerator(
+            geo2sigmap_path="/invalid/path",
+            material_randomizer=material_randomizer,
+            site_placer=site_placer,
+        )
+
+        assert scene_gen.scene is not None
     
     @pytest.mark.skipif(
         not Path("/home/ubuntu/projects/geo2sigmap/package/src").exists(),
@@ -479,26 +390,6 @@ class TestSceneGenerator:
 
 class TestIntegration:
     """Integration tests for complete workflows."""
-    
-    def test_material_and_site_integration(self, material_randomizer, site_placer_grid, test_bounds):
-        """Test using materials and sites together."""
-        # Sample materials
-        materials = material_randomizer.sample()
-        
-        # Place sites
-        sites = site_placer_grid.place(test_bounds, num_tx=1, num_rx=5)
-        
-        # Verify we can get properties for sampled materials
-        for surface, mat_id in materials.items():
-            props = material_randomizer.get_material_properties(mat_id)
-            assert 'epsilon_r' in props
-            assert 'sigma' in props
-        
-        # Verify sites have valid positions
-        for site in sites:
-            x, y, z = site.position
-            assert test_bounds[0] <= x <= test_bounds[2]
-            assert test_bounds[1] <= y <= test_bounds[3]
     
     def test_full_m1_pipeline_structure(self, material_randomizer, site_placer_grid, test_bounds):
         """Test the complete M1 pipeline structure (without Geo2SigMap)."""

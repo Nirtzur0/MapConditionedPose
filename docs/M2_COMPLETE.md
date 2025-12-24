@@ -69,7 +69,7 @@
 
 ### Configuration
 
-- **configs/data_generation.yaml**
+- **configs/data_generation/data_generation.yaml**
   - Default parameters for dataset generation
   - Maps to DataGenerationConfig dataclass
 

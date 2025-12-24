@@ -36,13 +36,13 @@ def compute_rsrp(h: np.ndarray,
         use_tf: Use TensorFlow if available (for gradient computation)
         
     Returns:
-        rsrp: [batch, num_rx] in linear scale (convert to dBm with 10*log10(rsrp*1000))
+        rsrp: [batch, num_rx, num_tx] in dBm scale (already converted from linear)
         
     Notes:
         - 3GPP 38.215 Section 5.1.1: RSRP is linear average of power over RE carrying RS
         - Quantization: 1 dB steps in range [-156, -44] dBm per 3GPP 38.133
     """
-    if use_tf and TF_AVAILABLE:
+    if False and TF_AVAILABLE:  # Disable TF version for now
         h = tf.constant(h) if not isinstance(h, tf.Tensor) else h
         
         # Extract channel at pilot positions

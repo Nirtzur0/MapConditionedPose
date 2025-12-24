@@ -84,7 +84,7 @@ scripts/train.py                # Training with TensorBoard enabled ✅
 
 **Training with TensorBoard:**
 ```bash
-python scripts/train.py --config configs/training_simple.yaml
+python scripts/train.py --config configs/training/training_simple.yaml
 
 # In another terminal:
 tensorboard --logdir lightning_logs

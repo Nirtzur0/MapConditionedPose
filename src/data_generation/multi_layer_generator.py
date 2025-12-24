@@ -400,7 +400,7 @@ class MultiLayerDataGenerator:
             max_depth = getattr(self.config, 'max_depth', 5)
             samples_per_src = getattr(self.config, 'num_samples', 100_000)
             max_num_paths = getattr(self.config, 'max_num_paths', 100_000)
-            paths = PathSolver()(
+            paths_result = PathSolver()(
                 scene,
                 max_depth=max_depth,
                 samples_per_src=samples_per_src,
@@ -412,6 +412,15 @@ class MultiLayerDataGenerator:
                 diffraction=getattr(self.config, 'enable_diffraction', True),
                 edge_diffraction=False
             )
+            # Handle case where PathSolver might return a tuple
+            if isinstance(paths_result, tuple):
+                if len(paths_result) == 1:
+                    paths = paths_result[0]
+                else:
+                    logger.warning(f"PathSolver returned tuple of length {len(paths_result)}, using first element")
+                    paths = paths_result[0]
+            else:
+                paths = paths_result
             if not self._logged_sionna:
                 try:
                     valid_paths = int(paths.valid.numpy().sum())
@@ -432,12 +441,22 @@ class MultiLayerDataGenerator:
                     self.config.carrier_frequency_hz + self.config.bandwidth_hz / 2,
                     num_subcarriers
                 )
-                cfr = paths.cfr(
+                cfr_result = paths.cfr(
                     frequencies=Float(list(freqs)),
                     out_type='numpy'
                 )
+                # Handle case where cfr might return a tuple
+                if isinstance(cfr_result, tuple):
+                    if len(cfr_result) == 1:
+                        cfr = cfr_result[0]
+                    else:
+                        logger.warning(f"cfr returned tuple of length {len(cfr_result)}, using first element")
+                        cfr = cfr_result[0]
+                else:
+                    cfr = cfr_result
                 channel_matrix = cfr[np.newaxis, ...]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Channel matrix computation failed: {e}")
                 channel_matrix = None
             
             if rt_features.is_mock:

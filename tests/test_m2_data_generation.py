@@ -14,7 +14,8 @@ import json
 from src.data_generation.measurement_utils import (
     compute_rsrp, compute_rsrq, compute_sinr, compute_cqi,
     compute_rank_indicator, compute_timing_advance, compute_pmi,
-    add_measurement_dropout, simulate_neighbor_list_truncation
+    add_measurement_dropout, simulate_neighbor_list_truncation,
+    compute_beam_rsrp
 )
 
 from src.data_generation.features import (
@@ -47,6 +48,16 @@ class TestMeasurementUtils:
         assert rsrp_dbm.shape == (10, 4)
         # RSRP should be reasonable (random gains, expect around 0 dBm ballpark)
         assert np.all(rsrp_dbm >= -100) and np.all(rsrp_dbm <= 100), "RSRP out of reasonable range"
+
+    def test_rsrp_from_channel_matrix(self):
+        """Test RSRP computation from channel matrix and pilots."""
+        h = np.ones((1, 1, 1, 1, 1, 4), dtype=np.complex128)
+        pilot_re = np.array([0, 2])
+
+        rsrp_dbm = compute_rsrp(h, cell_id=0, pilot_re_indices=pilot_re)
+
+        assert rsrp_dbm.shape == (1, 1, 1)
+        assert np.allclose(rsrp_dbm, 30.0), "Unit channel should map to 30 dBm"
     
     def test_rsrq_computation(self):
         """Test RSRQ calculation."""
@@ -94,6 +105,15 @@ class TestMeasurementUtils:
         ri_rank1 = compute_rank_indicator(h_rank1)
         
         assert np.all(ri_rank1 == 1), "Rank-1 channel should have RI=1"
+
+    def test_pmi_computation(self):
+        """Test PMI output shape and type."""
+        h = np.random.randn(5, 2, 4) + 1j * np.random.randn(5, 2, 4)
+        pmi = compute_pmi(h)
+
+        assert pmi.shape == (5,)
+        assert pmi.dtype == np.int32
+        assert np.all(pmi >= 0)
     
     def test_timing_advance(self):
         """Test TA computation from distance."""
@@ -122,6 +142,17 @@ class TestMeasurementUtils:
             # Allow 20% tolerance
             assert abs(nan_count - expected_dropout) < 0.2 * expected_dropout, \
                 f"{key} dropout rate mismatch"
+
+    def test_beam_rsrp(self):
+        """Test L1-RSRP per-beam computation."""
+        path_gains = np.ones((2, 3, 5)) + 1j * np.zeros((2, 3, 5))
+        num_beams = 8
+
+        l1_rsrp = compute_beam_rsrp(path_gains, beam_directions=None, num_beams=num_beams)
+
+        assert l1_rsrp.shape == (2, 3, num_beams)
+        expected_dbm = 10 * np.log10(5.0) + 30
+        assert np.allclose(l1_rsrp, expected_dbm), "Uniform paths should yield uniform beam RSRP"
     
     def test_neighbor_list_truncation(self):
         """Test top-K neighbor selection."""
@@ -210,9 +241,11 @@ class TestRTFeatureExtractor:
         
         rt_dict = rt_features.to_dict()
         
-        assert 'rt/path_gains' in rt_dict
         assert 'rt/rms_delay_spread' in rt_dict
-        assert len(rt_dict) == 10, "Should have 10 RT features"
+        assert 'rt/path_gains' not in rt_dict
+        assert 'rt/num_paths' in rt_dict
+        if extractor.compute_k_factor:
+            assert 'rt/k_factor' in rt_dict
 
 
 class TestPHYFAPIFeatureExtractor:

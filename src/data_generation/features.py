@@ -216,11 +216,23 @@ class RTFeatureExtractor:
                 return value.numpy() if hasattr(value, 'numpy') else np.array(value)
 
             def _to_complex(value):
-                if isinstance(value, tuple) and len(value) == 2:
-                    real = _to_numpy(value[0])
-                    imag = _to_numpy(value[1])
-                    return real + 1j * imag
-                return _to_numpy(value)
+                if isinstance(value, tuple):
+                    if len(value) == 2:
+                        try:
+                            real = _to_numpy(value[0])
+                            imag = _to_numpy(value[1])
+                            return real + 1j * imag
+                        except Exception as e:
+                            logger.warning(f"Failed to convert tuple to complex: {e}, using as-is")
+                            return _to_numpy(value)
+                    else:
+                        logger.warning(f"Unexpected tuple length {len(value)} for complex value")
+                        return _to_numpy(value)
+                try:
+                    return _to_numpy(value)
+                except Exception as e:
+                    logger.warning(f"Failed to convert value to numpy: {e}, returning None")
+                    return None
 
             def _reduce_ant_time(arr):
                 if arr.ndim == 6:  # [rx, rx_ant, tx, tx_ant, paths, time]
@@ -442,15 +454,23 @@ class PHYFAPIFeatureExtractor:
         
         # RSRP: average power over pilots
         if channel_matrix is not None:
-            rsrp_linear = compute_rsrp(channel_matrix, cell_id=0, 
-                                      pilot_re_indices=pilot_re_indices)
-            rsrp_dbm = 10 * np.log10(rsrp_linear + 1e-10) + 30
+            rsrp = compute_rsrp(channel_matrix, cell_id=0, 
+                               pilot_re_indices=pilot_re_indices)
             
-            # rsrp_linear is [batch, num_tx], reshape to [batch, num_rx, num_tx]
-            batch, num_tx = rsrp_linear.shape
-            num_rx = 1  # Assuming single RX antenna for now
-            rsrp = rsrp_dbm.reshape(batch, num_rx, num_tx)
+            # rsrp is [batch, num_rx, num_tx, ...] in dBm
+            shape = rsrp.shape
+            if len(shape) >= 3:
+                batch, num_rx, num_tx = shape[0], shape[1], shape[2]
+                # If more dimensions, average over them
+                if len(shape) > 3:
+                    rsrp = np.mean(rsrp, axis=tuple(range(3, len(shape))))
+            else:
+                logger.warning(f"Unexpected rsrp shape: {shape}, assuming [batch, num_tx]")
+                batch = shape[0] if len(shape) > 0 else 1
+                num_tx = shape[1] if len(shape) > 1 else 1
+                num_rx = 1
             num_cells = num_tx
+            rsrp_dbm = rsrp  # rsrp is already in dBm
         else:
             # Approximate from path gains
             total_power = np.sum(np.abs(rt_features.path_gains)**2, axis=-1)

@@ -197,7 +197,7 @@ pip install -r requirements.txt
 
 # Try different training configs
 ./run_pipeline.sh --skip-scenes --skip-dataset --epochs 20 --batch-size 8
-./run_pipeline.sh --skip-scenes --skip-dataset --config configs/training.yaml
+./run_pipeline.sh --skip-scenes --skip-dataset --config configs/training/training.yaml
 ```
 
 ### Production Run

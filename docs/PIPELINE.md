@@ -62,7 +62,7 @@ The orchestrator runs 4 main steps:
     --batch-size 32
 
 # Use custom training config
-./run_pipeline.sh --config configs/training.yaml
+./run_pipeline.sh --config configs/training/training.yaml
 ```
 
 ### Resume Training
@@ -232,9 +232,9 @@ pip install -r requirements.txt
 python run_pipeline.py --quick-test 2>&1 | tee logs/debug.log
 
 # Test individual steps
-python scripts/generate_scenes.py --area "Boulder, CO" --output data/scenes/test
+python scripts/scene_generation/generate_scenes.py --area "Boulder, CO" --output data/scenes/test
 python scripts/generate_dataset.py --scene-dir data/scenes/test --output-dir data/test
-python scripts/train.py --config configs/training_simple.yaml
+python scripts/train.py --config configs/training/training_simple.yaml
 ```
 
 ## Integration with Existing Workflows

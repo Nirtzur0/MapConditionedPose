@@ -30,7 +30,7 @@ Generate realistic 3D scenes from OpenStreetMap data:
 
 ```bash
 # Quick test with small area (Boulder, CO)
-python scripts/generate_scenes.py \
+python scripts/scene_generation/generate_scenes.py \
     --bbox 40.014 -105.28 40.020 -105.27 \
     --output data/scenes/boulder_test \
     --num-sites 3 \
@@ -92,19 +92,19 @@ Train the transformer-based localization model:
 ```bash
 # Training with default config
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --wandb-project ue-localization \
     --run-name boulder_test_v1
 
 # Training with physics loss (optional but recommended)
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --wandb-project ue-localization \
     --run-name boulder_test_physics
 
 # Resume from checkpoint
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --resume checkpoints/last.ckpt
 ```
 
@@ -136,7 +136,7 @@ Test the trained model and generate metrics:
 ```bash
 # Run test evaluation
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --resume checkpoints/best_model.pt \
     --test-only
 
@@ -228,7 +228,7 @@ Here's what a successful end-to-end run looks like:
 
 ```bash
 # 1. Generate 10 scenes (5 minutes)
-python scripts/generate_scenes.py \
+python scripts/scene_generation/generate_scenes.py \
     --bbox 40.01 -105.28 40.03 -105.26 \
     --output data/scenes/boulder_batch1 \
     --num-tiles 10 \
@@ -243,13 +243,13 @@ python scripts/generate_dataset.py \
 
 # 3. Train model (2-4 hours on GPU)
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --wandb-project ue-localization \
     --run-name boulder_100k_baseline
 
 # 4. Test evaluation (5 minutes)
 python scripts/train.py \
-    --config configs/training.yaml \
+    --config configs/training/training.yaml \
     --resume checkpoints/best_model.pt \
     --test-only
 
@@ -293,7 +293,7 @@ streamlit run streamlit_app.py
 
 ### Key Config Files
 
-**`configs/training.yaml`** - Training hyperparameters
+**`configs/training/training.yaml`** - Training hyperparameters
 ```yaml
 training:
   data:
@@ -307,7 +307,7 @@ training:
   num_epochs: 100
 ```
 
-**`configs/scene_generation.yaml`** - Scene generation
+**`configs/scene_generation/scene_generation.yaml`** - Scene generation
 ```yaml
 scene:
   tile_size: 1000  # meters
@@ -361,13 +361,13 @@ python scripts/generate_dataset.py ...
 ### **Issue: "Scene directory not found"**
 **Solution:** Run M1 first to generate scenes
 ```bash
-python scripts/generate_scenes.py --bbox ... --output data/scenes/test
+python scripts/scene_generation/generate_scenes.py --bbox ... --output data/scenes/test
 ```
 
 ### **Issue: "Dataset not found during training"**
 **Solution:** Update config path or run M2 first
 ```yaml
-# configs/training.yaml
+# configs/training/training.yaml
 training:
   data:
     train_path: "data/processed/dataset.zarr"  # Update this path
@@ -376,7 +376,7 @@ training:
 ### **Issue: "CUDA out of memory"**
 **Solution:** Reduce batch size
 ```yaml
-# configs/training.yaml
+# configs/training/training.yaml
 training:
   data:
     batch_size: 32  # Reduce from 64

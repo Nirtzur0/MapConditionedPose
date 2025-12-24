@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..models.ue_localization_model import UELocalizationModel
 from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
+from ..datasets.combined_dataset import CombinedRadioLocalizationDataset
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
 
 logger = logging.getLogger(__name__)
@@ -87,13 +88,46 @@ class UELocalizationLightning(pl.LightningModule):
         import numpy as np
 
         data = np.asarray(data, dtype=np.float32)
-        if not np.isfinite(data).any():
+        
+        # Debugging logs
+        logger.debug(f"Normalizing map data. Shape: {data.shape}, "
+                     f"Non-finite: {np.count_nonzero(~np.isfinite(data))}, "
+                     f"Min: {np.nanmin(data, initial=None)}, Max: {np.nanmax(data, initial=None)}, "
+                     f"Mean: {np.nanmean(data)}")
+
+        # For percentile calculation, treat infs as NaNs so they are ignored
+        percentile_data = np.where(np.isinf(data), np.nan, data)
+
+        if not np.isfinite(percentile_data).any():
             return np.zeros_like(data, dtype=np.float32)
-        vmin = np.nanpercentile(data, 2)
-        vmax = np.nanpercentile(data, 98)
+        
+        vmin = np.nanpercentile(percentile_data, 2)
+        vmax = np.nanpercentile(percentile_data, 98)
+
+        logger.debug(f"Normalization params: vmin={vmin}, vmax={vmax}")
+
         if vmax - vmin < 1e-6:
-            return np.zeros_like(data, dtype=np.float32)
-        return np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
+            # If dynamic range is negligible, it's a constant map.
+            # Show black for zero-maps, gray for non-zero constant maps.
+            median = np.nanmedian(percentile_data)
+            if median and abs(median) > 1e-6:
+                return np.full(data.shape, 0.5, dtype=np.float32)
+            else:
+                return np.zeros_like(data, dtype=np.float32)
+
+        # Handle NaNs and Infs in the original data for scaling.
+        # NaNs will be mapped to the min value (black).
+        # Infs will be mapped to the max value (white).
+        safe_data = np.nan_to_num(data, nan=vmin, posinf=vmax, neginf=vmin)
+        
+        # Normalize and clip
+        denominator = vmax - vmin
+        if denominator > 0:
+            normalized = (safe_data - vmin) / denominator
+        else:
+            normalized = np.zeros_like(safe_data)
+        
+        return np.clip(normalized, 0.0, 1.0)
 
     def _log_comet_visuals(self, split: str, errors: Optional[torch.Tensor] = None):
         experiment = self._get_comet_experiment()
@@ -474,14 +508,26 @@ class UELocalizationLightning(pl.LightningModule):
     
     def train_dataloader(self):
         """Create training dataloader."""
-        dataset = RadioLocalizationDataset(
-            zarr_path=self.config['dataset']['zarr_path'],
-            split='train',
-            map_resolution=self.config['dataset']['map_resolution'],
-            scene_extent=self.config['dataset']['scene_extent'],
-            normalize=self.config['dataset']['normalize_features'],
-            handle_missing=self.config['dataset']['handle_missing_values'],
-        )
+        dataset_config = self.config['dataset']
+        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
+            dataset = CombinedRadioLocalizationDataset(
+                zarr_paths=dataset_config['zarr_paths'],
+                split='train',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+        else:
+            dataset = RadioLocalizationDataset(
+                zarr_path=dataset_config['zarr_path'],
+                split='train',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+
         num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
         logger.info(f"Training samples: {len(dataset)} ({num_batches} batches)")
         
@@ -496,14 +542,26 @@ class UELocalizationLightning(pl.LightningModule):
     
     def val_dataloader(self):
         """Create validation dataloader."""
-        dataset = RadioLocalizationDataset(
-            zarr_path=self.config['dataset']['zarr_path'],
-            split='val',
-            map_resolution=self.config['dataset']['map_resolution'],
-            scene_extent=self.config['dataset']['scene_extent'],
-            normalize=self.config['dataset']['normalize_features'],
-            handle_missing=self.config['dataset']['handle_missing_values'],
-        )
+        dataset_config = self.config['dataset']
+        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
+            dataset = CombinedRadioLocalizationDataset(
+                zarr_paths=dataset_config['zarr_paths'],
+                split='val',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+        else:
+            dataset = RadioLocalizationDataset(
+                zarr_path=dataset_config['zarr_path'],
+                split='val',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+
         num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
         logger.info(f"Validation samples: {len(dataset)} ({num_batches} batches)")
         
@@ -518,14 +576,26 @@ class UELocalizationLightning(pl.LightningModule):
     
     def test_dataloader(self):
         """Create test dataloader."""
-        dataset = RadioLocalizationDataset(
-            zarr_path=self.config['dataset']['zarr_path'],
-            split='test',
-            map_resolution=self.config['dataset']['map_resolution'],
-            scene_extent=self.config['dataset']['scene_extent'],
-            normalize=self.config['dataset']['normalize_features'],
-            handle_missing=self.config['dataset']['handle_missing_values'],
-        )
+        dataset_config = self.config['dataset']
+        if 'zarr_paths' in dataset_config and dataset_config['zarr_paths']:
+            dataset = CombinedRadioLocalizationDataset(
+                zarr_paths=dataset_config['zarr_paths'],
+                split='test',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+        else:
+            dataset = RadioLocalizationDataset(
+                zarr_path=dataset_config['zarr_path'],
+                split='test',
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+
         num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
         logger.info(f"Test samples: {len(dataset)} ({num_batches} batches)")
         

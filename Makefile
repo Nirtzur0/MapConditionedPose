@@ -37,7 +37,7 @@ pipeline:
 
 scenes:
 	@echo "Generating scenes..."
-	. venv/bin/activate && python scripts/generate_scenes.py \
+	. venv/bin/activate && python scripts/scene_generation/generate_scenes.py \
 		--bbox -105.28 40.014 -105.27 40.020 \
 		--output data/scenes/boulder_test \
 		--num-tx 3 \
@@ -54,7 +54,7 @@ dataset:
 train:
 	@echo "Training model..."
 	. venv/bin/activate && python scripts/train.py \
-		--config configs/training_simple.yaml
+		--config configs/training/training_simple.yaml
 
 test:
 	@echo "Running tests..."

@@ -25,6 +25,8 @@ from pathlib import Path
 from datetime import datetime
 import json
 import shutil
+import yaml
+from easydict import EasyDict
 
 from src.utils.logging_utils import setup_logging
 
@@ -88,37 +90,59 @@ class PipelineOrchestrator:
         if self.args.skip_scenes:
             logger.info("Skipping scene generation (--skip-scenes)")
             return
-            
+
         self.log_section("STEP 1: Generate Scenes")
-        logger.info(f"Using GIS bounding box: {self.args.bbox} for scene generation")
+
+        cmd = [sys.executable, "scripts/scene_generation/generate_scenes.py"]
+
+        if self.args.scene_config:
+            logger.info(f"Using scene config file: {self.args.scene_config}")
+            with open(self.args.scene_config, 'r') as f:
+                config = EasyDict(yaml.safe_load(f)).scene_generation
+
+            if config.city.name:
+                cmd.extend(["--area", config.city.name])
+            elif config.city.bounding_box:
+                cmd.extend(["--bbox"] + [str(c) for c in config.city.bounding_box])
+            
+            self.scene_dir = self.project_root / "data" / "scenes" / config.city.name.replace(", ", "_").replace(" ", "_").lower()
+            cmd.extend(["--output", str(self.scene_dir)])
+
+            if config.tiles and config.tiles.num_tiles > 0:
+                cmd.append("--tiles")
+                cmd.extend(["--tile-size", str(config.tiles.tile_size_m)])
+                cmd.extend(["--overlap", str(config.tiles.overlap_m)])
+
+            if config.sites:
+                cmd.extend(["--num-tx", str(config.sites.num_sites_per_tile)])
+                cmd.extend(["--site-strategy", config.sites.placement_strategy])
+
+        else:
+            logger.info(f"Using GIS bounding box: {self.args.bbox} for scene generation")
+            cmd.extend([
+                "--bbox",
+                str(self.args.bbox[0]),  # west
+                str(self.args.bbox[1]),  # south
+                str(self.args.bbox[2]),  # east
+                str(self.args.bbox[3]),  # north
+                "--output", str(self.scene_dir),
+                "--num-tx", str(self.args.num_tx),
+                "--site-strategy", self.args.site_strategy,
+            ])
+            if self.args.tiles:
+                cmd.append("--tiles")
         
         # Clean existing scenes if requested
         if self.args.clean and self.scene_dir.exists():
             logger.info(f"Cleaning existing scenes at {self.scene_dir}")
             shutil.rmtree(self.scene_dir)
-        
-        cmd = [
-            sys.executable,
-            "scripts/generate_scenes.py",
-            "--bbox",
-            str(self.args.bbox[0]),  # west
-            str(self.args.bbox[1]),  # south
-            str(self.args.bbox[2]),  # east
-            str(self.args.bbox[3]),  # north
-            "--output", str(self.scene_dir),
-            "--num-tx", str(self.args.num_tx),
-            "--site-strategy", self.args.site_strategy,
-        ]
-        
-        if self.args.tiles:
-            cmd.append("--tiles")
-            
+
         self.run_command(cmd, "Scene Generation")
-        
+
         # Verify scenes were created
         if not self.scene_dir.exists():
             raise RuntimeError(f"Scene directory not created: {self.scene_dir}")
-            
+
         scene_count = len(list(self.scene_dir.glob("scene_*")))
         logger.info(f"Created {scene_count} scene(s)")
         
@@ -126,43 +150,75 @@ class PipelineOrchestrator:
         """Generate synthetic dataset from scenes using Sionna ray tracing"""
         if self.args.skip_dataset:
             logger.info("Skipping dataset generation (--skip-dataset)")
-            zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if not zarr_files:
-                raise RuntimeError(f"No dataset available to reuse in: {self.dataset_dir}")
-            self.dataset_path = zarr_files[0]
+            # Attempt to find the dataset path from the most recent data config if available
+            if self.args.data_config:
+                with open(self.args.data_config, 'r') as f:
+                    config = EasyDict(yaml.safe_load(f))
+                self.dataset_path = self.project_root / config.data_generation.output.path
+                if not self.dataset_path.exists():
+                     raise RuntimeError(f"No dataset available to reuse at: {self.dataset_path}")
+            else: # Fallback to original behavior
+                zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if not zarr_files:
+                    raise RuntimeError(f"No dataset available to reuse in: {self.dataset_dir}")
+                self.dataset_path = zarr_files[0]
+            logger.info(f"Reusing dataset: {self.dataset_path}")
             return
-            
+
         self.log_section("STEP 2: Generate Dataset")
-        logger.info(f"Using scenes from {self.scene_dir} with Sionna ray tracing")
         
+        cmd = [sys.executable, "scripts/generate_dataset.py"]
+
+        if self.args.data_config:
+            logger.info(f"Using data generation config file: {self.args.data_config}")
+            with open(self.args.data_config, 'r') as f:
+                config = EasyDict(yaml.safe_load(f)).data_generation
+            
+            # The scene_dir used for generation is specified inside the data_config file
+            scene_dir_from_config = self.project_root / config.scenes.root_dir
+            self.dataset_dir = self.project_root / Path(config.output.path).parent
+            
+            cmd.extend(["--config", str(self.args.data_config)])
+            cmd.extend(["--scene-dir", str(scene_dir_from_config)]) # Override scene-dir based on data_config
+            cmd.extend(["--output-dir", str(self.dataset_dir)])
+
+        else: # Original behavior
+            logger.info(f"Using scenes from {self.scene_dir} with Sionna ray tracing")
+            self.dataset_dir = self.project_root / "data" / "processed" / f"{self.args.scene_name}_dataset"
+            cmd.extend([
+                "--scene-dir", str(self.scene_dir),
+                "--output-dir", str(self.dataset_dir),
+                "--carrier-freq", str(self.args.carrier_freq),
+                "--bandwidth", str(self.args.bandwidth),
+                "--num-ue", str(self.args.num_ues),
+            ])
+
+        if self.args.num_scenes:
+            cmd.extend(["--num-scenes", str(self.args.num_scenes)])
+
         # Clean existing dataset if requested
         if self.args.clean and self.dataset_dir.exists():
             logger.info(f"Cleaning existing dataset at {self.dataset_dir}")
             shutil.rmtree(self.dataset_dir)
         
-        cmd = [
-            sys.executable,
-            "scripts/generate_dataset.py",
-            "--scene-dir", str(self.scene_dir),
-            "--output-dir", str(self.dataset_dir),
-            "--carrier-freq", str(self.args.carrier_freq),
-            "--bandwidth", str(self.args.bandwidth),
-            "--num-ue", str(self.args.num_ues),
-            "--num-reports", str(self.args.num_trajectories // 10),  # Convert trajectories to reports
-        ]
-        
-        if self.args.num_scenes:
-            cmd.extend(["--num-scenes", str(self.args.num_scenes)])
-            
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
         self.run_command(cmd, "Dataset Generation")
-        
-        # Verify dataset was created - use the most recent one
-        zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not zarr_files:
-            raise RuntimeError(f"No dataset created in: {self.dataset_dir}")
+
+        # Verify dataset was created
+        if self.args.data_config:
+             with open(self.args.data_config, 'r') as f:
+                config = EasyDict(yaml.safe_load(f))
+             self.dataset_path = self.project_root / config.data_generation.output.path
+        else:
+            zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not zarr_files:
+                raise RuntimeError(f"No dataset created in: {self.dataset_dir}")
+            self.dataset_path = zarr_files[0]
+
+        if not self.dataset_path.exists():
+            raise RuntimeError(f"Dataset not created at: {self.dataset_path}")
             
-        logger.info(f"Created dataset: {zarr_files[0].name}")
-        self.dataset_path = zarr_files[0]
+        logger.info(f"Created dataset: {self.dataset_path.name}")
         
     def step_3_train_model(self):
         """Train the transformer model"""
@@ -371,6 +427,10 @@ Examples:
                        help='Run quick test (small scene, few epochs)')
     
     # Pipeline control
+    parser.add_argument('--scene-config', type=Path, default=None,
+                       help='Path to scene generation YAML config file')
+    parser.add_argument('--data-config', type=Path, default=None,
+                       help='Path to data generation YAML config file')
     parser.add_argument('--skip-scenes', action='store_true',
                        help='Skip scene generation')
     parser.add_argument('--skip-dataset', action='store_true',

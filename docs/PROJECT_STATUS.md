@@ -301,14 +301,22 @@ transformer-ue-localization/
 │       ├── multi_layer_generator.py
 │       └── zarr_writer.py
 ├── scripts/
-│   ├── generate_scenes.py        # M1 CLI
+│   ├── scene_generation/
+│   │   └── generate_scenes.py        # M1 CLI
 │   └── generate_dataset.py       # M2 CLI
 ├── tests/
 │   ├── test_m1_scene_generation.py  # 26 tests
 │   └── test_m2_data_generation.py   # 27 tests
 ├── configs/
-│   ├── scene_generation.yaml     # M1 config
-│   └── data_generation.yaml      # M2 config
+│   ├── scene_generation/
+│   │   └── scene_generation.yaml     # M1 config
+│   ├── data_generation/
+│   │   └── data_generation.yaml      # M2 config
+│   ├── training/
+│   │   ├── training.yaml             # M3 baseline config
+│   │   ├── training_simple.yaml      # M3 simple config
+│   │   ├── training_full.yaml        # M3 full config
+│   │   └── training_diverse.yaml     # M3 diverse config
 ├── docs/
 │   ├── M1_COMPLETE.md
 │   ├── M1_ARCHITECTURE.md

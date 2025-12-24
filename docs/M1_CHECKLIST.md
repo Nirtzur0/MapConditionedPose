@@ -15,7 +15,7 @@
 - ✅ [requirements-test.txt](requirements-test.txt) - Test dependencies
 
 ### Scripts ✅
-- ✅ [scripts/generate_scenes.py](scripts/generate_scenes.py) - Example CLI (rewritten)
+- ✅ [scripts/scene_generation/generate_scenes.py](scripts/scene_generation/generate_scenes.py) - Example CLI (rewritten)
 
 ### Tests ✅
 - ✅ [tests/test_m1_scene_generation.py](tests/test_m1_scene_generation.py) (26 pytest tests)

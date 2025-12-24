@@ -1,0 +1,152 @@
+# Data Generation Configuration - New York (Urban Grid)
+
+data_generation:
+  # Input Scenes
+  scenes:
+    root_dir: "data/raw/scenes_nyc" # Use scenes generated from the NYC config
+    scene_ids: []
+    samples_per_scene: 120000 # More samples
+
+  # UE Sampling Strategy
+  ue_sampling:
+    strategy: "constrained"
+    constraints:
+      min_distance_from_site_m: 5.0
+      max_distance_from_site_m: 800.0
+      min_rsrp_dbm: -125.0
+      indoor_probability: 0.6 # High indoor probability
+      on_roads_only: true # UEs constrained to roads (street canyons)
+    
+    # Mobility Models
+    mobility:
+      stationary_prob: 0.2
+      pedestrian_prob: 0.6 # Many pedestrians
+      vehicular_prob: 0.2
+
+  # Layer 1: RT (Ray Tracing) Features
+  rt_features:
+    solver: "PathTracer"
+    max_depth: 8 # Deeper paths in dense environment
+    num_samples: 1.5e6
+    
+    features:
+      - "path_gains"
+      - "path_delays"
+      - "aoa_azimuth"
+      - "aoa_zenith"
+      - "aod_azimuth"
+      - "aod_zenith"
+      - "doppler"
+      - "rms_delay_spread"
+      - "k_factor"
+    
+    frequency_ghz: 3.8 # Slightly different frequency
+    bandwidth_mhz: 100
+
+  # Layer 2: PHY/FAPI (Physical Layer) Features
+  phy_features:
+    channel_model: "TR38901"
+    scenario: "UMa" # Urban Macro
+
+    ofdm:
+      subcarrier_spacing_khz: 30
+      num_subcarriers: 3300
+      cyclic_prefix: "normal"
+      
+    features:
+      - "rsrp_serving"
+      - "rsrp_neighbors"
+      - "rsrq_serving"
+      - "rsrq_neighbors"
+      - "rssi"
+      - "sinr"
+      - "snr"
+      - "cqi"
+      - "ri"
+      - "pmi"
+      - "l1_rsrp_per_beam"
+      - "cir_compressed"
+      - "csi_rank"
+      - "csi_condition_number"
+    
+    quantization:
+      rsrp_rsrq_step_db: 0.5 # Finer quantization
+      cqi_levels: 16
+
+  # Layer 3: MAC/RRC (Protocol Layer) Features (same as original)
+  mac_rrc_features:
+    features:
+      - "timing_advance"
+      - "ta_command"
+      - "phr"
+      - "harq_ack_nack"
+      - "serving_cell_id"
+      - "neighbor_cell_ids"
+      - "measurement_reports"
+      - "handover_events"
+      - "throughput"
+      - "bler"
+      - "spectral_efficiency"
+      
+    timing_advance:
+      quantization_ts: 16
+      
+    neighbor_list:
+      max_neighbors: 8
+      rsrp_threshold_db: -130
+
+  # Temporal Sequences
+  temporal:
+    sequence_length: 25 # Longer sequences
+    duration_sec: 10.0
+    irregular_sampling: true
+    measurement_period_ms:
+      l1_fapi: 40
+      rrc: 200
+    
+    feature_dropout:
+      enable: true
+      rates:
+        rsrp_neighbors: 0.3
+        cqi: 0.2
+        pmi: 0.25
+        l1_rsrp_beams: 0.4
+
+  # Precomputed Maps
+  radio_maps:
+    enable: true
+    resolution_m: 1.0 # Higher resolution
+    height_m: 1.5
+    features: ["path_gain", "toa", "aoa", "rsrp", "sinr", "snr", "throughput", "bler"]
+      
+  osm_maps:
+    enable: true
+    resolution_m: 1.0
+    features: ["building_height", "building_footprint", "material_class", "road_mask", "terrain_elevation"]
+
+  # Output Format
+  output:
+    format: "zarr"
+    path: "data/processed/dataset_nyc.zarr" # Separate output file
+    compression: "blosc"
+    chunk_size: 1000
+    
+    splits:
+      train: 0.7
+      val: 0.15
+      test: 0.15
+    
+    metadata:
+      save_scene_info: true
+      save_site_locations: true
+      save_statistics: true
+
+# Processing
+processing:
+  num_workers: 16
+  batch_size: 100
+  use_gpu: true
+  gpu_ids: [0, 1]
+  cache_dir: "data/cache_nyc" # Separate cache
+  log_level: "INFO"
+  checkpoint_every_n_samples: 10000

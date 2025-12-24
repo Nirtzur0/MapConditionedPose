@@ -392,7 +392,7 @@ class RadioLocalizationDataset(Dataset):
     
     def _load_radio_map(self, idx: int) -> torch.Tensor:
         """Load precomputed Sionna radio map [7, H, W] (padded if needed)."""
-        print(f"DEBUG: _load_radio_map called with idx {idx}")
+        logger.debug(f"_load_radio_map called with idx {idx}")
         if 'radio_maps' not in self.store:
             # Return dummy map if not available - pad to 7 channels
             H = W = int(self.scene_extent / self.map_resolution)
@@ -411,9 +411,9 @@ class RadioLocalizationDataset(Dataset):
             # Last dimension is smallest, likely [H, W, C]
             radio_map = radio_map.permute(2, 0, 1)
         
-        print(f"DEBUG: radio_map shape after processing: {radio_map.shape}")
+        logger.debug(f"radio_map shape after processing: {radio_map.shape}")
         result = radio_map[:5]
-        print(f"DEBUG: returning shape: {result.shape}")
+        logger.debug(f"returning shape: {result.shape}")
         return result  # path_gain, toa, snr, sinr, throughput
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
@@ -441,7 +441,7 @@ class RadioLocalizationDataset(Dataset):
             padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
             osm_map = torch.cat([osm_map, padding], dim=0)
         
-        print(f"DEBUG: osm_map shape after processing: {osm_map.shape}")
+        logger.debug(f"osm_map shape after processing: {osm_map.shape}")
         return osm_map[:5]  # height, material, footprint, road, terrain
     
     def _normalize_features(
