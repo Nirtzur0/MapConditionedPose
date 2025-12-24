@@ -154,8 +154,7 @@ class MultiLayerDataGenerator:
         else:
             logger.warning("Zarr writer not available - install zarr package for dataset writing")
         
-        # Load scene metadata
-        self.scene_metadata = self._load_scene_metadata()
+        # Initialize counters
         self._rx_counter = 0
         self._logged_sionna = False
         self._sionna_ok = 0
@@ -167,9 +166,9 @@ class MultiLayerDataGenerator:
         logger.info(f"  Reports per UE: {config.num_reports_per_ue}")
         logger.info(f"  Sionna RT: {'enabled' if SIONNA_AVAILABLE else 'disabled'}")
     
-    def _load_scene_metadata(self) -> Dict:
-        """Load scene metadata from M1 output."""
-        metadata_path = self.config.scene_metadata_path
+    def _load_scene_metadata(self, scene_id: str) -> Dict:
+        """Load scene metadata from M1 output for a specific scene."""
+        metadata_path = self.config.scene_dir / scene_id / "metadata.json"
         if not metadata_path.exists():
             logger.warning(f"Scene metadata not found: {metadata_path}")
             return {}
@@ -177,7 +176,7 @@ class MultiLayerDataGenerator:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         
-        logger.info(f"Loaded scene metadata: {len(metadata.get('sites', []))} sites")
+        logger.info(f"Loaded scene metadata for {scene_id}: {len(metadata.get('sites', []))} sites")
         return metadata
     
     def generate_dataset(self, 
@@ -243,6 +242,9 @@ class MultiLayerDataGenerator:
         Returns:
             scene_data: Dict with all features and positions
         """
+        # Load scene-specific metadata
+        scene_metadata = self._load_scene_metadata(scene_id)
+        
         # Load scene in Sionna
         if SIONNA_AVAILABLE:
             scene = self._load_sionna_scene(scene_path)
@@ -251,10 +253,11 @@ class MultiLayerDataGenerator:
             scene = None
         
         # Load site positions and cell IDs from metadata
-        scene_metadata = self.scene_metadata.get(scene_id, {})
         sites = scene_metadata.get('sites', [])
-        site_positions = np.array([s['position'] for s in sites])
-        cell_ids = np.array([s['cell_id'] for s in sites])
+        # Filter sites with valid cell_id
+        valid_sites = [s for s in sites if s.get('cell_id') is not None]
+        site_positions = np.array([s['position'] for s in valid_sites])
+        cell_ids = np.array([s['cell_id'] for s in valid_sites], dtype=int)
         
         if len(sites) == 0:
             logger.warning(f"No sites in metadata for {scene_id}, using mock")

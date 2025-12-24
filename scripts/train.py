@@ -23,11 +23,15 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.training import UELocalizationLightning
+from src.utils.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
 def main():
+    # Setup logging
+    setup_logging(name="training")
+    
     parser = argparse.ArgumentParser(description='Train UE Localization Model')
     parser.add_argument(
         '--config',
@@ -138,15 +142,32 @@ def main():
         loggers.append(wandb_logger)
         logger.info(f"📈 WandB logging to project: {project}\n")
     
-    # Ensure at least one logger
+    # Ensure at least one logger (optional for quick tests)
     if not loggers:
-        raise ValueError("No loggers configured. Enable use_comet or use_wandb in config.")
+        logger.warning("⚠️  No loggers configured. Running without logging.")
+        logger.warning("   Enable use_comet or use_wandb in config for experiment tracking.\n")
+        # Use a dummy logger to avoid errors
+        from pytorch_lightning.loggers import Logger
+        class DummyLogger(Logger):
+            @property
+            def name(self):
+                return "dummy"
+            @property  
+            def version(self):
+                return "0"
+            def log_hyperparams(self, params):
+                pass
+            def log_metrics(self, metrics, step):
+                pass
+            def finalize(self, status):
+                pass
+        loggers.append(DummyLogger())
 
     # Enrich Comet with metadata/assets
-    for logger in loggers:
-        if not hasattr(logger, "experiment"):
+    for log in loggers:
+        if not hasattr(log, "experiment"):
             continue
-        experiment = logger.experiment
+        experiment = log.experiment
         if experiment is None:
             continue
         metadata = config.get('metadata', {})

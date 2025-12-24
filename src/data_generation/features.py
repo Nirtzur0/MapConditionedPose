@@ -61,18 +61,20 @@ class RTLayerFeatures:
     
     def to_dict(self) -> Dict[str, np.ndarray]:
         """Convert to dictionary for Zarr storage."""
-        return {
-            'rt/path_gains': self.path_gains,
-            'rt/path_delays': self.path_delays,
-            'rt/path_aoa_azimuth': self.path_aoa_azimuth,
-            'rt/path_aoa_elevation': self.path_aoa_elevation,
-            'rt/path_aod_azimuth': self.path_aod_azimuth,
-            'rt/path_aod_elevation': self.path_aod_elevation,
-            'rt/path_doppler': self.path_doppler,
+        result = {
             'rt/rms_delay_spread': self.rms_delay_spread,
-            'rt/k_factor': self.k_factor if self.k_factor is not None else np.array([]),
             'rt/num_paths': self.num_paths,
         }
+        
+        # Only include K-factor if computed
+        if self.k_factor is not None and self.k_factor.size > 0:
+            result['rt/k_factor'] = self.k_factor
+        
+        # Skip variable-length path arrays for now (they cause Zarr issues)
+        # These can be added back later with proper object array handling
+        logger.debug(f"Skipping path-level arrays for Zarr storage (num_paths: {self.num_paths})")
+        
+        return result
 
 
 @dataclass
@@ -149,6 +151,14 @@ class MACRRCLayerFeatures:
             'mac_rrc/neighbor_cell_ids': self.neighbor_cell_ids,
             'mac_rrc/timing_advance': self.timing_advance,
         }
+        
+        # Debug: check dtypes
+        for k, v in d.items():
+            if hasattr(v, 'dtype'):
+                logger.debug(f"MAC/RRC {k}: shape={v.shape}, dtype={v.dtype}")
+            else:
+                logger.warning(f"MAC/RRC {k}: not ndarray, type={type(v)}")
+        
         if self.tracking_area_code is not None:
             d['mac_rrc/tracking_area_code'] = self.tracking_area_code
         if self.dl_throughput_mbps is not None:
@@ -435,15 +445,20 @@ class PHYFAPIFeatureExtractor:
             rsrp_linear = compute_rsrp(channel_matrix, cell_id=0, 
                                       pilot_re_indices=pilot_re_indices)
             rsrp_dbm = 10 * np.log10(rsrp_linear + 1e-10) + 30
+            
+            # rsrp_linear is [batch, num_tx], reshape to [batch, num_rx, num_tx]
+            batch, num_tx = rsrp_linear.shape
+            num_rx = 1  # Assuming single RX antenna for now
+            rsrp = rsrp_dbm.reshape(batch, num_rx, num_tx)
+            num_cells = num_tx
         else:
             # Approximate from path gains
             total_power = np.sum(np.abs(rt_features.path_gains)**2, axis=-1)
             rsrp_dbm = 10 * np.log10(total_power + 1e-10) + 30
-        
-        # Expand to multi-cell: [batch, num_rx, num_cells]
-        # For now, single serving cell
-        num_cells = 1 + (len(interference_matrices) if interference_matrices else 0)
-        rsrp = np.repeat(rsrp_dbm[..., np.newaxis], num_cells, axis=-1)
+            
+            # Expand to multi-cell: [batch, num_rx, num_cells]
+            num_cells = 1 + (len(interference_matrices) if interference_matrices else 0)
+            rsrp = np.repeat(rsrp_dbm[..., np.newaxis], num_cells, axis=-1)
         
         # RSSI: total received power (signal + interference + noise)
         rssi_linear = 10**((rsrp_dbm - 30) / 10) + noise_power_linear

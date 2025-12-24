@@ -392,6 +392,7 @@ class RadioLocalizationDataset(Dataset):
     
     def _load_radio_map(self, idx: int) -> torch.Tensor:
         """Load precomputed Sionna radio map [7, H, W] (padded if needed)."""
+        print(f"DEBUG: _load_radio_map called with idx {idx}")
         if 'radio_maps' not in self.store:
             # Return dummy map if not available - pad to 7 channels
             H = W = int(self.scene_extent / self.map_resolution)
@@ -402,10 +403,18 @@ class RadioLocalizationDataset(Dataset):
         radio_map = torch.tensor(radio_map, dtype=torch.float32)
         
         # Ensure channel-first format [C, H, W]
-        if radio_map.shape[-1] <= 5:  # Likely [H, W, C]
+        if radio_map.dim() == 3 and radio_map.shape[0] == radio_map.shape[1] and radio_map.shape[1] == radio_map.shape[2]:
+            # If all dimensions equal, likely [H, W, C] with C=H=W, need to check last dim
+            if radio_map.shape[-1] < radio_map.shape[0]:
+                radio_map = radio_map.permute(2, 0, 1)
+        elif radio_map.dim() == 3 and radio_map.shape[-1] < min(radio_map.shape[0], radio_map.shape[1]):
+            # Last dimension is smallest, likely [H, W, C]
             radio_map = radio_map.permute(2, 0, 1)
         
-        return radio_map[:5]  # path_gain, toa, snr, sinr, throughput
+        print(f"DEBUG: radio_map shape after processing: {radio_map.shape}")
+        result = radio_map[:5]
+        print(f"DEBUG: returning shape: {result.shape}")
+        return result  # path_gain, toa, snr, sinr, throughput
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
         """Load OSM building/geometry map [5, H, W] (padded if needed)."""
@@ -419,7 +428,12 @@ class RadioLocalizationDataset(Dataset):
         osm_map = torch.tensor(osm_map, dtype=torch.float32)
         
         # Ensure channel-first format [C, H, W]
-        if osm_map.shape[-1] <= 5:  # Likely [H, W, C]
+        if osm_map.dim() == 3 and osm_map.shape[0] == osm_map.shape[1] and osm_map.shape[1] == osm_map.shape[2]:
+            # If all dimensions equal, likely [H, W, C] with C=H=W, need to check last dim
+            if osm_map.shape[-1] < osm_map.shape[0]:
+                osm_map = osm_map.permute(2, 0, 1)
+        elif osm_map.dim() == 3 and osm_map.shape[-1] < min(osm_map.shape[0], osm_map.shape[1]):
+            # Last dimension is smallest, likely [H, W, C]
             osm_map = osm_map.permute(2, 0, 1)
         
         # Pad to 5 channels if needed
@@ -427,6 +441,7 @@ class RadioLocalizationDataset(Dataset):
             padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
             osm_map = torch.cat([osm_map, padding], dim=0)
         
+        print(f"DEBUG: osm_map shape after processing: {osm_map.shape}")
         return osm_map[:5]  # height, material, footprint, road, terrain
     
     def _normalize_features(

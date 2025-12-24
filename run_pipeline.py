@@ -84,12 +84,13 @@ class PipelineOrchestrator:
             raise
     
     def step_1_generate_scenes(self):
-        """Generate 3D scenes with transmitter sites"""
+        """Generate 3D scenes with transmitter sites using GIS data"""
         if self.args.skip_scenes:
             logger.info("Skipping scene generation (--skip-scenes)")
             return
             
         self.log_section("STEP 1: Generate Scenes")
+        logger.info(f"Using GIS bounding box: {self.args.bbox} for scene generation")
         
         # Clean existing scenes if requested
         if self.args.clean and self.scene_dir.exists():
@@ -122,7 +123,7 @@ class PipelineOrchestrator:
         logger.info(f"Created {scene_count} scene(s)")
         
     def step_2_generate_dataset(self):
-        """Generate synthetic dataset from scenes"""
+        """Generate synthetic dataset from scenes using Sionna ray tracing"""
         if self.args.skip_dataset:
             logger.info("Skipping dataset generation (--skip-dataset)")
             zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -132,6 +133,7 @@ class PipelineOrchestrator:
             return
             
         self.log_section("STEP 2: Generate Dataset")
+        logger.info(f"Using scenes from {self.scene_dir} with Sionna ray tracing")
         
         # Clean existing dataset if requested
         if self.args.clean and self.dataset_dir.exists():

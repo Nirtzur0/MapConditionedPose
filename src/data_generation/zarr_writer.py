@@ -212,6 +212,9 @@ class ZarrDatasetWriter:
             if value is None or (isinstance(value, np.ndarray) and value.size == 0):
                 continue
             
+            # Debug: check dtype
+            logger.info(f"Creating array {key}: shape={value.shape}, dtype={value.dtype}")
+            
             # Infer shape and dtype
             if value.ndim == 1:
                 shape = (0,)
