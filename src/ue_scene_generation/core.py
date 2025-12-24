@@ -354,7 +354,7 @@ if __name__ == "__main__":
         }
     )
     
-    print(f"Generated scene: {metadata['scene_id']}")
-    print(f"Location: {metadata['bbox']}")
-    print(f"Materials: {metadata['materials']}")
-    print(f"Sites: {len(metadata['sites'])}")
+    logger.info(f"Generated scene: {metadata['scene_id']}")
+    logger.info(f"Location: {metadata['bbox']}")
+    logger.info(f"Materials: {metadata['materials']}")
+    logger.info(f"Sites: {len(metadata['sites'])}")

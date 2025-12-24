@@ -226,11 +226,11 @@ if __name__ == "__main__":
     # Test material randomization
     randomizer = MaterialRandomizer(enable_randomization=True, seed=42)
     
-    print("Sample material combinations:")
+    logger.info("Sample material combinations:")
     for i in range(5):
         materials = randomizer.sample()
-        print(f"\n  Combo {i+1}:")
+        logger.info(f"\n  Combo {i+1}:")
         for surface, mat_id in materials.items():
             props = randomizer.get_material_properties(mat_id)
-            print(f"    {surface}: {mat_id}")
-            print(f"      ε_r={props['epsilon_r']:.2f}, σ={props['sigma']:.4f} S/m")
+            logger.info(f"    {surface}: {mat_id}")
+            logger.info(f"      ε_r={props['epsilon_r']:.2f}, σ={props['sigma']:.4f} S/m")

@@ -8,6 +8,7 @@ import pytest
 import torch
 import yaml
 from pathlib import Path
+import logging
 
 # Model components
 from src.models.radio_encoder import RadioEncoder, PositionalEncoding
@@ -15,6 +16,8 @@ from src.models.map_encoder import MapEncoder, PatchEmbedding
 from src.models.fusion import CrossAttentionFusion
 from src.models.heads import CoarseHead, FineHead
 from src.models.ue_localization_model import UELocalizationModel
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
@@ -332,7 +335,7 @@ class TestUELocalizationModel:
         # Check parameter count
         num_params = model.num_parameters
         assert num_params > 0
-        print(f"\nModel has {num_params:,} parameters")
+        logger.info(f"\nModel has {num_params:,} parameters")
     
     def test_forward_pass(self, config, batch_measurements, batch_maps):
         """Test full forward pass."""

@@ -422,45 +422,45 @@ def clip_to_3gpp_range(value: np.ndarray,
 
 if __name__ == "__main__":
     # Test measurement computations
-    print("Testing 3GPP measurement utilities...")
+    logger.info("Testing 3GPP measurement utilities...")
     
     # Test RSRP computation
     h_test = np.random.randn(10, 4, 2, 1, 8, 100) + 1j * np.random.randn(10, 4, 2, 1, 8, 100)
     pilot_re = np.array([0, 12, 24, 36, 48])
     rsrp = compute_rsrp(h_test, cell_id=0, pilot_re_indices=pilot_re)
-    print(f"✓ RSRP: shape={rsrp.shape}, range=[{rsrp.min():.1f}, {rsrp.max():.1f}] dBm")
+    logger.info(f"✓ RSRP: shape={rsrp.shape}, range=[{rsrp.min():.1f}, {rsrp.max():.1f}] dBm")
     
     # Test RSRQ computation
     rssi = rsrp + np.random.randn(*rsrp.shape) * 5  # Add noise
     rsrq = compute_rsrq(rsrp, rssi)
-    print(f"✓ RSRQ: shape={rsrq.shape}, range=[{rsrq.min():.1f}, {rsrq.max():.1f}] dB")
+    logger.info(f"✓ RSRQ: shape={rsrq.shape}, range=[{rsrq.min():.1f}, {rsrq.max():.1f}] dB")
     
     # Test CQI computation
     sinr = np.random.uniform(-10, 25, (10, 4))
     cqi = compute_cqi(sinr)
-    print(f"✓ CQI: shape={cqi.shape}, range=[{cqi.min()}, {cqi.max()}]")
+    logger.info(f"✓ CQI: shape={cqi.shape}, range=[{cqi.min()}, {cqi.max()}]")
     
     # Test RI computation
     h_mimo = np.random.randn(10, 4, 8) + 1j * np.random.randn(10, 4, 8)
     ri = compute_rank_indicator(h_mimo)
-    print(f"✓ RI: shape={ri.shape}, range=[{ri.min()}, {ri.max()}]")
+    logger.info(f"✓ RI: shape={ri.shape}, range=[{ri.min()}, {ri.max()}]")
     
     # Test TA computation
     distances = np.random.uniform(10, 1000, (10, 4))
     ta = compute_timing_advance(distances)
-    print(f"✓ TA: shape={ta.shape}, range=[{ta.min()}, {ta.max()}]")
+    logger.info(f"✓ TA: shape={ta.shape}, range=[{ta.min()}, {ta.max()}]")
     
     # Test neighbor list truncation
     cells = np.tile(np.arange(20), (10, 1))
     rsrp_all = np.random.uniform(-120, -60, (10, 20))
     neighbor_cells, neighbor_rsrp = simulate_neighbor_list_truncation(cells, rsrp_all, K=8)
-    print(f"✓ Neighbor list: shape={neighbor_cells.shape}, top RSRP={neighbor_rsrp[0, 0]:.1f} dBm")
+    logger.info(f"✓ Neighbor list: shape={neighbor_cells.shape}, top RSRP={neighbor_rsrp[0, 0]:.1f} dBm")
     
     # Test dropout
     features = {'rsrp': rsrp, 'rsrq': rsrq, 'cqi': cqi.astype(float)}
     dropout_rates = {'rsrp': 0.1, 'rsrq': 0.2, 'cqi': 0.15}
     features_dropped = add_measurement_dropout(features, dropout_rates, seed=42)
     nan_count = np.isnan(features_dropped['rsrp']).sum()
-    print(f"✓ Dropout: {nan_count}/{rsrp.size} measurements dropped")
+    logger.info(f"✓ Dropout: {nan_count}/{rsrp.size} measurements dropped")
     
-    print("\nAll measurement utility tests passed! ✓")
+    logger.info("\nAll measurement utility tests passed! ✓")

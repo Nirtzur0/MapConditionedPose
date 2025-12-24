@@ -19,23 +19,18 @@ import logging
 import subprocess
 import sys
 import time
+import os
+import re
 from pathlib import Path
 from datetime import datetime
 import json
 import shutil
 
-# Create logs directory if it doesn't exist
-Path("logs").mkdir(exist_ok=True)
+from src.utils.logging_utils import setup_logging
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f'logs/pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-    ]
-)
+
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,29 +62,25 @@ class PipelineOrchestrator:
         start = time.time()
         
         try:
-            result = subprocess.run(
+            env = os.environ.copy()
+            env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+            process = subprocess.Popen(
                 cmd,
-                check=check,
-                capture_output=True,
                 text=True,
-                cwd=self.project_root
+                cwd=self.project_root,
+                env=env
             )
+            return_code = process.wait()
+            if check and return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd)
             
             duration = time.time() - start
             logger.info(f"✓ {step_name} completed in {duration:.1f}s")
-            
-            if result.stdout:
-                logger.debug(f"Output: {result.stdout}")
-            if result.stderr and "warning" in result.stderr.lower():
-                logger.warning(f"Warnings: {result.stderr}")
-                
-            return result
+            return return_code
             
         except subprocess.CalledProcessError as e:
             duration = time.time() - start
             logger.error(f"✗ {step_name} failed after {duration:.1f}s")
-            logger.error(f"Error output: {e.stderr}")
-            logger.error(f"Standard output: {e.stdout}")
             raise
     
     def step_1_generate_scenes(self):
@@ -134,6 +125,10 @@ class PipelineOrchestrator:
         """Generate synthetic dataset from scenes"""
         if self.args.skip_dataset:
             logger.info("Skipping dataset generation (--skip-dataset)")
+            zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not zarr_files:
+                raise RuntimeError(f"No dataset available to reuse in: {self.dataset_dir}")
+            self.dataset_path = zarr_files[0]
             return
             
         self.log_section("STEP 2: Generate Dataset")
@@ -193,6 +188,8 @@ class PipelineOrchestrator:
         if self.args.wandb:
             cmd.extend(["--wandb-project", "transformer-ue-localization"])
             cmd.extend(["--run-name", self.args.run_name])
+        if self.args.comet:
+            cmd.extend(["--run-name", self.args.run_name])
             
         self.run_command(cmd, "Model Training")
         
@@ -216,6 +213,17 @@ class PipelineOrchestrator:
         config['dataset']['scene_extent'] = 856  # Scene size in meters
         config['dataset']['normalize_features'] = True
         config['dataset']['handle_missing_values'] = 'mask'
+        config['metadata'] = {
+            'run_name': self.args.run_name,
+            'scene_name': self.args.scene_name,
+            'dataset_path': str(self.dataset_path),
+            'bbox': list(self.args.bbox),
+            'num_tx': self.args.num_tx,
+            'num_ues': self.args.num_ues,
+            'num_trajectories': self.args.num_trajectories,
+            'carrier_freq_hz': self.args.carrier_freq,
+            'bandwidth_hz': self.args.bandwidth,
+        }
         
         # Update training parameters
         if 'training' not in config:
@@ -234,12 +242,22 @@ class PipelineOrchestrator:
         if 'infrastructure' not in config:
             config['infrastructure'] = {}
         config['infrastructure']['num_workers'] = 0  # Disable multiprocessing for Zarr v3 compatibility
+        if 'logging' not in config['infrastructure']:
+            config['infrastructure']['logging'] = {}
+        config['infrastructure']['logging']['log_every_n_steps'] = 1
         
         # Update wandb settings
         if self.args.wandb:
             if 'wandb' not in config:
                 config['wandb'] = {}
             config['wandb']['mode'] = 'online'
+            if 'logging' not in config['infrastructure']:
+                config['infrastructure']['logging'] = {}
+            config['infrastructure']['logging']['use_wandb'] = True
+        if self.args.comet:
+            if 'logging' not in config['infrastructure']:
+                config['infrastructure']['logging'] = {}
+            config['infrastructure']['logging']['use_comet'] = True
         
         # Save config
         with open(config_path, 'w') as f:
@@ -291,16 +309,16 @@ class PipelineOrchestrator:
         logger.info(f"Pipeline report saved to: {report_path}")
         
         # Print summary
-        print("\n" + "=" * 80)
-        print("  PIPELINE EXECUTION SUMMARY")
-        print("=" * 80)
-        print(f"Run Name:       {self.args.run_name}")
-        print(f"Duration:       {duration/60:.1f} minutes")
-        print(f"Steps:          {', '.join(report['steps_completed'])}")
-        print(f"Scenes:         {self.scene_dir}")
-        print(f"Dataset:        {self.dataset_dir}")
-        print(f"Checkpoints:    {self.checkpoint_dir}")
-        print("=" * 80 + "\n")
+        logger.info("\n" + "=" * 80)
+        logger.info("  PIPELINE EXECUTION SUMMARY")
+        logger.info("=" * 80)
+        logger.info(f"Run Name:       {self.args.run_name}")
+        logger.info(f"Duration:       {duration/60:.1f} minutes")
+        logger.info(f"Steps:          {', '.join(report['steps_completed'])}")
+        logger.info(f"Scenes:         {self.scene_dir}")
+        logger.info(f"Dataset:        {self.dataset_dir}")
+        logger.info(f"Checkpoints:    {self.checkpoint_dir}")
+        logger.info("=" * 80 + "\n")
         
     def run(self):
         """Execute the complete pipeline"""
@@ -308,11 +326,8 @@ class PipelineOrchestrator:
             logger.info(f"Starting pipeline: {self.args.run_name}")
             logger.info(f"Project root: {self.project_root}")
             
-            if not self.args.skip_scenes:
-                self.step_1_generate_scenes()
-                
-            if not self.args.skip_dataset:
-                self.step_2_generate_dataset()
+            self.step_1_generate_scenes()
+            self.step_2_generate_dataset()
                 
             if not self.args.skip_training:
                 self.step_3_train_model()
@@ -409,6 +424,8 @@ Examples:
     # Logging
     parser.add_argument('--wandb', action='store_true',
                        help='Enable Weights & Biases logging')
+    parser.add_argument('--comet', action='store_true',
+                       help='Enable Comet ML logging')
     parser.add_argument('--run-name', type=str,
                        default=f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                        help='Run name for tracking')
@@ -437,6 +454,7 @@ Examples:
 
 def main():
     args = parse_args()
+    setup_logging(name=args.run_name)
     orchestrator = PipelineOrchestrator(args)
     sys.exit(orchestrator.run())
 

@@ -6,6 +6,10 @@ import requests, os, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from requests.adapters import HTTPAdapter, Retry
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class USGS1mLocator:
     """
@@ -192,4 +196,4 @@ class USGS1mLocator:
         if self.debug:
             # keep prints readable if many threads log
             with getattr(self, "_print_lock", threading.Lock()):
-                print(msg)
+                logger.debug(msg)

@@ -435,7 +435,7 @@ def zarr_to_dict(store: zarr.Group,
 
 if __name__ == "__main__":
     # Test Zarr writer
-    print("Testing ZarrDatasetWriter...")
+    logger.info("Testing ZarrDatasetWriter...")
     
     # Create test data
     num_samples = 250
@@ -463,7 +463,7 @@ if __name__ == "__main__":
     
     # Append scene 1
     writer.append(scene_data_1, scene_id='scene_001')
-    print(f"✓ Appended scene_001: {num_samples} samples")
+    logger.info(f"✓ Appended scene_001: {num_samples} samples")
     
     # Create and append scene 2
     scene_data_2 = scene_data_1.copy()
@@ -478,20 +478,20 @@ if __name__ == "__main__":
                 scene_data_2[key] = scene_data_2[key][:150]
     
     writer.append(scene_data_2, scene_id='scene_002')
-    print(f"✓ Appended scene_002: 150 samples")
+    logger.info(f"✓ Appended scene_002: 150 samples")
     
     # Finalize
     store_path = writer.finalize()
-    print(f"✓ Finalized dataset: {store_path}")
+    logger.info(f"✓ Finalized dataset: {store_path}")
     
     # Test loading
     store = load_zarr_dataset(store_path)
-    print(f"✓ Loaded dataset: {store.tree()}")
+    logger.info(f"✓ Loaded dataset: {store.tree()}")
     
     # Test conversion to dict
     data_dict = zarr_to_dict(store, indices=np.arange(10))
-    print(f"✓ Converted to dict: {len(data_dict)} arrays")
-    print(f"  - positions/ue_x: {data_dict['positions/ue_x'].shape}")
-    print(f"  - phy_fapi/rsrp: {data_dict['phy_fapi/rsrp'].shape}")
+    logger.info(f"✓ Converted to dict: {len(data_dict)} arrays")
+    logger.info(f"  - positions/ue_x: {data_dict['positions/ue_x'].shape}")
+    logger.info(f"  - phy_fapi/rsrp: {data_dict['phy_fapi/rsrp'].shape}")
     
-    print("\nZarrDatasetWriter tests passed! ✓")
+    logger.info("\nZarrDatasetWriter tests passed! ✓")

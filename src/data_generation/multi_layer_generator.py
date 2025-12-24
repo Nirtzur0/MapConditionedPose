@@ -156,11 +156,16 @@ class MultiLayerDataGenerator:
         
         # Load scene metadata
         self.scene_metadata = self._load_scene_metadata()
+        self._rx_counter = 0
+        self._logged_sionna = False
+        self._sionna_ok = 0
+        self._sionna_fail = 0
         
         logger.info(f"MultiLayerDataGenerator initialized: {config.scene_dir}")
         logger.info(f"  Carrier freq: {config.carrier_frequency_hz/1e9:.2f} GHz")
         logger.info(f"  UEs per tile: {config.num_ue_per_tile}")
         logger.info(f"  Reports per UE: {config.num_reports_per_ue}")
+        logger.info(f"  Sionna RT: {'enabled' if SIONNA_AVAILABLE else 'disabled'}")
     
     def _load_scene_metadata(self) -> Dict:
         """Load scene metadata from M1 output."""
@@ -240,8 +245,7 @@ class MultiLayerDataGenerator:
         """
         # Load scene in Sionna
         if SIONNA_AVAILABLE:
-            scene = load_scene(str(scene_path))
-            logger.info(f"Loaded Sionna scene: {scene_path}")
+            scene = self._load_sionna_scene(scene_path)
         else:
             logger.warning("Sionna not available - using mock data")
             scene = None
@@ -256,6 +260,10 @@ class MultiLayerDataGenerator:
             logger.warning(f"No sites in metadata for {scene_id}, using mock")
             site_positions = np.array([[0, 0, 30], [500, 0, 30]])
             cell_ids = np.array([1, 2])
+        
+        # Setup transmitters in Sionna
+        if scene is not None:
+            self._setup_transmitters(scene, site_positions, sites if sites else {})
         
         # Sample UE positions and trajectories
         ue_trajectories = self._sample_ue_trajectories(scene_metadata)
@@ -296,6 +304,10 @@ class MultiLayerDataGenerator:
         
         # Apply measurement realism
         scene_data = self._apply_measurement_realism(scene_data)
+
+        total = self._sionna_ok + self._sionna_fail
+        if total > 0:
+            logger.info(f"Sionna RT summary: {self._sionna_ok}/{total} successful, {self._sionna_fail} mock fallbacks")
         
         return scene_data
     
@@ -370,29 +382,66 @@ class MultiLayerDataGenerator:
             logger.debug("Sionna not available or no scene, using mock simulation")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
         
+        rx_name = None
         try:
             # Setup receiver at UE position
-            rx = self._setup_receiver(scene, ue_position)
+            rx_name = f"UE_{self._rx_counter}"
+            self._rx_counter += 1
+            rx_name = self._setup_receiver(scene, ue_position, rx_name)
             
             # Compute propagation paths using Sionna RT
             logger.debug(f"Computing paths for UE at {ue_position}")
-            paths = scene.compute_paths(
-                max_depth=getattr(self.config, 'max_depth', 5),
-                num_samples=getattr(self.config, 'num_samples', 10_000_000),
+            from sionna.rt import PathSolver
+            from mitsuba import Float
+            
+            max_depth = getattr(self.config, 'max_depth', 5)
+            samples_per_src = getattr(self.config, 'num_samples', 100_000)
+            max_num_paths = getattr(self.config, 'max_num_paths', 100_000)
+            paths = PathSolver()(
+                scene,
+                max_depth=max_depth,
+                samples_per_src=samples_per_src,
+                max_num_paths_per_src=max_num_paths,
                 los=True,
-                reflection=True,
+                specular_reflection=True,
+                diffuse_reflection=False,
+                refraction=True,
                 diffraction=getattr(self.config, 'enable_diffraction', True),
-                scattering=False,
                 edge_diffraction=False
             )
+            if not self._logged_sionna:
+                try:
+                    valid_paths = int(paths.valid.numpy().sum())
+                except Exception:
+                    valid_paths = 0
+                logger.info(f"Sionna RT paths computed: {valid_paths}")
+                self._logged_sionna = True
             
             # Extract RT features
             rt_features = self.rt_extractor.extract(paths)
             
-            # Compute channel matrices
-            channel_freq = scene.compute_channel(paths)
-            channel_matrix = channel_freq.numpy() if hasattr(channel_freq, 'numpy') else None
+            # Compute channel matrices (frequency response across subcarriers)
+            channel_matrix = None
+            try:
+                num_subcarriers = getattr(self.config, 'num_subcarriers', 100)
+                freqs = np.linspace(
+                    self.config.carrier_frequency_hz - self.config.bandwidth_hz / 2,
+                    self.config.carrier_frequency_hz + self.config.bandwidth_hz / 2,
+                    num_subcarriers
+                )
+                cfr = paths.cfr(
+                    frequencies=Float(list(freqs)),
+                    out_type='numpy'
+                )
+                channel_matrix = cfr[np.newaxis, ...]
+            except Exception:
+                channel_matrix = None
             
+            if rt_features.is_mock:
+                self._sionna_fail += 1
+            else:
+                self._sionna_ok += 1
+
             # Extract PHY features
             phy_features = self.phy_extractor.extract(
                 rt_features=rt_features,
@@ -408,15 +457,22 @@ class MultiLayerDataGenerator:
                 cell_ids=cell_ids
             )
             
-            # Remove receiver for next iteration
-            scene.remove(rx)
-            
             return rt_features, phy_features, mac_features
             
         except Exception as e:
-            logger.error(f"Sionna simulation failed: {e}")
+            self._sionna_fail += 1
+            if self._sionna_fail <= 3:
+                logger.error(f"Sionna simulation failed: {e}")
+                if self._sionna_fail == 3:
+                    logger.warning("Suppressing further Sionna errors (see log file for full details)")
             logger.warning("Falling back to mock simulation")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
+        finally:
+            if rx_name:
+                try:
+                    scene.remove(rx_name)
+                except Exception:
+                    pass
     
     def _load_sionna_scene(self, scene_path: Path) -> Any:
         """
@@ -465,22 +521,24 @@ class MultiLayerDataGenerator:
         
         transmitters = []
         
+        # Create antenna array based on frequency (shared across transmitters)
+        if self.config.carrier_frequency_hz < 10e9:
+            # Sub-6 GHz: 8x8 array, vertical polarization
+            array = PlanarArray(
+                num_rows=8, num_cols=8,
+                vertical_spacing=0.5, horizontal_spacing=0.5,
+                pattern="iso", polarization="V"
+            )
+        else:
+            # mmWave: 16x16 array, vertical polarization
+            array = PlanarArray(
+                num_rows=16, num_cols=16,
+                vertical_spacing=0.5, horizontal_spacing=0.5,
+                pattern="iso", polarization="V"
+            )
+        scene.tx_array = array
+
         for site_idx, pos in enumerate(site_positions):
-            # Create antenna array based on frequency
-            if self.config.carrier_frequency_hz < 10e9:
-                # Sub-6 GHz: 8x8 array, vertical polarization
-                array = PlanarArray(
-                    num_rows=8, num_cols=8,
-                    vertical_spacing=0.5, horizontal_spacing=0.5,
-                    pattern="iso", polarization="V"
-                )
-            else:
-                # mmWave: 16x16 array, vertical polarization
-                array = PlanarArray(
-                    num_rows=16, num_cols=16,
-                    vertical_spacing=0.5, horizontal_spacing=0.5,
-                    pattern="iso", polarization="V"
-                )
             
             
             # Get site-specific metadata
@@ -495,8 +553,7 @@ class MultiLayerDataGenerator:
             tx = Transmitter(
                 name=f"BS_{site_idx}",
                 position=pos if isinstance(pos, list) else pos.tolist(),
-                orientation=[azimuth, downtilt, 0.0],
-                antenna_array=array
+                orientation=[azimuth, downtilt, 0.0]
             )
             
             scene.add(tx)
@@ -505,7 +562,7 @@ class MultiLayerDataGenerator:
         
         return transmitters
     
-    def _setup_receiver(self, scene: Any, ue_position: np.ndarray) -> Any:
+    def _setup_receiver(self, scene: Any, ue_position: np.ndarray, name: str) -> str:
         """
         Setup UE receiver at given position.
         
@@ -514,7 +571,7 @@ class MultiLayerDataGenerator:
             ue_position: [3] position in meters
             
         Returns:
-            Sionna Receiver object
+            Receiver name
         """
         if not SIONNA_AVAILABLE or scene is None:
             return None
@@ -526,16 +583,16 @@ class MultiLayerDataGenerator:
             vertical_spacing=0.5, horizontal_spacing=0.5,
             pattern="iso", polarization="V"
         )
+        scene.rx_array = ue_array
         
         rx = Receiver(
-            name="UE",
+            name=name,
             position=ue_position.tolist(),
-            orientation=[0.0, 0.0, 0.0],
-            antenna=ue_array
+            orientation=[0.0, 0.0, 0.0]
         )
         
         scene.add(rx)
-        return rx
+        return name
     
     def _simulate_mock(self,
                       ue_position: np.ndarray,
@@ -667,7 +724,7 @@ class MultiLayerDataGenerator:
 
 if __name__ == "__main__":
     # Test data generator
-    print("Testing MultiLayerDataGenerator...")
+    logger.info("Testing MultiLayerDataGenerator...")
     
     # Create test config
     config = DataGenerationConfig(
@@ -700,17 +757,17 @@ if __name__ == "__main__":
     
     # Test UE trajectory sampling
     trajectories = generator._sample_ue_trajectories(metadata['scene_001'])
-    print(f"✓ Sampled {len(trajectories)} UE trajectories")
-    print(f"  Trajectory shape: {trajectories[0].shape}")
+    logger.info(f"✓ Sampled {len(trajectories)} UE trajectories")
+    logger.info(f"  Trajectory shape: {trajectories[0].shape}")
     
     # Test single measurement simulation
     ue_pos = np.array([100, 200, 1.5])
     site_positions = np.array([[0, 0, 30], [500, 0, 30]])
     cell_ids = np.array([1, 2])
     rt_feat, phy_feat, mac_feat = generator._simulate_mock(ue_pos, site_positions, cell_ids)
-    print(f"✓ Simulated single measurement")
-    print(f"  RT features: {len(rt_feat.to_dict())} arrays")
-    print(f"  PHY features: {len(phy_feat.to_dict())} arrays")
-    print(f"  MAC features: {len(mac_feat.to_dict())} arrays")
+    logger.info(f"✓ Simulated single measurement")
+    logger.info(f"  RT features: {len(rt_feat.to_dict())} arrays")
+    logger.info(f"  PHY features: {len(phy_feat.to_dict())} arrays")
+    logger.info(f"  MAC features: {len(mac_feat.to_dict())} arrays")
     
-    print("\nMultiLayerDataGenerator tests passed! ✓")
+    logger.info("\nMultiLayerDataGenerator tests passed! ✓")

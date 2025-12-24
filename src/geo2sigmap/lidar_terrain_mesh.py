@@ -1,4 +1,5 @@
 import laspy
+import logging
 import numpy as np
 import pyvista as pv
 
@@ -9,10 +10,12 @@ from pyproj import Transformer
 from plyfile import PlyData, PlyElement
 from scipy.spatial import cKDTree
 
+logger = logging.getLogger(__name__)
+
 def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857", dest_crs="EPSG:32617", plot_figures=False, center_x = 0, center_y = 0):
-    print("generate_terrain_mesh")
+    logger.info("generate_terrain_mesh")
     pv.global_theme.trame.server_proxy_enabled = True
-    print(pv.global_theme.trame.server_proxy_enabled)
+    logger.info(pv.global_theme.trame.server_proxy_enabled)
     
     
     
@@ -20,14 +23,14 @@ def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857
     las = laspy.read(lidar_laz_file_path)
     # Check for VLRs
     # for vlr in las.vlrs:
-    #     print(vlr.description)
-    #     print(vlr.record_id)
-    #     print(vlr)
+    #     logger.debug(vlr.description)
+    #     logger.debug(vlr.record_id)
+    #     logger.debug(vlr)
     # # Access the WKT (Well-Known Text) CRS if available
     # if las.header.evlrs:
     #     for evlr in las.header.evlrs:
     #         if evlr.description == "WKT":
-    #             print("CRS WKT:", evlr.string)
+    #             logger.debug("CRS WKT:", evlr.string)
 
     
     # Extract the classification field and filter out ground points (classification == 2)
@@ -39,12 +42,12 @@ def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857
     z_ground = las.z[ground_mask]
     
     # Create a PyVista point cloud
-    print(x_ground)
-    print(y_ground)
+    logger.debug(x_ground)
+    logger.debug(y_ground)
     transformer = Transformer.from_crs(src_crs, dest_crs, always_xy=True)
     x_ground, y_ground = transformer.transform(x_ground, y_ground)
-    print(x_ground)
-    print(y_ground)
+    logger.debug(x_ground)
+    logger.debug(y_ground)
     
     
     # Combine X and Y into a 2D array for KD-Tree search
@@ -65,7 +68,7 @@ def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857
 
     x_ground = x_ground - center_x
     y_ground = y_ground - center_y
-    print("centerx, y", center_x, center_y)
+    logger.info("centerx, y", center_x, center_y)
     
 
 
@@ -84,10 +87,10 @@ def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857
     
     surface_mesh = point_cloud.delaunay_2d()
     
-    print("Ori # of faces: ", surface_mesh.n_faces)
+    logger.info("Ori # of faces: ", surface_mesh.n_faces)
 
     pro_decimated = surface_mesh.decimate_pro(0.90, preserve_topology=True)
-    print("pro_decimated # of faces: ", pro_decimated.n_faces)
+    logger.info("pro_decimated # of faces: ", pro_decimated.n_faces)
     surface_mesh = surface_mesh
             # Extract vertices and faces from the PyVista surface mesh
     vertices = surface_mesh.points

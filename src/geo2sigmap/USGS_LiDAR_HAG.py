@@ -1,6 +1,7 @@
 import copy
 import geopandas as gpd
 import json
+import logging
 import math
 import matplotlib
 import matplotlib.pyplot as plt
@@ -11,6 +12,8 @@ import pyproj
 import requests
 from shapely.geometry import shape, Point, Polygon
 from shapely.ops import transform
+
+logger = logging.getLogger(__name__)
 
 def proj_to_3857(poly, orig_crs):
     """
@@ -304,15 +307,15 @@ def make_DEM_pipeline(extent_epsg3857, usgs_3dep_dataset_name, pc_resolution, de
 
 class CoverageChecker:
     def __init__(self, file_path: str="resources.geojson"):
-        print("Loading 3DEP resources.geojson...")
+        logger.info("Loading 3DEP resources.geojson...")
         if not os.path.exists("resources.geojson"):
-            #print("Requesting, loading, and projecting 3DEP dataset polygons...")
+            #logger.debug("Requesting, loading, and projecting 3DEP dataset polygons...")
             url = 'https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson'
             r = requests.get(url)
             with open('resources.geojson', 'w') as f:
                 f.write(r.content.decode("utf-8"))
         with open('resources.geojson', 'r') as f:
-            df =  gpd.read_file(f) 
+            df =  gpd.read_file(f)
             self.names = df['name']
             self.urls = df['url']
             self.num_points = df['count']
@@ -362,13 +365,13 @@ def generate_hag(polygon, data_dir, CRS="EPSG:3857"):
         None: Saves HAG data as GeoTIFF file in the specified data directory
     """
     if not os.path.exists("resources.geojson"):
-        print("Requesting, loading, and projecting 3DEP dataset polygons...")
+        logger.info("Requesting, loading, and projecting 3DEP dataset polygons...")
         url = 'https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson'
         r = requests.get(url)
         with open('resources.geojson', 'w') as f:
             f.write(r.content.decode("utf-8"))
     else:
-        print("Loading local 3DEP dataset polygons...")
+        logger.info("Loading local 3DEP dataset polygons...")
 
     with open('resources.geojson', 'r') as f:
         df = gpd.read_file(f)
@@ -383,10 +386,10 @@ def generate_hag(polygon, data_dir, CRS="EPSG:3857"):
     geometries_GCS = df['geometry']
     geometries_EPSG3857 = gpd.GeoSeries(projected_geoms)
 
-    print('Done. 3DEP polygons downloaded and projected to ', CRS.to_string())
+    logger.info('Done. 3DEP polygons downloaded and projected to ', CRS.to_string())
 
     AOI_EPSG3857 = proj_to_3857(polygon, "EPSG:4326")[1]
-    print("Area of Interest:", AOI_EPSG3857)
+    logger.info("Area of Interest:", AOI_EPSG3857)
 
     intersecting_polys = []
     for i, geom in enumerate(geometries_EPSG3857):
@@ -394,7 +397,7 @@ def generate_hag(polygon, data_dir, CRS="EPSG:3857"):
         if AOI_EPSG3857.within(geom):
             intersecting_polys.append((names[i], geometries_GCS[i], geometries_EPSG3857[i], urls[i], num_points[i]))
 
-    print(f"Found {len(intersecting_polys)} intersecting datasets")
+    logger.info(f"Found {len(intersecting_polys)} intersecting datasets")
     if len(intersecting_polys) ==0:
         raise ValueError("No LiDAR data available for the selected region.")
 
@@ -423,10 +426,10 @@ def generate_hag(polygon, data_dir, CRS="EPSG:3857"):
         )
         dsm_pipeline = pdal.Pipeline(json.dumps(dsm_pipeline))
         dsm_pipeline.execute()
-        print("Successfully generated HAG data")
+        logger.info("Successfully generated HAG data")
         
     except Exception as e:
-        print(f"Error generating HAG data: {e}")
+        logger.error(f"Error generating HAG data: {e}")
 
 def main():
     """
@@ -453,9 +456,9 @@ def main():
     os.makedirs(data_dir, exist_ok=True)
     
     # Generate HAG data
-    print("Starting HAG generation...")
+    logger.info("Starting HAG generation...")
     generate_hag(test_polygon, data_dir)
-    print("HAG generation complete")
+    logger.info("HAG generation complete")
 
 if __name__ == "__main__":
     main()

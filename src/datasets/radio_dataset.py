@@ -70,7 +70,7 @@ class RadioLocalizationDataset(Dataset):
             return self.store['metadata'][f'{self.split}_indices'][:]
         
         # Otherwise, create split based on total samples
-        total_samples = len(self.store['positions'])
+        total_samples = len(self.store['positions/ue_x'])
         indices = np.arange(total_samples)
         
         # Default split: 70% train, 15% val, 15% test
@@ -272,21 +272,27 @@ class RadioLocalizationDataset(Dataset):
         if 'mac_rrc' in self.store:
             mac_group = self.store['mac_rrc']
             mac_features = []
+
+            def _scalar(value, default=0.0):
+                arr = np.array(value)
+                if arr.size == 0:
+                    return float(default)
+                return float(np.mean(arr))
             
             if 'serving_cell_id' in mac_group:
-                mac_features.append(float(mac_group['serving_cell_id'][zarr_idx]))
+                mac_features.append(_scalar(mac_group['serving_cell_id'][zarr_idx], default=0.0))
                 
             if 'timing_advance' in mac_group:
-                mac_features.append(float(mac_group['timing_advance'][zarr_idx]))
+                mac_features.append(_scalar(mac_group['timing_advance'][zarr_idx], default=0.0))
                 
             if 'phr' in mac_group:
-                mac_features.append(float(mac_group['phr'][zarr_idx]))
+                mac_features.append(_scalar(mac_group['phr'][zarr_idx], default=0.0))
                 
             if 'throughput' in mac_group:
-                mac_features.append(float(mac_group['throughput'][zarr_idx]))
+                mac_features.append(_scalar(mac_group['throughput'][zarr_idx], default=0.0))
                 
             if 'bler' in mac_group:
-                mac_features.append(float(mac_group['bler'][zarr_idx]))
+                mac_features.append(_scalar(mac_group['bler'][zarr_idx], default=0.0))
             
             if mac_features:
                 mac_data['features'] = torch.tensor(

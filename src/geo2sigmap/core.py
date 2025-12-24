@@ -133,34 +133,22 @@ class Scene:
         def print_material_info(surface_name, material_type):
             if isinstance(ITU_MATERIALS[material_type]["lower_freq_limit"], list):
                 logger.info(
-                    "{:<35}{:<20} | Frequency Range: {:^5} - {:^5} (GHz) | {:^5} - {:^5} (GHz)".format(
+                    "{:<35}{:<20} | Frequency Range: {:^5.1f} - {:^5.1f} (GHz) | {:^5.1f} - {:^5.1f} (GHz)".format(
                         "{} Material Type:".format(surface_name),
                         ITU_MATERIALS[material_type]["name"],
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["lower_freq_limit"][0] / 1e9
-                        ),
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["upper_freq_limit"][0] / 1e9
-                        ),
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["lower_freq_limit"][1] / 1e9
-                        ),
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["upper_freq_limit"][1] / 1e9
-                        ),
+                        ITU_MATERIALS[material_type]["lower_freq_limit"][0] / 1e9,
+                        ITU_MATERIALS[material_type]["upper_freq_limit"][0] / 1e9,
+                        ITU_MATERIALS[material_type]["lower_freq_limit"][1] / 1e9,
+                        ITU_MATERIALS[material_type]["upper_freq_limit"][1] / 1e9,
                     )
                 )
             else:
                 logger.info(
-                    "{:<35}{:<20} | Frequency Range: {:^5} - {:^5} (GHz)".format(
+                    "{:<35}{:<20} | Frequency Range: {:^5.1f} - {:^5.1f} (GHz)".format(
                         "{} Material Type:".format(surface_name),
                         ITU_MATERIALS[material_type]["name"],
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["lower_freq_limit"] / 1e9
-                        ),
-                        print_if_int(
-                            ITU_MATERIALS[material_type]["upper_freq_limit"] / 1e9
-                        ),
+                        ITU_MATERIALS[material_type]["lower_freq_limit"] / 1e9,
+                        ITU_MATERIALS[material_type]["upper_freq_limit"] / 1e9,
                     )
                 )
 
@@ -325,7 +313,7 @@ class Scene:
                 assert laz_file_path.exists(), f"LAZ file does not exist: {laz_file_path}"
     
                 assert tif_file_path.exists(), f"TIF file does not exist: {tif_file_path}"
-                print("Skip the lidar_terrain.ply")
+                logger.debug("Skip the lidar_terrain.ply")
                 if not Path(os.path.join(data_dir,"mesh" ,"lidar_terrain.ply")).exists():
 
                     if dem_terrain:
@@ -340,10 +328,10 @@ class Scene:
                             plot_figures=False, center_x=center_x, center_y=center_y
                         )
             if gen_lidar_terrain_only:
-                print("gen_lidar_terrain_only: True")
+                logger.debug("gen_lidar_terrain_only: True")
                 return
         except Exception as e:
-            print(e)
+            logger.error(e)
         if lidar_terrain:
             lidar_terrain_ply_path = Path(os.path.join(data_dir,"mesh" ,"lidar_terrain.ply"))
             if not lidar_terrain_ply_path.exists():
@@ -385,7 +373,7 @@ class Scene:
         points = np.concatenate([v, np.zeros((nv, 1))], axis=1)
 
         logger.debug(f"points from triangulate: {points}")
-        # print("faces from triangulate", faces)
+
 
         # Build Open3D TriangleMesh
         mesh_o3d = o3d.t.geometry.TriangleMesh()
@@ -499,20 +487,18 @@ class Scene:
                 # plt.xlabel('Longitude EPSG:6933')
                 # plt.ylabel('Latitude EPSG:6933')
                 # plt.show()
-                print("Building height list: ", abs_height)
-                print()
+                logger.debug("Building height list: %s", abs_height)
                 filtered_list = [
                     x for x in abs_height if x.size > 0 and x != -9999 and x > 2
                 ]
-                print("Building height list: ", abs_height)
-                print()
+                logger.debug("Building height list: %s", abs_height)
                 try:
                     building_height = np.mean(filtered_list)
-                    print("Avg Building Height: ", building_height)
+                    logger.debug("Avg Building Height: %s", building_height)
                     if math.isnan(building_height):
                         raise ValueError("The value is NaN")
                 except Exception as e:
-                    print("Random Building Height: ", building_height)
+                    logger.debug("Random Building Height: %s", building_height)
                     building_height = random_building_height(building, building_polygon)
             else:
                 building_height = random_building_height(building, building_polygon)
@@ -550,7 +536,7 @@ class Scene:
 
                 # res_z = np.array(res_z)
                 # res_z[res_z == -1e+299] = 1e+299
-                # #print(res_z)
+
                 # building_z_value = int(np.floor(np.min(res_z)))
 
                 
@@ -579,7 +565,7 @@ class Scene:
                 building_z_value = 0
                 
         
-            #print("Building's Z-value: ", building_z_value)
+
             
             
 
@@ -621,8 +607,7 @@ class Scene:
             v, f = d["vertices"], d["triangles"]
             nv, nf = len(v), len(f)
 
-            # print(v)
-            # print(f)
+
 
             #points = np.concatenate([v, np.zeros((nv, 1))], axis=1)
             points = np.concatenate([v, np.full((nv, 1), fill_value=building_z_value)], axis=1)
@@ -647,7 +632,7 @@ class Scene:
             top_vertex_indices = np.where(z_values == building_height + building_z_value)[
                 0
             ].tolist()  # Indices of top vertices
-            #print("top vertex indices: ", top_vertex_indices)
+
             
 
 
@@ -657,20 +642,16 @@ class Scene:
 
             other_faces_np = faces_np[face_centroids[:, 2] < building_height+building_z_value]
             if len(other_faces_np) == 0:
-                print("All vertices: ", vertices_np)
-                print("top vertex indices: ", top_vertex_indices)
-                print("max height of meshes: ", np.max(z_values))
-                print("min height of meshes: ", np.min(z_values))
-                print("building height: ", building_height)
-                print("building z value: ", building_z_value)
-                print("building height + building z value: ", building_height + building_z_value)
+                logger.debug("All vertices: %s", vertices_np)
+                logger.debug("top vertex indices: %s", top_vertex_indices)
+                logger.debug("max height of meshes: %s", np.max(z_values))
+                logger.debug("min height of meshes: %s", np.min(z_values))
+                logger.debug("building height: %s", building_height)
+                logger.debug("building z value: %s", building_z_value)
+                logger.debug("building height + building z value: %s", building_height + building_z_value)
                 
             
-                print("other faces np: ", other_faces_np)
-                print("max height of meshes: ", np.max(z_values))
-                print("building height: ", building_height)
-                print("building z value: ", building_z_value)
-                print("building height + building z value: ", building_height + building_z_value)
+                logger.debug("other faces np: %s", other_faces_np)
             # Convert to Open3D Tensor API
             other_faces_o3c = o3c.Tensor(other_faces_np, dtype=o3c.int32)
 
@@ -752,7 +733,7 @@ class Scene:
             fill=int(building_height),
         )
         # local_coor_building_polygon = affinity.translate(building_polygon, xoff=-1 * tmpres[0], yoff=-1 * tmpres[1])
-        # # print("local_coor_building_polygon:",local_coor_building_polygon,'\n\n\n\n')
+
 
         # local_coor_building_polygon = round_polygon_coordinates(local_coor_building_polygon)
 

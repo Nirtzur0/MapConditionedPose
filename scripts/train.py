@@ -17,11 +17,14 @@ from pytorch_lightning.loggers import WandbLogger, CometLogger
 from pathlib import Path
 import yaml
 import os
+import logging
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.training import UELocalizationLightning
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -66,8 +69,8 @@ def main():
     model = UELocalizationLightning(args.config)
     
     # Print model info
-    print(f"\nModel Parameters: {model.model.num_parameters:,}")
-    print(f"Configuration: {args.config}\n")
+    logger.info(f"\nModel Parameters: {model.model.num_parameters:,}")
+    logger.info(f"Configuration: {args.config}\n")
     
     # Setup callbacks
     callbacks = []
@@ -105,21 +108,22 @@ def main():
     if config['infrastructure']['logging'].get('use_comet', False):
         comet_api_key = os.environ.get('COMET_API_KEY')
         if comet_api_key:
-            project = config['infrastructure']['logging'].get('project', 'ue-localization')
+            project = os.environ.get('COMET_PROJECT_NAME') or config['infrastructure']['logging'].get('project', 'ue-localization')
             comet_logger = CometLogger(
                 api_key=comet_api_key,
-                project_name=project,
-                experiment_name=args.run_name,
+                project=project,
                 workspace=os.environ.get('COMET_WORKSPACE'),
             )
+            if args.run_name:
+                comet_logger.experiment.set_name(args.run_name)
             loggers.append(comet_logger)
-            print(f"\n📊 Comet ML logging enabled")
-            print(f"   Project: {project}")
-            print(f"   View at: https://www.comet.com/{os.environ.get('COMET_WORKSPACE', 'your-workspace')}/{project}\n")
+            logger.info(f"\n📊 Comet ML logging enabled")
+            logger.info(f"   Project: {project}")
+            logger.info(f"   View at: https://www.comet.com/{os.environ.get('COMET_WORKSPACE', 'your-workspace')}/{project}\n")
         else:
-            print("\n⚠️  Comet ML enabled in config but COMET_API_KEY not found")
-            print("   Get your API key from: https://www.comet.com/api/my/settings/")
-            print("   Set it with: export COMET_API_KEY=your-key-here")
+            logger.warning("\n⚠️  Comet ML enabled in config but COMET_API_KEY not found")
+            logger.warning("   Get your API key from: https://www.comet.com/api/my/settings/")
+            logger.warning("   Set it with: export COMET_API_KEY=your-key-here")
             raise ValueError("COMET_API_KEY required when use_comet=true")
     
     # WandB (optional alternative)
@@ -132,11 +136,35 @@ def main():
         )
         wandb_logger.experiment.config.update(config)
         loggers.append(wandb_logger)
-        print(f"📈 WandB logging to project: {project}\n")
+        logger.info(f"📈 WandB logging to project: {project}\n")
     
     # Ensure at least one logger
     if not loggers:
         raise ValueError("No loggers configured. Enable use_comet or use_wandb in config.")
+
+    # Enrich Comet with metadata/assets
+    for logger in loggers:
+        if not hasattr(logger, "experiment"):
+            continue
+        experiment = logger.experiment
+        if experiment is None:
+            continue
+        metadata = config.get('metadata', {})
+        if metadata:
+            experiment.log_parameters(metadata)
+        experiment.log_parameter("config_path", str(args.config))
+        experiment.log_asset(str(args.config), file_name=Path(args.config).name)
+        report_path = Path(args.config).parent / "pipeline_report.json"
+        if report_path.exists():
+            experiment.log_asset(str(report_path), file_name=report_path.name)
+        tags = ["pipeline", "training"]
+        if metadata.get("scene_name"):
+            tags.append(f"scene:{metadata['scene_name']}")
+        if metadata.get("num_tx") is not None:
+            tags.append(f"tx:{metadata['num_tx']}")
+        if metadata.get("num_trajectories") is not None:
+            tags.append(f"traj:{metadata['num_trajectories']}")
+        experiment.add_tags(tags)
     
     # Create trainer
     trainer = pl.Trainer(
@@ -149,7 +177,7 @@ def main():
         gradient_clip_val=config['training']['gradient_clip'],
         log_every_n_steps=config['infrastructure']['logging']['log_every_n_steps'],
         enable_progress_bar=True,
-        enable_model_summary=True,
+        enable_model_summary=False,
     )
     
     # Test only mode
@@ -157,25 +185,25 @@ def main():
         if args.resume is None:
             raise ValueError("Must provide --resume checkpoint for test-only mode")
         
-        print(f"\nRunning test evaluation on checkpoint: {args.resume}\n")
+        logger.info(f"\nRunning test evaluation on checkpoint: {args.resume}\n")
         trainer.test(model, ckpt_path=args.resume)
         return
     
     # Train
-    print("\nStarting training...\n")
+    logger.info("\nStarting training...\n")
     trainer.fit(
         model,
         ckpt_path=args.resume,
     )
     
     # Test on best checkpoint
-    print("\nTraining complete. Running final test evaluation...\n")
+    logger.info("\nTraining complete. Running final test evaluation...\n")
     trainer.test(
         model,
         ckpt_path='best',
     )
     
-    print("\nDone!\n")
+    logger.info("\nDone!\n")
 
 
 if __name__ == '__main__':

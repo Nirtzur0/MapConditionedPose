@@ -53,6 +53,7 @@ class RTLayerFeatures:
     rms_delay_spread: np.ndarray  # [batch, num_rx] RMS-DS (seconds)
     k_factor: Optional[np.ndarray] = None  # [batch, num_rx] Rician K-factor (dB)
     num_paths: np.ndarray = field(default_factory=lambda: np.array([]))  # [batch, num_rx] path count
+    is_mock: bool = False
     
     # Metadata
     carrier_frequency_hz: float = 3.5e9
@@ -201,56 +202,66 @@ class RTFeatureExtractor:
         
         try:
             # Extract path-level features from Sionna Paths
-            # Convert TensorFlow tensors to numpy
-            import tensorflow as tf
+            def _to_numpy(value):
+                return value.numpy() if hasattr(value, 'numpy') else np.array(value)
+
+            def _to_complex(value):
+                if isinstance(value, tuple) and len(value) == 2:
+                    real = _to_numpy(value[0])
+                    imag = _to_numpy(value[1])
+                    return real + 1j * imag
+                return _to_numpy(value)
+
+            def _reduce_ant_time(arr):
+                if arr.ndim == 6:  # [rx, rx_ant, tx, tx_ant, paths, time]
+                    return np.mean(arr, axis=(1, 3, 5))
+                if arr.ndim == 5:  # [rx, rx_ant, tx, tx_ant, paths]
+                    return np.mean(arr, axis=(1, 3))
+                if arr.ndim == 4:  # [rx, tx, paths, time]
+                    return np.mean(arr, axis=3)
+                return arr
+
+            def _ensure_batch(arr):
+                if arr.ndim == 3:  # [rx, tx, paths]
+                    return arr[np.newaxis, ...]
+                return arr
+
+            # Complex path gains
+            path_gains_complex = _to_complex(paths.a)
             
-            # Complex path gains: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
-            path_gains_complex = paths.a.numpy() if hasattr(paths.a, 'numpy') else np.array(paths.a)
-            
-            # Path delays: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]
-            path_delays = paths.tau.numpy() if hasattr(paths.tau, 'numpy') else np.array(paths.tau)
+            # Path delays
+            path_delays = _to_numpy(paths.tau)
             
             # Angles (in radians)
-            path_aoa_azimuth = paths.phi_r.numpy() if hasattr(paths.phi_r, 'numpy') else np.array(paths.phi_r)
-            path_aoa_elevation = paths.theta_r.numpy() if hasattr(paths.theta_r, 'numpy') else np.array(paths.theta_r)
-            path_aod_azimuth = paths.phi_t.numpy() if hasattr(paths.phi_t, 'numpy') else np.array(paths.phi_t)
-            path_aod_elevation = paths.theta_t.numpy() if hasattr(paths.theta_t, 'numpy') else np.array(paths.theta_t)
+            path_aoa_azimuth = _to_numpy(paths.phi_r)
+            path_aoa_elevation = _to_numpy(paths.theta_r)
+            path_aod_azimuth = _to_numpy(paths.phi_t)
+            path_aod_elevation = _to_numpy(paths.theta_t)
             
             # Doppler (if available)
             if hasattr(paths, 'doppler'):
-                path_doppler = paths.doppler.numpy() if hasattr(paths.doppler, 'numpy') else np.array(paths.doppler)
+                path_doppler = _to_numpy(paths.doppler)
             else:
                 path_doppler = np.zeros_like(path_delays)
             
-            # Average over antennas to get per-path gains
-            # From [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, time_steps]
-            # To [batch, num_rx, num_paths]
+            # Average over antennas/time to get per-path gains
             path_gains_magnitude = np.abs(path_gains_complex)
+            path_gains_avg = _reduce_ant_time(path_gains_magnitude)
             
-            # Handle different tensor shapes (static vs time-varying)
-            if len(path_gains_magnitude.shape) == 7:  # Has time dimension
-                path_gains_avg = np.mean(path_gains_magnitude[..., 0], axis=(2, 4))  # Take first time step
-            elif len(path_gains_magnitude.shape) == 6:  # No time dimension
-                path_gains_avg = np.mean(path_gains_magnitude, axis=(2, 4))
-            else:
-                logger.warning(f"Unexpected path gains shape: {path_gains_magnitude.shape}")
-                path_gains_avg = path_gains_magnitude
-            
-            # Average delays and angles over antennas
-            if len(path_delays.shape) > 4:
-                path_delays_avg = np.mean(path_delays, axis=(2, 4))
-                path_aoa_az_avg = np.mean(path_aoa_azimuth, axis=(2, 4))
-                path_aoa_el_avg = np.mean(path_aoa_elevation, axis=(2, 4))
-                path_aod_az_avg = np.mean(path_aod_azimuth, axis=(2, 4))
-                path_aod_el_avg = np.mean(path_aod_elevation, axis=(2, 4))
-                path_doppler_avg = np.mean(path_doppler, axis=(2, 4))
-            else:
-                path_delays_avg = path_delays
-                path_aoa_az_avg = path_aoa_azimuth
-                path_aoa_el_avg = path_aoa_elevation
-                path_aod_az_avg = path_aod_azimuth
-                path_aod_el_avg = path_aod_elevation
-                path_doppler_avg = path_doppler
+            path_delays_avg = _reduce_ant_time(path_delays)
+            path_aoa_az_avg = _reduce_ant_time(path_aoa_azimuth)
+            path_aoa_el_avg = _reduce_ant_time(path_aoa_elevation)
+            path_aod_az_avg = _reduce_ant_time(path_aod_azimuth)
+            path_aod_el_avg = _reduce_ant_time(path_aod_elevation)
+            path_doppler_avg = _reduce_ant_time(path_doppler)
+
+            path_gains_avg = _ensure_batch(path_gains_avg)
+            path_delays_avg = _ensure_batch(path_delays_avg)
+            path_aoa_az_avg = _ensure_batch(path_aoa_az_avg)
+            path_aoa_el_avg = _ensure_batch(path_aoa_el_avg)
+            path_aod_az_avg = _ensure_batch(path_aod_az_avg)
+            path_aod_el_avg = _ensure_batch(path_aod_el_avg)
+            path_doppler_avg = _ensure_batch(path_doppler_avg)
             
             # Ensure we have the right final shape: [batch, num_rx, num_paths]
             # Sometimes need to average over num_tx dimension
@@ -286,6 +297,7 @@ class RTFeatureExtractor:
                 num_paths=num_paths,
                 carrier_frequency_hz=self.carrier_frequency_hz,
                 bandwidth_hz=self.bandwidth_hz,
+                is_mock=False,
             )
         
         except Exception as e:
@@ -361,6 +373,7 @@ class RTFeatureExtractor:
             num_paths=np.random.randint(10, num_paths, (batch_size, num_rx)),
             carrier_frequency_hz=self.carrier_frequency_hz,
             bandwidth_hz=self.bandwidth_hz,
+            is_mock=True,
         )
 
 
@@ -628,24 +641,24 @@ class MACRRCFeatureExtractor:
 
 if __name__ == "__main__":
     # Test feature extractors
-    print("Testing Multi-Layer Feature Extractors...")
+    logger.info("Testing Multi-Layer Feature Extractors...")
     
     # Test RT extractor
     rt_extractor = RTFeatureExtractor(carrier_frequency_hz=3.5e9, compute_k_factor=True)
     rt_features = rt_extractor._extract_mock()
-    print(f"✓ RT Features: {len(rt_features.to_dict())} arrays")
-    print(f"  - Path gains: {rt_features.path_gains.shape}")
-    print(f"  - RMS-DS: {rt_features.rms_delay_spread.mean()*1e9:.1f} ns")
-    print(f"  - K-factor: {rt_features.k_factor.mean():.1f} dB")
+    logger.info(f"✓ RT Features: {len(rt_features.to_dict())} arrays")
+    logger.info(f"  - Path gains: {rt_features.path_gains.shape}")
+    logger.info(f"  - RMS-DS: {rt_features.rms_delay_spread.mean()*1e9:.1f} ns")
+    logger.info(f"  - K-factor: {rt_features.k_factor.mean():.1f} dB")
     
     # Test PHY/FAPI extractor
     phy_extractor = PHYFAPIFeatureExtractor(enable_beam_management=True, num_beams=64)
     phy_features = phy_extractor.extract(rt_features)
-    print(f"✓ PHY/FAPI Features: {len(phy_features.to_dict())} arrays")
-    print(f"  - RSRP: {phy_features.rsrp.mean():.1f} dBm")
-    print(f"  - RSRQ: {phy_features.rsrq.mean():.1f} dB")
-    print(f"  - CQI: {phy_features.cqi.mean():.1f}")
-    print(f"  - Beam RSRP: {phy_features.l1_rsrp_beams.shape}")
+    logger.info(f"✓ PHY/FAPI Features: {len(phy_features.to_dict())} arrays")
+    logger.info(f"  - RSRP: {phy_features.rsrp.mean():.1f} dBm")
+    logger.info(f"  - RSRQ: {phy_features.rsrq.mean():.1f} dB")
+    logger.info(f"  - CQI: {phy_features.cqi.mean():.1f}")
+    logger.info(f"  - Beam RSRP: {phy_features.l1_rsrp_beams.shape}")
     
     # Test MAC/RRC extractor
     mac_extractor = MACRRCFeatureExtractor(max_neighbors=8, enable_throughput=True)
@@ -658,10 +671,10 @@ if __name__ == "__main__":
     phy_features.sinr = np.random.uniform(-5, 25, (10, 4, 3))
     phy_features.cqi = np.random.randint(0, 16, (10, 4, 3))
     mac_features = mac_extractor.extract(phy_features, ue_positions, site_positions, cell_ids)
-    print(f"✓ MAC/RRC Features: {len(mac_features.to_dict())} arrays")
-    print(f"  - Serving cell: {mac_features.serving_cell_id[0, 0]}")
-    print(f"  - Neighbors: {mac_features.neighbor_cell_ids[0, 0]}")
-    print(f"  - TA: {mac_features.timing_advance[0, 0]}")
-    print(f"  - Throughput: {mac_features.dl_throughput_mbps.mean():.1f} Mbps")
+    logger.info(f"✓ MAC/RRC Features: {len(mac_features.to_dict())} arrays")
+    logger.info(f"  - Serving cell: {mac_features.serving_cell_id[0, 0]}")
+    logger.info(f"  - Neighbors: {mac_features.neighbor_cell_ids[0, 0]}")
+    logger.info(f"  - TA: {mac_features.timing_advance[0, 0]}")
+    logger.info(f"  - Throughput: {mac_features.dl_throughput_mbps.mean():.1f} Mbps")
     
-    print("\nAll feature extractor tests passed! ✓")
+    logger.info("\nAll feature extractor tests passed! ✓")

@@ -1,8 +1,10 @@
 import os
 import pooch
+import logging
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 
+logger = logging.getLogger(__name__)
 
 URLS = {
     "10_km_cell_grid.gpkg":
@@ -39,7 +41,7 @@ def download_fesm_files():
     local_paths = []
 
     for fname, url in URLS.items():
-        print(f"Downloading {fname} ...")
+        logger.info(f"Downloading {fname} ...")
         path = pooch.retrieve(
             url=url,
             fname=fname,
@@ -47,7 +49,7 @@ def download_fesm_files():
             known_hash=None,     # can replace with real checksum later
             progressbar=True,
         )
-        print(f" → saved/cached: {path}")
+        logger.info(f" → saved/cached: {path}")
         local_paths.append(Path(path))
 
     return local_paths
@@ -63,8 +65,8 @@ def get_fesm_paths():
 
     paths = [cache_path / fname for fname in URLS.keys()]
     if all(p.exists() for p in paths):
-        print("FESM files already cached.")
+        logger.info("FESM files already cached.")
         return paths
 
-    print("FESM files missing — downloading now...")
+    logger.info("FESM files missing — downloading now...")
     return download_fesm_files()

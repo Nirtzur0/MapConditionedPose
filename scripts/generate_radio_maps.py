@@ -24,7 +24,7 @@ try:
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
-    print("Warning: Sionna not available. Install with: pip install sionna")
+    logger.warning("Sionna not available. Install with: pip install sionna")
 
 from src.physics_loss import RadioMapGenerator, RadioMapConfig
 

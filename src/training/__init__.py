@@ -6,6 +6,7 @@ Wraps UELocalizationModel for training with Lightning infrastructure.
 
 import torch
 import pytorch_lightning as pl
+import logging
 from torch.utils.data import DataLoader
 from typing import Dict, Optional
 import yaml
@@ -14,6 +15,8 @@ from pathlib import Path
 from ..models.ue_localization_model import UELocalizationModel
 from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
+
+logger = logging.getLogger(__name__)
 
 
 class UELocalizationLightning(pl.LightningModule):
@@ -63,6 +66,92 @@ class UELocalizationLightning(pl.LightningModule):
         # Metrics tracking
         self.validation_step_outputs = []
         self.test_step_outputs = []
+        self._last_val_sample = None
+        self._last_test_sample = None
+        self._comet_logged = {'val': False, 'test': False}
+
+    def _get_comet_experiment(self):
+        logger = self.logger
+        if logger is None:
+            return None
+        if hasattr(logger, "experiment"):
+            return logger.experiment
+        if hasattr(logger, "loggers"):
+            for item in logger.loggers:
+                if hasattr(item, "experiment"):
+                    return item.experiment
+        return None
+
+    @staticmethod
+    def _normalize_map(data):
+        import numpy as np
+
+        data = np.asarray(data, dtype=np.float32)
+        if not np.isfinite(data).any():
+            return np.zeros_like(data, dtype=np.float32)
+        vmin = np.nanpercentile(data, 2)
+        vmax = np.nanpercentile(data, 98)
+        if vmax - vmin < 1e-6:
+            return np.zeros_like(data, dtype=np.float32)
+        return np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
+
+    def _log_comet_visuals(self, split: str, errors: Optional[torch.Tensor] = None):
+        experiment = self._get_comet_experiment()
+        if experiment is None or self._comet_logged.get(split):
+            return
+
+        sample = self._last_val_sample if split == 'val' else self._last_test_sample
+        if sample is None:
+            return
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        radio_map = sample['radio_map'].numpy()
+        osm_map = sample['osm_map'].numpy()
+        true_pos = sample['true_pos'].numpy()
+        pred_pos = sample['pred_pos'].numpy()
+
+        radio_img = self._normalize_map(radio_map[0])
+        h, w = radio_img.shape
+
+        osm_channels = []
+        for idx in (0, 2, 3):
+            if idx < osm_map.shape[0]:
+                osm_channels.append(self._normalize_map(osm_map[idx]))
+            else:
+                osm_channels.append(np.zeros((h, w), dtype=np.float32))
+        osm_rgb = np.stack(osm_channels, axis=-1)
+
+        extent = float(self.config['dataset'].get('scene_extent', max(h, w)))
+        true_px = (true_pos[0] / extent) * (w - 1)
+        true_py = (true_pos[1] / extent) * (h - 1)
+        pred_px = (pred_pos[0] / extent) * (w - 1)
+        pred_py = (pred_pos[1] / extent) * (h - 1)
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        axes[0].imshow(radio_img, cmap='inferno')
+        axes[0].set_title("Radio Map (Path Gain)")
+        axes[0].axis("off")
+        axes[1].imshow(osm_rgb)
+        axes[1].set_title("OSM Map (Height/Footprint/Road)")
+        axes[1].axis("off")
+        axes[2].imshow(osm_rgb)
+        axes[2].scatter([true_px], [true_py], c="lime", s=40, label="True")
+        axes[2].scatter([pred_px], [pred_py], c="red", s=40, marker="x", label="Pred")
+        axes[2].set_title(f"{split.upper()} Prediction Overlay")
+        axes[2].legend(loc="lower right", fontsize=8)
+        axes[2].axis("off")
+        fig.tight_layout()
+
+        if hasattr(experiment, "log_figure"):
+            experiment.log_figure(figure=fig, figure_name=f"{split}_maps")
+        plt.close(fig)
+
+        if errors is not None and hasattr(experiment, "log_histogram"):
+            experiment.log_histogram(errors.detach().cpu().numpy(), name=f"{split}_error_hist_m")
+
+        self._comet_logged[split] = True
     
     def forward(self, batch: Dict) -> Dict:
         """Forward pass."""
@@ -188,6 +277,14 @@ class UELocalizationLightning(pl.LightningModule):
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
         errors = torch.norm(pred_pos - true_pos, dim=-1)  # [B]
+
+        if batch_idx == 0 and self._last_val_sample is None:
+            self._last_val_sample = {
+                'radio_map': batch['radio_map'][0].detach().cpu(),
+                'osm_map': batch['osm_map'][0].detach().cpu(),
+                'true_pos': true_pos[0].detach().cpu(),
+                'pred_pos': pred_pos[0].detach().cpu(),
+            }
         
         # Store for epoch-end aggregation
         output_dict = {
@@ -241,6 +338,8 @@ class UELocalizationLightning(pl.LightningModule):
         self.log('val_p95', percentile_95)
         self.log('val_success_5m', success_5m)
         self.log('val_success_10m', success_10m)
+
+        self._log_comet_visuals('val')
         
         # Clear
         self.validation_step_outputs.clear()
@@ -262,6 +361,14 @@ class UELocalizationLightning(pl.LightningModule):
             'ground_truth': true_pos,
             'uncertainties': outputs['fine_uncertainties'][:, 0, :],  # Best prediction
         })
+
+        if batch_idx == 0 and self._last_test_sample is None:
+            self._last_test_sample = {
+                'radio_map': batch['radio_map'][0].detach().cpu(),
+                'osm_map': batch['osm_map'][0].detach().cpu(),
+                'true_pos': true_pos[0].detach().cpu(),
+                'pred_pos': pred_pos[0].detach().cpu(),
+            }
         
         return errors
     
@@ -297,22 +404,24 @@ class UELocalizationLightning(pl.LightningModule):
         self.log('test_success_10m', success_10m)
         self.log('test_success_20m', success_20m)
         self.log('test_success_50m', success_50m)
+
+        self._log_comet_visuals('test', errors=all_errors)
         
         # Print summary
-        print("\n" + "="*60)
-        print("TEST SET RESULTS")
-        print("="*60)
-        print(f"Median Error:     {median_error:.2f} m")
-        print(f"Mean Error:       {mean_error:.2f} m")
-        print(f"RMSE:             {rmse:.2f} m")
-        print(f"67th Percentile:  {percentile_67:.2f} m")
-        print(f"90th Percentile:  {percentile_90:.2f} m")
-        print(f"95th Percentile:  {percentile_95:.2f} m")
-        print(f"Success @ 5m:     {success_5m:.1f}%")
-        print(f"Success @ 10m:    {success_10m:.1f}%")
-        print(f"Success @ 20m:    {success_20m:.1f}%")
-        print(f"Success @ 50m:    {success_50m:.1f}%")
-        print("="*60 + "\n")
+        logger.info("\n" + "="*60)
+        logger.info("TEST SET RESULTS")
+        logger.info("="*60)
+        logger.info(f"Median Error:     {median_error:.2f} m")
+        logger.info(f"Mean Error:       {mean_error:.2f} m")
+        logger.info(f"RMSE:             {rmse:.2f} m")
+        logger.info(f"67th Percentile:  {percentile_67:.2f} m")
+        logger.info(f"90th Percentile:  {percentile_90:.2f} m")
+        logger.info(f"95th Percentile:  {percentile_95:.2f} m")
+        logger.info(f"Success @ 5m:     {success_5m:.1f}%")
+        logger.info(f"Success @ 10m:    {success_10m:.1f}%")
+        logger.info(f"Success @ 20m:    {success_20m:.1f}%")
+        logger.info(f"Success @ 50m:    {success_50m:.1f}%")
+        logger.info("="*60 + "\n")
         
         # Clear
         self.test_step_outputs.clear()
@@ -373,6 +482,8 @@ class UELocalizationLightning(pl.LightningModule):
             normalize=self.config['dataset']['normalize_features'],
             handle_missing=self.config['dataset']['handle_missing_values'],
         )
+        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        logger.info(f"Training samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
             dataset,
@@ -393,6 +504,8 @@ class UELocalizationLightning(pl.LightningModule):
             normalize=self.config['dataset']['normalize_features'],
             handle_missing=self.config['dataset']['handle_missing_values'],
         )
+        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        logger.info(f"Validation samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
             dataset,
@@ -413,6 +526,8 @@ class UELocalizationLightning(pl.LightningModule):
             normalize=self.config['dataset']['normalize_features'],
             handle_missing=self.config['dataset']['handle_missing_values'],
         )
+        num_batches = max(1, (len(dataset) + self.config['training']['batch_size'] - 1) // self.config['training']['batch_size'])
+        logger.info(f"Test samples: {len(dataset)} ({num_batches} batches)")
         
         return DataLoader(
             dataset,

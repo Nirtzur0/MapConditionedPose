@@ -9,8 +9,12 @@ network confidence is low.
 import torch
 from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
+import logging
 
 from .physics_loss import compute_physics_loss
+
+logger = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -72,7 +76,7 @@ def refine_position(
         >>> observed = torch.randn(2, 7)
         >>> radio_maps = torch.randn(2, 7, 512, 512)
         >>> refined_xy, info = refine_position(initial_xy, observed, radio_maps, config)
-        >>> print(f"Moved {info['distance_moved'].mean():.2f} meters")
+        >>> logger.info(f"Moved {info['distance_moved'].mean():.2f} meters")
     """
     batch_size = initial_xy.shape[0]
     device = initial_xy.device

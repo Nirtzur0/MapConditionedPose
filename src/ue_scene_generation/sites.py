@@ -398,6 +398,6 @@ if __name__ == "__main__":
     bounds = (0, 0, 500, 500)  # 500m x 500m scene
     sites = placer.place(bounds, num_tx=3, num_rx=10)
     
-    print(f"\nPlaced {len(sites)} sites:")
+    logger.info(f"\nPlaced {len(sites)} sites:")
     for site in sites[:5]:  # Show first 5
-        print(f"  {site.site_id}: pos={site.position}, type={site.site_type}")
+        logger.info(f"  {site.site_id}: pos={site.position}, type={site.site_type}")

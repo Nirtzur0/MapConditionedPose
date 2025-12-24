@@ -372,6 +372,6 @@ if __name__ == "__main__":
         num_rx_per_tile=5,
     )
     
-    print(f"\nGenerated {len(metadata_list)} tiles")
+    logger.info(f"\nGenerated {len(metadata_list)} tiles")
     for meta in metadata_list[:3]:
-        print(f"  {meta['scene_id']}: {meta['num_buildings']} buildings, {len(meta['sites'])} sites")
+        logger.info(f"  {meta['scene_id']}: {meta['num_buildings']} buildings, {len(meta['sites'])} sites")

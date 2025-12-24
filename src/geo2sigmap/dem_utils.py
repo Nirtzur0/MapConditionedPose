@@ -382,11 +382,10 @@ def dem_to_ply(
 
     # --- Center mesh at (0,0,0) ---
     center = verts.mean(axis=0)   # centroid
-    # print(verts.mean(axis=0))
-    # print(center)
+
 
     verts -= center
-    # print(verts.mean(axis=0))
+
 
     # Build faces for a regular grid (2 triangles per cell)
     # Vertex index helper
@@ -447,6 +446,5 @@ def dem_to_ply(
 
 # Example:
 # info = dem_to_ply("./res/103.tif", "./res/103.ply", stride=1, z_scale=1.0)
-# # print(info)
 
 
