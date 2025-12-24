@@ -1,4 +1,4 @@
-# Transformer-Based UE Localization
+# Transformer-Based UE Localization 🚀
 
 ![Tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
@@ -23,7 +23,7 @@ The pipeline learns to localize UEs using:
 | M4: Training Pipeline | Complete | Training + eval + Optuna |
 | M5: Web UI | Complete | Streamlit demo app |
 
-## Quick Start
+## Quick Start ⚡
 
 ```bash
 # Quick test (recommended for first run)
@@ -33,7 +33,7 @@ python run_pipeline.py --quick-test
 python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
 ```
 
-### Hyperparameter Optimization (Optuna)
+### Hyperparameter Optimization (Optuna) 🔎
 
 ```bash
 # Install optional deps
@@ -60,7 +60,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Tests
+## Tests 🧪
 
 ```bash
 pytest tests/ -v
@@ -76,9 +76,10 @@ M4: Training + evaluation (+ optional physics loss)
 M5: Web UI for inspection and demos
 ```
 
-## Documentation
+## Documentation 📚
 
 - `QUICK_START.md` - Short start guide
+- `docs/README.md` - Documentation index
 - `docs/PIPELINE.md` - Pipeline usage and options
 - `docs/IMPLEMENTATION_GUIDE.md` - Design + milestones
 - `docs/SYSTEM_INTEGRATION_GUIDE.md` - Data flow and integration
