@@ -1,7 +1,7 @@
 # Transformer UE Localization: Technical Architecture
 
-**Domain:** Statistical Signal Processing, Bayesian Inference, and Deep Learning for Wireless Communications  
-**Framework:** Sionna RT (Differentiable Ray Tracing) + PyTorch + Dr.Jit  
+**Domain:** Statistical Signal Processing, Bayesian Inference, and Deep Learning for Wireless Communications
+**Framework:** Sionna RT (Differentiable Ray Tracing) + PyTorch + Dr.Jit
 **Last Updated:** December 23, 2025
 
 ---
@@ -29,7 +29,7 @@ The input at time $t$ is a hierarchical set of multi-layer tokens $M_t = \{m_1(t
 **Architecture:** We map the full protocol stack to positioning features:
 - **Layer 1 (RT):** Simulation ground truth - propagation physics
 - **Layer 2 (PHY/FAPI):** L1 measurements - what UE PHY reports
-- **Layer 3 (MAC/RRC):** L2/L3 measurements - protocol layer observations  
+- **Layer 3 (MAC/RRC):** L2/L3 measurements - protocol layer observations
 - **Layer 4 (RLC):** Optional link statistics
 
 #### Layer 1: RT (Ray Tracer) - Propagation Physics Ground Truth
@@ -42,7 +42,7 @@ The input at time $t$ is a hierarchical set of multi-layer tokens $M_t = \{m_1(t
 
 #### Layer 2: PHY/FAPI (L1) - Channel & Physical Layer Features
 
-**FAPI Measurements (from UE PHY → Network):**
+**FAPI Measurements (from UE PHY Network):**
 * **RSRP (Reference Signal Received Power):** Per cell, per beam (L1-RSRP for beam-specific)
 * **RSRQ (Reference Signal Received Quality):** Per cell, quality indicator
 * **RSSI (Received Signal Strength Indicator):** Wideband power including OFDM effects
@@ -103,9 +103,9 @@ The input at time $t$ is a hierarchical set of multi-layer tokens $M_t = \{m_1(t
 * **Jitter/Latency Variance:** Statistical moments of delay
 
 **Note:** RLC parameters are typically less directly positioning-relevant but can provide:
-- Mobility indicators (high retransmissions → challenging channel)
+- Mobility indicators (high retransmissions challenging channel)
 - Connection stability metrics (complement to MAC/PHY measurements)
-- Temporal correlation features (persistent bad link → static NLoS)
+- Temporal correlation features (persistent bad link static NLoS)
 
 ---
 
@@ -116,39 +116,39 @@ The input at time $t$ is a hierarchical set of multi-layer tokens $M_t = \{m_1(t
 | Protocol Layer | Parameter | Positioning Relevance | Typical Availability | Priority |
 |----------------|-----------|----------------------|---------------------|----------|
 | **FAPI/PHY (L1)** | | | | |
-| | RSRP (serving) | ★★★★★ Direct power | Always | Critical |
-| | RSRP (neighbors) | ★★★★★ Multilateration | Always | Critical |
-| | RSRQ | ★★★☆☆ Quality, interference | Always | Medium |
-| | RSSI | ★★★★☆ Wideband power | Always | High |
-| | L1-RSRP per beam | ★★★★★ Beam-level AoA proxy | 5G NR FR2 | High |
-| | SINR | ★★★★☆ Link quality, interference | Often | High |
-| | CQI | ★★★☆☆ Channel quality proxy | Always | Medium |
-| | RI (Rank) | ★★☆☆☆ MIMO spatial structure | Often | Low |
-| | PMI | ★★☆☆☆ Precoding, spatial info | Often | Low |
-| | CSI matrix | ★★★★☆ Full channel state | Rarely (compressed) | High |
+| | RSRP (serving) | Direct power | Always | Critical |
+| | RSRP (neighbors) | Multilateration | Always | Critical |
+| | RSRQ | Quality, interference | Always | Medium |
+| | RSSI | Wideband power | Always | High |
+| | L1-RSRP per beam | Beam-level AoA proxy | 5G NR FR2 | High |
+| | SINR | Link quality, interference | Often | High |
+| | CQI | Channel quality proxy | Always | Medium |
+| | RI (Rank) | MIMO spatial structure | Often | Low |
+| | PMI | Precoding, spatial info | Often | Low |
+| | CSI matrix | Full channel state | Rarely (compressed) | High |
 | **MAC (L2)** | | | | |
-| | Timing Advance (TA) | ★★★★★ Distance proxy | Always | Critical |
-| | TA Command (TAC) | ★★★★☆ Temporal TA tracking | Often | High |
-| | PHR (Power Headroom) | ★★☆☆☆ Indirect path loss | Often | Low |
-| | HARQ ACK/NACK stats | ★★☆☆☆ Link quality | Sometimes | Low |
-| | BSR | ★☆☆☆☆ Traffic pattern | Rarely | Very Low |
+| | Timing Advance (TA) | Distance proxy | Always | Critical |
+| | TA Command (TAC) | Temporal TA tracking | Often | High |
+| | PHR (Power Headroom) | Indirect path loss | Often | Low |
+| | HARQ ACK/NACK stats | Link quality | Sometimes | Low |
+| | BSR | Traffic pattern | Rarely | Very Low |
 | **RRC (L3)** | | | | |
-| | Serving Cell ID (PCI) | ★★★★★ Cell identity | Always | Critical |
-| | Neighbor Cell IDs | ★★★★★ Multi-cell context | Always | Critical |
-| | Measurement Reports | ★★★★★ Comprehensive measurements | Always | Critical |
-| | Handover triggers | ★★★☆☆ Mobility pattern | Often | Medium |
-| | SRS config | ★★★★☆ Uplink positioning setup | 5G positioning | High |
-| | PRS config | ★★★★☆ DL-TDOA positioning setup | 5G positioning | High |
+| | Serving Cell ID (PCI) | Cell identity | Always | Critical |
+| | Neighbor Cell IDs | Multi-cell context | Always | Critical |
+| | Measurement Reports | Comprehensive measurements | Always | Critical |
+| | Handover triggers | Mobility pattern | Often | Medium |
+| | SRS config | Uplink positioning setup | 5G positioning | High |
+| | PRS config | DL-TDOA positioning setup | 5G positioning | High |
 | **RLC (L2)** | | | | |
-| | RTT estimates | ★★★☆☆ Timing proxy | Rarely | Medium |
-| | Retransmission counts | ★★☆☆☆ Link stability | Sometimes | Low |
-| | Per-bearer throughput | ★☆☆☆☆ Indirect quality | Rarely | Very Low |
+| | RTT estimates | Timing proxy | Rarely | Medium |
+| | Retransmission counts | Link stability | Sometimes | Low |
+| | Per-bearer throughput | Indirect quality | Rarely | Very Low |
 | **Ray Tracing (Simulation)** | | | | |
-| | Path Gain | ★★★★★ Ground truth power | Simulation | Critical |
-| | ToA per path | ★★★★★ Multipath timing | Simulation | Critical |
-| | AoA/AoD per path | ★★★★★ Spatial signatures | Simulation | Critical |
-| | Doppler per path | ★★★☆☆ Velocity, multipath | Simulation | Medium |
-| | RMS Delay Spread | ★★★★☆ Multipath richness | Simulation | High |
+| | Path Gain | Ground truth power | Simulation | Critical |
+| | ToA per path | Multipath timing | Simulation | Critical |
+| | AoA/AoD per path | Spatial signatures | Simulation | Critical |
+| | Doppler per path | Velocity, multipath | Simulation | Medium |
+| | RMS Delay Spread | Multipath richness | Simulation | High |
 
 **Priority Legend:**
 - **Critical:** Essential for positioning, always use if available
@@ -161,7 +161,7 @@ The input at time $t$ is a hierarchical set of multi-layer tokens $M_t = \{m_1(t
 
 Based on analysis of Sionna's codebase (TR38901, RT, PHY, SYS modules), here's what can be **directly obtained** vs **requires custom implementation**:
 
-**✅ Direct from Sionna TR38901/RT:**
+** Direct from Sionna TR38901/RT:**
 - **Rays:** `rays.delays`, `rays.powers`, `rays.aoa`, `rays.aod`, `rays.zoa`, `rays.zod`, `rays.xpr`
 - **LSP (Large Scale Parameters):** `lsp.ds` (RMS delay spread), `lsp.asd/asa/zsa/zsd` (angle spreads), `lsp.sf` (shadow fading), `lsp.k_factor` (Rician K)
 - **Channel Coefficients:** `h` (complex path gains, shape `[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`), `tau` (path delays)
@@ -169,20 +169,20 @@ Based on analysis of Sionna's codebase (TR38901, RT, PHY, SYS modules), here's w
 - **Basic Pathloss:** `scenario.basic_pathloss`, `los_probability`
 - **Doppler:** Computed from velocities + angles via utilities
 
-**✅ Direct from Sionna PHY/SYS:**
+** Direct from Sionna PHY/SYS:**
 - **Channel Utilities:** `cir_to_ofdm_channel`, `cir_to_time_channel`, `time_to_ofdm_channel`
 - **Antenna Arrays:** `PanelArray`, `AntennaElement` configurations
 - **System-Level:** `get_pathloss` (from frequency response), `is_scheduled_in_slot`
 - **Channel Models:** UMi/UMa/RMa system-level scenarios, CDL/TDL link-level models
 
-**🔧 Custom Implementation Required (compute from Sionna outputs):**
+** Custom Implementation Required (compute from Sionna outputs):**
 
 **PHY/FAPI Layer (from channel `h`, `tau`):**
 - **RSRP:** Compute from $|\mathbf{h}|^2$ per resource element, average across pilot symbols
 - **RSRQ:** $\text{RSRQ} = \frac{N \times \text{RSRP}}{\text{RSSI}}$ (requires OFDM grid simulation for interference)
 - **RSSI:** Wideband received power (sum across subcarriers)
 - **L1-RSRP per beam:** Requires beam-specific channel realization + SSB/CSI-RS processing
-- **CQI (0-15):** Map SINR → CQI via 3GPP tables (link abstraction)
+- **CQI (0-15):** Map SINR CQI via 3GPP tables (link abstraction)
 - **RI (Rank Indicator):** SVD of channel matrix `h`, threshold eigenvalues
 - **PMI (Precoding Matrix Index):** Codebook selection via capacity/SINR maximization
 - **CSI feedback:** Quantize eigenvectors/eigenvalues per 3GPP Type I/II CSI
@@ -193,7 +193,7 @@ Based on analysis of Sionna's codebase (TR38901, RT, PHY, SYS modules), here's w
 - **PHR (Power Headroom):** $\text{PHR} = P_{\max} - P_{\text{TX}}$ (requires power control logic)
 - **HARQ ACK/NACK:** Link abstraction via BLER(SINR) lookup tables + random sampling
 - **BSR (Buffer Status):** Synthetic traffic model (Poisson arrivals, queue simulation)
-- **Measurement Reports (A3/A4/A5):** Aggregate RSRP/RSRQ → threshold logic per 3GPP 36.331
+- **Measurement Reports (A3/A4/A5):** Aggregate RSRP/RSRQ threshold logic per 3GPP 36.331
 - **Cell Selection Criteria:** Rank cells via Srxlev/Squal formulas (3GPP 38.304)
 
 **RLC Layer (from SYS utilities):**
@@ -287,16 +287,16 @@ The network receives **three complementary input modalities** for both training 
 ### Complementary Map Benefits
 
 **Sionna Radio Maps (Physics):**
-- ✅ Encode signal propagation physics
-- ✅ Multi-path effects, shadowing, reflections
-- ✅ Frequency-specific behavior
-- ✅ Multi-layer features (RT+PHY+SYS)
+- Encode signal propagation physics
+- Multi-path effects, shadowing, reflections
+- Frequency-specific behavior
+- Multi-layer features (RT+PHY+SYS)
 
 **OSM Building Maps (Geometry):**
-- ✅ Encode geometric feasibility
-- ✅ "UE must be on streets, not inside buildings"
-- ✅ Material properties affect propagation
-- ✅ Topological constraints (road networks)
+- Encode geometric feasibility
+- "UE must be on streets, not inside buildings"
+- Material properties affect propagation
+- Topological constraints (road networks)
 
 **Together:** Radio maps provide "signal looks like this here" while OSM maps enforce "UE can physically be here". This fusion resolves ambiguities neither can solve alone (e.g., in NLOS, radio signal is diffuse but OSM constrains UE to street/sidewalk).
 
@@ -329,21 +329,21 @@ where Features$(m_i)$ includes RT+PHY+SYS layer measurements.
 **Two Input Streams:**
 
 1. **Sionna Radio Maps Stream**
-   - Multi-channel input: [PG, ToA, AoA, SNR, SINR, Throughput, BLER]
-   - Encodes physics-based signal features
+ - Multi-channel input: [PG, ToA, AoA, SNR, SINR, Throughput, BLER]
+ - Encodes physics-based signal features
 
 2. **OSM Building Maps Stream**
-   - Multi-channel input: [height, materials, footprints, roads, terrain]
-   - Encodes geometric/topological features
+ - Multi-channel input: [height, materials, footprints, roads, terrain]
+ - Encodes geometric/topological features
 
 **Architecture Options:**
-- **Option A:** Separate encoders → concatenate
-- **Option B:** Early fusion → single encoder
+- **Option A:** Separate encoders concatenate
+- **Option B:** Early fusion single encoder
 - **Option C:** Cross-attention between streams
 
 **Backbone Choices:**
 - Vision Transformer (ViT): Patch embedding + transformer encoder
-- CNN+Transformer: ResNet/ConvNeXt backbone → flatten → transformer
+- CNN+Transformer: ResNet/ConvNeXt backbone flatten transformer
 - Hybrid: Hierarchical multi-resolution encoding
 
 **Outputs:**
@@ -357,7 +357,7 @@ where Features$(m_i)$ includes RT+PHY+SYS layer measurements.
 Query: z_radio (from temporal measurements)
 Keys/Values: [F_radio_map ; F_osm_map] (from dual maps)
 
-Cross-Attention → Fused representation → Position heatmap
+Cross-Attention Fused representation Position heatmap
 ```
 
 **Multi-Head Cross-Attention:**
@@ -382,9 +382,9 @@ where:
 - Conditioned on top-K coarse cells
 - Predicts continuous offset within cell
 - Options:
-  - Simple regression: $(\Delta x, \Delta y)$ with Huber loss
-  - Heteroscedastic: $(\mu_x, \mu_y, \sigma_x, \sigma_y)$ with NLL loss
-  - Mixture: GMM with $M$ components for multi-modal distributions
+ - Simple regression: $(\Delta x, \Delta y)$ with Huber loss
+ - Heteroscedastic: $(\mu_x, \mu_y, \sigma_x, \sigma_y)$ with NLL loss
+ - Mixture: GMM with $M$ components for multi-modal distributions
 
 ---
 
@@ -406,17 +406,17 @@ where:
 ### 4.2 Training Mechanism
 
 1. **Precompute Dual Maps:**
-   - **Sionna Radio Maps:** Generate comprehensive multi-layer radio maps (RT+PHY+SYS features) for each scene using `RadioMapSolver`
-   - **OSM Building Maps:** Extract and process geographic/geometric data
+ - **Sionna Radio Maps:** Generate comprehensive multi-layer radio maps (RT+PHY+SYS features) for each scene using `RadioMapSolver`
+ - **OSM Building Maps:** Extract and process geographic/geometric data
 
 2. **Network Forward Pass:**
-   - Input: Sparse temporal measurements $M_t$ + Precomputed Radio Maps $R_{\text{maps}}$ + OSM Maps $G_{\text{maps}}$
-   - Output: Predicted location $\hat{x}$
+ - Input: Sparse temporal measurements $M_t$ + Precomputed Radio Maps $R_{\text{maps}}$ + OSM Maps $G_{\text{maps}}$
+ - Output: Predicted location $\hat{x}$
 
 3. **Differentiable Lookup:** For predicted location $\hat{x}$, perform bilinear interpolation in precomputed Sionna radio maps
 
 4. **Multi-Feature Physics Loss:**
-   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{localization}} + \lambda \mathcal{L}_{\text{phys}}$$
+ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{localization}} + \lambda \mathcal{L}_{\text{phys}}$$
 
 where $\mathcal{L}_{\text{localization}}$ is the standard supervised loss (coarse + fine) and $\lambda$ controls physics regularization strength.
 
@@ -439,8 +439,8 @@ Since Sionna `RadioMapSolver` outputs are available via Dr.Jit's `@dr.wrap` inte
 
 **Gradient Flow:**
 ```
-PyTorch Network → Predicted x̂ → Dr.Jit Bilinear Lookup → 
-Sionna RadioMap Values → Loss → Gradients back through x̂
+PyTorch Network Predicted x̂ Dr.Jit Bilinear Lookup
+Sionna RadioMap Values Loss Gradients back through x̂
 ```
 
 This enables end-to-end optimization of the positioning network using physics-validated predictions.
@@ -456,25 +456,25 @@ Scenes are modeled as triplet (Vertices, Faces, Site configurations) using Mitsu
 **Domain Randomization (DR):** To mitigate the Reality Gap, we randomize:
 
 * **Material Properties:**
-  - Complex permittivity $\epsilon_r$ per building/material class
-  - Conductivity $\sigma$ with plausible bounds
-  - Spatial variation within material classes
+ - Complex permittivity $\epsilon_r$ per building/material class
+ - Conductivity $\sigma$ with plausible bounds
+ - Spatial variation within material classes
 
 * **Measurement Noise Models:**
-  - Quantization (1 dB steps for power, TA quantization)
-  - Shadow fading (spatial and temporal correlation)
-  - NLoS bias in timing measurements
-  - Measurement dropout (neighbor list truncation)
+ - Quantization (1 dB steps for power, TA quantization)
+ - Shadow fading (spatial and temporal correlation)
+ - NLoS bias in timing measurements
+ - Measurement dropout (neighbor list truncation)
 
 * **OFDM Parameters:**
-  - Subcarrier spacing variation
-  - Cyclic prefix lengths
-  - Interference patterns
+ - Subcarrier spacing variation
+ - Cyclic prefix lengths
+ - Interference patterns
 
 * **Network Protocol Parameters:**
-  - Handover thresholds
-  - TA quantization schemes
-  - Cell selection criteria
+ - Handover thresholds
+ - TA quantization schemes
+ - Cell selection criteria
 
 ### 5.2 Sionna Multi-Layer Data Generation
 
@@ -520,52 +520,52 @@ From RT outputs (paths, CIR, per-site gain), synthesize "network observable" fea
 ### 7.1 Why Three Input Modalities?
 
 **Sparse Measurements Alone:**
-- ❌ Highly ambiguous in NLOS scenarios
-- ❌ Limited spatial resolution
-- ❌ Prone to multipath confusion
+- Highly ambiguous in NLOS scenarios
+- Limited spatial resolution
+- Prone to multipath confusion
 
 **Radio Maps Alone:**
-- ❌ Don't account for temporal variations
-- ❌ Precomputed, may not match observed conditions exactly
-- ❌ No geometric feasibility enforcement
+- Don't account for temporal variations
+- Precomputed, may not match observed conditions exactly
+- No geometric feasibility enforcement
 
 **OSM Maps Alone:**
-- ❌ Don't encode signal propagation
-- ❌ Can't resolve ambiguities based on RF measurements
+- Don't encode signal propagation
+- Can't resolve ambiguities based on RF measurements
 
 **All Three Together:**
-- ✅ Measurements provide temporal context and real conditions
-- ✅ Radio maps provide physics priors and propagation constraints
-- ✅ OSM maps provide geometric feasibility and topological structure
-- ✅ Fusion resolves ambiguities none can solve individually
+- Measurements provide temporal context and real conditions
+- Radio maps provide physics priors and propagation constraints
+- OSM maps provide geometric feasibility and topological structure
+- Fusion resolves ambiguities none can solve individually
 
 ### 7.2 Why Precomputed Maps vs Real-Time RT?
 
 **Precomputed Approach:**
-- ✅ Fast: bilinear lookup is O(1) vs full ray tracing
-- ✅ Scalable: compute once, use for all training/inference
-- ✅ Differentiable: smooth gradients through interpolation
-- ✅ Consistent: same physics model in training and inference
+- Fast: bilinear lookup is O(1) vs full ray tracing
+- Scalable: compute once, use for all training/inference
+- Differentiable: smooth gradients through interpolation
+- Consistent: same physics model in training and inference
 
 **Real-Time RT:**
-- ❌ Expensive: minutes per sample with full path tracing
-- ❌ Non-scalable: prohibitive for large datasets
-- ✅ Flexible: can adapt to exact conditions
+- Expensive: minutes per sample with full path tracing
+- Non-scalable: prohibitive for large datasets
+- Flexible: can adapt to exact conditions
 
 **Hybrid Solution:** Use precomputed maps for main training/inference, optional real-time RT refinement for high-stakes predictions.
 
 ### 7.3 Why Coarse-to-Fine Output?
 
 **Single-Stage Regression:**
-- ❌ Overconfident when wrong
-- ❌ No uncertainty quantification
-- ❌ Struggles with multi-modal posteriors
+- Overconfident when wrong
+- No uncertainty quantification
+- Struggles with multi-modal posteriors
 
 **Coarse-to-Fine:**
-- ✅ Heatmap provides spatial uncertainty visualization
-- ✅ Fine refinement focuses computation on likely regions
-- ✅ Naturally handles multi-modal distributions (multiple peaks)
-- ✅ Interpretable: can inspect coarse predictions
+- Heatmap provides spatial uncertainty visualization
+- Fine refinement focuses computation on likely regions
+- Naturally handles multi-modal distributions (multiple peaks)
+- Interpretable: can inspect coarse predictions
 
 ---
 

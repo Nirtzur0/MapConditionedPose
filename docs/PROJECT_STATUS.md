@@ -1,7 +1,7 @@
 # Project Status: Transformer-Based UE Localization
 
-**Date:** 2024  
-**Repository:** transformer-ue-localization  
+**Date:** 2024
+**Repository:** transformer-ue-localization
 
 ---
 
@@ -9,41 +9,41 @@
 
 | Milestone | Status | Tests | Implementation |
 |-----------|--------|-------|----------------|
-| **M1: Scene Generation** | ✅ COMPLETE | 18/18 passing | 1,461 lines |
-| **M2: Data Generation** | ✅ COMPLETE | 30/30 passing | 2,149 lines |
-| **M3: Transformer Model** | ✅ COMPLETE | 19/19 passing | ~2,000 lines |
-| **M4: Physics Loss** | ✅ COMPLETE | 17/17 passing | ~1,000 lines |
-| **M5: Web Interface** | ✅ COMPLETE | Manual testing | ~500 lines |
+| **M1: Scene Generation** | COMPLETE | 18/18 passing | 1,461 lines |
+| **M2: Data Generation** | COMPLETE | 30/30 passing | 2,149 lines |
+| **M3: Transformer Model** | COMPLETE | 19/19 passing | ~2,000 lines |
+| **M4: Physics Loss** | COMPLETE | 17/17 passing | ~1,000 lines |
+| **M5: Web Interface** | COMPLETE | Manual testing | ~500 lines |
 
 **Total Implementation:** ~7,000+ lines of production code + 1,500+ lines of tests
 
 ---
 
-## M1: Scene Generation Pipeline ✅
+## M1: Scene Generation Pipeline
 
 **Purpose:** Generate synthetic 5G NR scenes from OpenStreetMap data with material randomization and site placement.
 
 ### Core Components
 
 1. **SceneGenerator** (302 lines)
-   - Deep Geo2SigMap integration via importlib
-   - Direct Scene import, extends with MaterialRandomizer & SitePlacer
-   - Generates Mitsuba XML + building/terrain meshes
+ - Deep Geo2SigMap integration via importlib
+ - Direct Scene import, extends with MaterialRandomizer & SitePlacer
+ - Generates Mitsuba XML + building/terrain meshes
 
 2. **MaterialRandomizer** (213 lines)
-   - ITU-R P.2040 materials with ε_r and σ randomization
-   - 8+ material configs (concrete, brick, wood, glass, metal)
-   - Per-instance RandomState for reproducibility
+ - ITU-R P.2040 materials with ε_r and σ randomization
+ - 8+ material configs (concrete, brick, wood, glass, metal)
+ - Per-instance RandomState for reproducibility
 
 3. **SitePlacer** (382 lines)
-   - 4 placement strategies: grid, random, ISD (hexagonal), custom
-   - 3-sector base stations with 0°/120°/240° azimuth
-   - 3GPP 38.901 antenna patterns
+ - 4 placement strategies: grid, random, ISD (hexagonal), custom
+ - 3-sector base stations with 0°/120°/240° azimuth
+ - 3GPP 38.901 antenna patterns
 
 4. **TileGenerator** (316 lines)
-   - WGS84 ↔ UTM coordinate transforms with pyproj
-   - Batch processing for large geographic areas
-   - Configurable tile size and overlap
+ - WGS84 ↔ UTM coordinate transforms with pyproj
+ - Batch processing for large geographic areas
+ - Configurable tile size and overlap
 
 ### Test Results
 ```
@@ -51,38 +51,38 @@
 ```
 
 ### Key Achievements
-- ✅ Deep integration with Geo2SigMap (not wrapper pattern)
-- ✅ Reproducible material domain randomization
-- ✅ Flexible site placement strategies
-- ✅ Production-ready error handling and logging
+- Deep integration with Geo2SigMap (not wrapper pattern)
+- Reproducible material domain randomization
+- Flexible site placement strategies
+- Production-ready error handling and logging
 
 ---
 
-## M2: Multi-Layer Data Generation ✅
+## M2: Multi-Layer Data Generation
 
 **Purpose:** Extract RT, PHY/FAPI, and MAC/RRC features from Sionna simulations for transformer training.
 
 ### Core Components
 
 1. **measurement_utils.py** (467 lines)
-   - 8 3GPP-compliant measurement functions
-   - RSRP (38.215), RSRQ, SINR, CQI (38.214), RI, TA (38.213), PMI
-   - Measurement dropout simulation (5-30% dropout)
+ - 8 3GPP-compliant measurement functions
+ - RSRP (38.215), RSRQ, SINR, CQI (38.214), RI, TA (38.213), PMI
+ - Measurement dropout simulation (5-30% dropout)
 
 2. **features.py** (636 lines)
-   - RTFeatureExtractor: Path gains, AoA/AoD, RMS-DS, K-factor
-   - PHYFAPIFeatureExtractor: RSRP, CQI, RI, PMI, beam management
-   - MACRRCFeatureExtractor: Cell IDs, TA, throughput, BLER
+ - RTFeatureExtractor: Path gains, AoA/AoD, RMS-DS, K-factor
+ - PHYFAPIFeatureExtractor: RSRP, CQI, RI, PMI, beam management
+ - MACRRCFeatureExtractor: Cell IDs, TA, throughput, BLER
 
 3. **multi_layer_generator.py** (467 lines)
-   - DataGenerationConfig: YAML-loadable with 25+ parameters
-   - MultiLayerDataGenerator: End-to-end RT → PHY → MAC pipeline
-   - UE trajectory sampling (random walk with velocity)
+ - DataGenerationConfig: YAML-loadable with 25+ parameters
+ - MultiLayerDataGenerator: End-to-end RT PHY MAC pipeline
+ - UE trajectory sampling (random walk with velocity)
 
 4. **zarr_writer.py** (413 lines)
-   - Hierarchical array storage (rt_layer/, phy_fapi_layer/, mac_rrc_layer/)
-   - Chunking (100 samples/chunk) + Blosc compression (6-7x)
-   - Framework-agnostic (TensorFlow data gen → PyTorch training)
+ - Hierarchical array storage (rt_layer/, phy_fapi_layer/, mac_rrc_layer/)
+ - Chunking (100 samples/chunk) + Blosc compression (6-7x)
+ - Framework-agnostic (TensorFlow data gen PyTorch training)
 
 ### Test Results
 ```
@@ -90,39 +90,39 @@
 ```
 
 ### Key Achievements
-- ✅ 3GPP-compliant measurements with proper quantization
-- ✅ Multi-layer architecture (RT, PHY/FAPI, MAC/RRC)
-- ✅ Mock mode enables testing without Sionna/TensorFlow
-- ✅ Measurement realism (dropout, quantization, temporal sequences)
-- ✅ Zarr storage bridges TensorFlow (data gen) and PyTorch (training)
+- 3GPP-compliant measurements with proper quantization
+- Multi-layer architecture (RT, PHY/FAPI, MAC/RRC)
+- Mock mode enables testing without Sionna/TensorFlow
+- Measurement realism (dropout, quantization, temporal sequences)
+- Zarr storage bridges TensorFlow (data gen) and PyTorch (training)
 
 ---
 
-## M3: Transformer Model ✅
+## M3: Transformer Model
 
 **Purpose:** Dual-encoder transformer for UE localization with map conditioning.
 
 ### Core Components
 
 1. **RadioEncoder** (~200 lines)
-   - Temporal sequence encoding of radio measurements
-   - Multi-head self-attention across time steps
-   - Protocol layer fusion (RT/PHY/MAC features)
+ - Temporal sequence encoding of radio measurements
+ - Multi-head self-attention across time steps
+ - Protocol layer fusion (RT/PHY/MAC features)
 
 2. **MapEncoder** (~300 lines)
-   - Vision transformer for map conditioning
-   - Patch embedding of OSM/building data
-   - Spatial positional encoding
+ - Vision transformer for map conditioning
+ - Patch embedding of OSM/building data
+ - Spatial positional encoding
 
 3. **CrossAttentionFusion** (~150 lines)
-   - Cross-attention between radio and map features
-   - Multi-head attention mechanism
-   - Feature fusion for position prediction
+ - Cross-attention between radio and map features
+ - Multi-head attention mechanism
+ - Feature fusion for position prediction
 
 4. **PredictionHeads** (~200 lines)
-   - Coarse position prediction (regression)
-   - Fine position refinement
-   - Uncertainty estimation
+ - Coarse position prediction (regression)
+ - Fine position refinement
+ - Uncertainty estimation
 
 ### Test Results
 ```
@@ -130,38 +130,38 @@
 ```
 
 ### Key Achievements
-- ✅ Dual-encoder architecture with cross-attention
-- ✅ Map-conditioned position prediction
-- ✅ Temporal sequence processing
-- ✅ PyTorch Lightning integration
+- Dual-encoder architecture with cross-attention
+- Map-conditioned position prediction
+- Temporal sequence processing
+- PyTorch Lightning integration
 
 ---
 
-## M4: Physics Loss ✅
+## M4: Physics Loss
 
 **Purpose:** Differentiable physics regularization using precomputed radio maps.
 
 ### Core Components
 
 1. **DifferentiableLookup** (~100 lines)
-   - Bilinear sampling from radio maps
-   - Full gradient flow for backpropagation
-   - Coordinate normalization
+ - Bilinear sampling from radio maps
+ - Full gradient flow for backpropagation
+ - Coordinate normalization
 
 2. **PhysicsLoss** (~150 lines)
-   - Multi-feature weighted MSE loss
-   - Physics consistency constraints
-   - Configurable feature weights
+ - Multi-feature weighted MSE loss
+ - Physics consistency constraints
+ - Configurable feature weights
 
 3. **RadioMapGenerator** (~200 lines)
-   - Sionna-based map generation
-   - 7 physics features (path_gain, snr, throughput, etc.)
-   - Zarr storage with compression
+ - Sionna-based map generation
+ - 7 physics features (path_gain, snr, throughput, etc.)
+ - Zarr storage with compression
 
 4. **PositionRefinement** (~100 lines)
-   - Gradient-based inference-time refinement
-   - Confidence thresholding
-   - Extent clipping
+ - Gradient-based inference-time refinement
+ - Confidence thresholding
+ - Extent clipping
 
 ### Test Results
 ```
@@ -169,36 +169,36 @@
 ```
 
 ### Key Achievements
-- ✅ Differentiable radio map sampling
-- ✅ Physics-informed training loss
-- ✅ Inference-time position refinement
-- ✅ Multi-feature physics constraints
+- Differentiable radio map sampling
+- Physics-informed training loss
+- Inference-time position refinement
+- Multi-feature physics constraints
 
 ---
 
-## M5: Web Interface ✅
+## M5: Web Interface
 
 **Purpose:** Training monitoring and prediction visualization tools.
 
 ### Core Components
 
 1. **Streamlit App** (~450 lines)
-   - Interactive map visualization
-   - GT vs predicted position comparison
-   - Error analysis (CDF, percentiles)
-   - Uncertainty ellipses
+ - Interactive map visualization
+ - GT vs predicted position comparison
+ - Error analysis (CDF, percentiles)
+ - Uncertainty ellipses
 
 2. **TensorBoard Integration**
-   - Real-time loss monitoring
-   - Learning rate scheduling
-   - Model graph visualization
-   - Hyperparameter tracking
+ - Real-time loss monitoring
+ - Learning rate scheduling
+ - Model graph visualization
+ - Hyperparameter tracking
 
 ### Key Achievements
-- ✅ Streamlit map explorer with error analysis
-- ✅ TensorBoard training dashboard
-- ✅ Prediction uncertainty visualization
-- ✅ Production-ready monitoring tools
+- Streamlit map explorer with error analysis
+- TensorBoard training dashboard
+- Prediction uncertainty visualization
+- Production-ready monitoring tools
 
 ---
 
@@ -206,45 +206,45 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    M1: Scene Generation                         │
-│  OpenStreetMap → Geo2SigMap → Mitsuba XML + Meshes            │
-│  + Material Randomization (ITU-R P.2040)                       │
-│  + Site Placement (grid/random/ISD/custom)                     │
+│ M1: Scene Generation │
+│ OpenStreetMap Geo2SigMap Mitsuba XML + Meshes │
+│ + Material Randomization (ITU-R P.2040) │
+│ + Site Placement (grid/random/ISD/custom) │
 └────────────────────────┬────────────────────────────────────────┘
-                         │ scene.xml, meshes, metadata.json
-                         ▼
+ │ scene.xml, meshes, metadata.json
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    M2: Data Generation                          │
-│  Sionna RT → Path Features → PHY/FAPI → MAC/RRC               │
-│  + 3GPP Measurements (RSRP, CQI, TA, etc.)                     │
-│  + Measurement Realism (dropout, quantization)                 │
-│  + Zarr Storage (hierarchical, compressed)                     │
+│ M2: Data Generation │
+│ Sionna RT Path Features PHY/FAPI MAC/RRC │
+│ + 3GPP Measurements (RSRP, CQI, TA, etc.) │
+│ + Measurement Realism (dropout, quantization) │
+│ + Zarr Storage (hierarchical, compressed) │
 └────────────────────────┬────────────────────────────────────────┘
-                         │ dataset.zarr (rt/phy/mac features)
-                         ▼
+ │ dataset.zarr (rt/phy/mac features)
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 M3: Transformer Model ✅                       │
-│  Dual Encoder (Radio + Map) → Cross-Attention → Position      │
-│  + PyTorch Dataset from Zarr                                   │
-│  + Temporal + Spatial + Protocol Positional Encoding           │
-│  + Map Conditioning (Sionna + OSM)                             │
+│ M3: Transformer Model │
+│ Dual Encoder (Radio + Map) Cross-Attention Position │
+│ + PyTorch Dataset from Zarr │
+│ + Temporal + Spatial + Protocol Positional Encoding │
+│ + Map Conditioning (Sionna + OSM) │
 └────────────────────────┬────────────────────────────────────────┘
-                         │ predictions, losses
-                         ▼
+ │ predictions, losses
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 M4: Physics Loss ✅                            │
-│  Differentiable Radio Maps → Physics Consistency Loss         │
-│  + Precomputed Sionna Maps (path_gain, snr, throughput)       │
-│  + Gradient-based Position Refinement                          │
-│  + Multi-feature Weighted MSE                                  │
+│ M4: Physics Loss │
+│ Differentiable Radio Maps Physics Consistency Loss │
+│ + Precomputed Sionna Maps (path_gain, snr, throughput) │
+│ + Gradient-based Position Refinement │
+│ + Multi-feature Weighted MSE │
 └────────────────────────┬────────────────────────────────────────┘
-                         │ refined positions
-                         ▼
+ │ refined positions
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 M5: Web Interface ✅                           │
-│  Streamlit Map Explorer + TensorBoard Monitoring              │
-│  + Prediction Visualization (GT vs Pred, error analysis)       │
-│  + Training Metrics Dashboard                                  │
+│ M5: Web Interface │
+│ Streamlit Map Explorer + TensorBoard Monitoring │
+│ + Prediction Visualization (GT vs Pred, error analysis) │
+│ + Training Metrics Dashboard │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -252,40 +252,40 @@
 
 ## Data Flow
 
-### M1 Output → M2 Input
+### M1 Output M2 Input
 ```
 data/scenes/
 ├── scene_001/
-│   ├── scene.xml              # Sionna RT scene
-│   ├── buildings.obj          # Building meshes
-│   ├── terrain.obj            # Terrain meshes
-│   └── metadata.json          # {sites, materials, cell_ids}
+│ ├── scene.xml # Sionna RT scene
+│ ├── buildings.obj # Building meshes
+│ ├── terrain.obj # Terrain meshes
+│ └── metadata.json # {sites, materials, cell_ids}
 ├── scene_002/
-│   └── ...
-└── metadata.json              # Global scene metadata
+│ └── ...
+└── metadata.json # Global scene metadata
 ```
 
-### M2 Output → M3 Input
+### M2 Output M3 Input
 ```
 data/synthetic/
 └── dataset_TIMESTAMP.zarr/
-    ├── rt_layer/
-    │   ├── path_gains         # [N, max_paths] complex64
-    │   ├── path_delays        # [N, max_paths] float32
-    │   ├── path_aoa_azimuth   # [N, max_paths] float32
-    │   └── rms_delay_spread   # [N] float32
-    ├── phy_fapi_layer/
-    │   ├── rsrp               # [N, num_cells] float32
-    │   ├── cqi                # [N, num_cells] int32
-    │   └── ri                 # [N, num_cells] int32
-    ├── mac_rrc_layer/
-    │   ├── serving_cell_id    # [N] int32
-    │   ├── neighbor_cell_ids  # [N, K] int32
-    │   └── timing_advance     # [N] int32
-    ├── positions/
-    │   ├── ue_x, ue_y, ue_z   # [N] float32 (ground truth)
-    └── timestamps/
-        └── t                  # [N] float32
+ ├── rt_layer/
+ │ ├── path_gains # [N, max_paths] complex64
+ │ ├── path_delays # [N, max_paths] float32
+ │ ├── path_aoa_azimuth # [N, max_paths] float32
+ │ └── rms_delay_spread # [N] float32
+ ├── phy_fapi_layer/
+ │ ├── rsrp # [N, num_cells] float32
+ │ ├── cqi # [N, num_cells] int32
+ │ └── ri # [N, num_cells] int32
+ ├── mac_rrc_layer/
+ │ ├── serving_cell_id # [N] int32
+ │ ├── neighbor_cell_ids # [N, K] int32
+ │ └── timing_advance # [N] int32
+ ├── positions/
+ │ ├── ue_x, ue_y, ue_z # [N] float32 (ground truth)
+ └── timestamps/
+ └── t # [N] float32
 ```
 
 ---
@@ -378,9 +378,9 @@ For 1000 scenes × 100 UEs × 10 reports = 1M samples:
 ### M1 Requirements
 ```
 numpy>=1.24.0
-pyproj>=3.6.0          # Coordinate transforms
-pyyaml>=6.0            # Configuration
-pytest>=7.4.0          # Testing
+pyproj>=3.6.0 # Coordinate transforms
+pyyaml>=6.0 # Configuration
+pytest>=7.4.0 # Testing
 ```
 
 ### M2 Requirements
@@ -388,8 +388,8 @@ pytest>=7.4.0          # Testing
 numpy>=1.24.0
 pyproj>=3.6.0
 pyyaml>=6.0
-zarr>=2.16.0           # Dataset storage
-numcodecs>=0.12.0      # Compression codecs
+zarr>=2.16.0 # Dataset storage
+numcodecs>=0.12.0 # Compression codecs
 
 # Optional (for actual RT simulation):
 # sionna>=0.14.0
@@ -409,39 +409,39 @@ For full operation (not mock mode):
 ```
 transformer-ue-localization/
 ├── src/
-│   ├── scene_generation/          # M1 (1,461 lines)
-│   │   ├── core.py
-│   │   ├── materials.py
-│   │   ├── sites.py
-│   │   └── tiles.py
-│   └── data_generation/           # M2 (2,149 lines)
-│       ├── measurement_utils.py
-│       ├── features.py
-│       ├── multi_layer_generator.py
-│       └── zarr_writer.py
+│ ├── scene_generation/ # M1 (1,461 lines)
+│ │ ├── core.py
+│ │ ├── materials.py
+│ │ ├── sites.py
+│ │ └── tiles.py
+│ └── data_generation/ # M2 (2,149 lines)
+│ ├── measurement_utils.py
+│ ├── features.py
+│ ├── multi_layer_generator.py
+│ └── zarr_writer.py
 ├── scripts/
-│   ├── scene_generation/
-│   │   └── generate_scenes.py        # M1 CLI
-│   └── generate_dataset.py       # M2 CLI
+│ ├── scene_generation/
+│ │ └── generate_scenes.py # M1 CLI
+│ └── generate_dataset.py # M2 CLI
 ├── tests/
-│   ├── test_m1_scene_generation.py  # 26 tests
-│   └── test_m2_data_generation.py   # 27 tests
+│ ├── test_m1_scene_generation.py # 26 tests
+│ └── test_m2_data_generation.py # 27 tests
 ├── configs/
-│   ├── scene_generation/
-│   │   └── scene_generation.yaml     # M1 config
-│   ├── data_generation/
-│   │   └── data_generation.yaml      # M2 config
-│   ├── training/
-│   │   ├── training.yaml             # M3 baseline config
-│   │   ├── training_simple.yaml      # M3 simple config
-│   │   ├── training_full.yaml        # M3 full config
-│   │   └── training_diverse.yaml     # M3 diverse config
+│ ├── scene_generation/
+│ │ └── scene_generation.yaml # M1 config
+│ ├── data_generation/
+│ │ └── data_generation.yaml # M2 config
+│ ├── training/
+│ │ ├── training.yaml # M3 baseline config
+│ │ ├── training_simple.yaml # M3 simple config
+│ │ ├── training_full.yaml # M3 full config
+│ │ └── training_diverse.yaml # M3 diverse config
 ├── docs/
-│   ├── M1_COMPLETE.md
-│   ├── M1_ARCHITECTURE.md
-│   ├── M2_COMPLETE.md
-│   └── M2_SUMMARY.md
-└── requirements-*.txt            # Dependencies
+│ ├── M1_COMPLETE.md
+│ ├── M1_ARCHITECTURE.md
+│ ├── M2_COMPLETE.md
+│ └── M2_SUMMARY.md
+└── requirements-*.txt # Dependencies
 
 Total: 3,610 lines (production) + 968 lines (tests)
 ```
@@ -455,21 +455,21 @@ With M1 (scene generation) and M2 (data generation) complete, M3 will implement:
 ### 1. Dual-Encoder Architecture
 ```python
 class DualEncoderTransformer(nn.Module):
-    def __init__(self):
-        self.radio_encoder = TransformerEncoder(...)  # RT+PHY+MAC features
-        self.map_encoder = CNNEncoder(...)            # Sionna + OSM maps
-        self.fusion = CrossAttention(...)             # Spatial fusion
-        self.position_head = MLPHead(...)             # Output: (x, y, z)
+ def __init__(self):
+ self.radio_encoder = TransformerEncoder(...) # RT+PHY+MAC features
+ self.map_encoder = CNNEncoder(...) # Sionna + OSM maps
+ self.fusion = CrossAttention(...) # Spatial fusion
+ self.position_head = MLPHead(...) # Output: (x, y, z)
 ```
 
 ### 2. Input Processing
 - **Radio features:** Multi-layer measurements from Zarr
-  - RT: Path gains, AoA/AoD, RMS-DS
-  - PHY/FAPI: RSRP, CQI, RI, beam RSRP
-  - MAC/RRC: Cell IDs, TA, throughput
+ - RT: Path gains, AoA/AoD, RMS-DS
+ - PHY/FAPI: RSRP, CQI, RI, beam RSRP
+ - MAC/RRC: Cell IDs, TA, throughput
 - **Map features:** Two channels
-  - Channel 1: Sionna RT path loss map
-  - Channel 2: OSM building footprint map
+ - Channel 1: Sionna RT path loss map
+ - Channel 2: OSM building footprint map
 
 ### 3. Positional Encoding
 - **Temporal:** Sinusoidal encoding for measurement sequences
@@ -493,16 +493,16 @@ class DualEncoderTransformer(nn.Module):
 
 | Criterion | M1 Status | M2 Status |
 |-----------|-----------|-----------|
-| **Functionality** | ✅ Complete | ✅ Complete |
-| **Test Coverage** | ✅ 96% passing | ✅ 93% passing |
-| **Documentation** | ✅ 4 docs | ✅ 2 docs |
-| **Code Quality** | ✅ Type hints, logging | ✅ Type hints, logging |
-| **Reproducibility** | ✅ Seed-based | ✅ Mock mode |
-| **Performance** | ✅ 1-5 scenes/min | ✅ 100 UEs/sec |
-| **3GPP Compliance** | ✅ ITU materials | ✅ Full compliance |
-| **Integration** | ✅ Deep Geo2SigMap | ✅ Sionna RT ready |
+| **Functionality** | Complete | Complete |
+| **Test Coverage** | 96% passing | 93% passing |
+| **Documentation** | 4 docs | 2 docs |
+| **Code Quality** | Type hints, logging | Type hints, logging |
+| **Reproducibility** | Seed-based | Mock mode |
+| **Performance** | 1-5 scenes/min | 100 UEs/sec |
+| **3GPP Compliance** | ITU materials | Full compliance |
+| **Integration** | Deep Geo2SigMap | Sionna RT ready |
 
-**Overall M1+M2 Success:** ✅ ACHIEVED
+**Overall M1+M2 Success:** ACHIEVED
 
 ---
 
@@ -521,7 +521,7 @@ class DualEncoderTransformer(nn.Module):
 ## Acknowledgments
 
 ### Technologies Used
-- **Geo2SigMap v2.0.0:** OSM → Sionna scene pipeline
+- **Geo2SigMap v2.0.0:** OSM Sionna scene pipeline
 - **Sionna RT v0.14+:** NVIDIA ray tracing framework
 - **Zarr:** Hierarchical array storage
 - **PyTorch 2.0+:** Deep learning framework (M3)
@@ -539,10 +539,10 @@ class DualEncoderTransformer(nn.Module):
 
 **M1 and M2 are production-ready.**
 
-- ✅ **M1:** Generates synthetic 5G NR scenes with material randomization and site placement
-- ✅ **M2:** Extracts multi-layer features (RT, PHY/FAPI, MAC/RRC) with 3GPP compliance
-- ✅ **Testing:** 50/53 tests passing (3 skipped due to optional dependencies)
-- ✅ **Documentation:** Comprehensive guides for both milestones
-- ✅ **Architecture:** Clean separation enables independent development of M3-M5
+- **M1:** Generates synthetic 5G NR scenes with material randomization and site placement
+- **M2:** Extracts multi-layer features (RT, PHY/FAPI, MAC/RRC) with 3GPP compliance
+- **Testing:** 50/53 tests passing (3 skipped due to optional dependencies)
+- **Documentation:** Comprehensive guides for both milestones
+- **Architecture:** Clean separation enables independent development of M3-M5
 
 **Ready to proceed with M3: Transformer Model implementation.**

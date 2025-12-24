@@ -2,9 +2,9 @@
 
 ## Quick Facts
 
-**Status:** ✅ COMPLETE  
-**Tests:** 30/30 passing  
-**Code:** 2,149 lines (implementation) + 484 lines (tests)  
+**Status:** COMPLETE
+**Tests:** 30/30 passing
+**Code:** 2,149 lines (implementation) + 484 lines (tests)
 **Coverage:** RT, PHY/FAPI, MAC/RRC feature extraction
 
 ---
@@ -62,7 +62,7 @@ Three dataclass-based extractors matching 3GPP protocol layers:
 End-to-end pipeline:
 1. Load M1 scenes from disk
 2. Sample UE trajectories (random walk with configurable velocity)
-3. For each UE position: Run RT → extract PHY → extract MAC
+3. For each UE position: Run RT extract PHY extract MAC
 4. Apply measurement realism (dropout, quantization)
 5. Append to Zarr dataset incrementally
 6. Finalize with metadata
@@ -80,27 +80,27 @@ Hierarchical array storage optimized for deep learning:
 **Schema:**
 ```
 dataset_TIMESTAMP.zarr/
-  rt_layer/
-    path_gains: [N, max_paths] complex64
-    path_delays: [N, max_paths] float32
-    rms_delay_spread: [N] float32
-    ...
-  phy_fapi_layer/
-    rsrp: [N, num_cells] float32
-    rsrq: [N, num_cells] float32
-    cqi: [N, num_cells] int32
-    ...
-  mac_rrc_layer/
-    serving_cell_id: [N] int32
-    neighbor_cell_ids: [N, K] int32
-    timing_advance: [N] int32
-    ...
-  positions/
-    ue_x, ue_y, ue_z: [N] float32
-  timestamps/
-    t: [N] float32
-  metadata/
-    scene_ids: [N] object
+ rt_layer/
+ path_gains: [N, max_paths] complex64
+ path_delays: [N, max_paths] float32
+ rms_delay_spread: [N] float32
+ ...
+ phy_fapi_layer/
+ rsrp: [N, num_cells] float32
+ rsrq: [N, num_cells] float32
+ cqi: [N, num_cells] int32
+ ...
+ mac_rrc_layer/
+ serving_cell_id: [N] int32
+ neighbor_cell_ids: [N, K] int32
+ timing_advance: [N] int32
+ ...
+ positions/
+ ue_x, ue_y, ue_z: [N] float32
+ timestamps/
+ t: [N] float32
+ metadata/
+ scene_ids: [N] object
 ```
 
 **Features:**
@@ -119,13 +119,13 @@ dataset_TIMESTAMP.zarr/
 Comprehensive CLI with 25+ flags:
 ```bash
 python scripts/generate_dataset.py \
-  --scene-dir data/scenes/ \
-  --output-dir data/synthetic/ \
-  --num-ue 100 \
-  --num-reports 10 \
-  --carrier-freq 3.5e9 \
-  --enable-beam-mgmt \
-  --compression blosc
+ --scene-dir data/scenes/ \
+ --output-dir data/synthetic/ \
+ --num-ue 100 \
+ --num-reports 10 \
+ --carrier-freq 3.5e9 \
+ --enable-beam-mgmt \
+ --compression blosc
 ```
 
 **Parameter Categories:**
@@ -145,46 +145,46 @@ python scripts/generate_dataset.py \
 ### Test Classes
 
 1. **TestMeasurementUtils** (8 tests)
-   - RSRP computation (simplified from path gains)
-   - RSRQ computation with quantization
-   - SINR with inter-cell interference
-   - CQI mapping (3 MCS tables)
-   - Rank indicator (full rank vs rank-1 channels)
-   - Timing advance (distance → TA index)
-   - Measurement dropout (20% tolerance check)
-   - Neighbor list truncation (top-K by RSRP)
+ - RSRP computation (simplified from path gains)
+ - RSRQ computation with quantization
+ - SINR with inter-cell interference
+ - CQI mapping (3 MCS tables)
+ - Rank indicator (full rank vs rank-1 channels)
+ - Timing advance (distance TA index)
+ - Measurement dropout (20% tolerance check)
+ - Neighbor list truncation (top-K by RSRP)
 
 2. **TestRTFeatureExtractor** (5 tests)
-   - Initialization with custom parameters
-   - Mock extraction (works without Sionna)
-   - RMS delay spread calculation
-   - K-factor computation (LOS has high K, NLOS has low K)
-   - Dictionary conversion for Zarr storage
+ - Initialization with custom parameters
+ - Mock extraction (works without Sionna)
+ - RMS delay spread calculation
+ - K-factor computation (LOS has high K, NLOS has low K)
+ - Dictionary conversion for Zarr storage
 
 3. **TestPHYFAPIFeatureExtractor** (3 tests)
-   - Initialization with beam management
-   - PHY extraction from RT features
-   - Dictionary conversion
+ - Initialization with beam management
+ - PHY extraction from RT features
+ - Dictionary conversion
 
 4. **TestMACRRCFeatureExtractor** (4 tests)
-   - Initialization
-   - MAC extraction from PHY + positions
-   - Throughput simulation (high CQI → high Mbps)
-   - BLER simulation (low SINR → high BLER)
+ - Initialization
+ - MAC extraction from PHY + positions
+ - Throughput simulation (high CQI high Mbps)
+ - BLER simulation (low SINR high BLER)
 
 5. **TestDataGenerationConfig** (2 tests)
-   - Default initialization
-   - Custom parameter values
+ - Default initialization
+ - Custom parameter values
 
 6. **TestMultiLayerDataGenerator** (3 tests)
-   - Generator initialization
-   - UE trajectory sampling (checks bounds)
-   - Single measurement simulation (mock mode)
+ - Generator initialization
+ - UE trajectory sampling (checks bounds)
+ - Single measurement simulation (mock mode)
 
 7. **TestZarrWriter** (2 tests, SKIPPED)
-   - Writer initialization
-   - Append and finalize
-   - *Skipped: requires zarr package*
+ - Writer initialization
+ - Append and finalize
+ - *Skipped: requires zarr package*
 
 ### Test Results
 ```
@@ -221,11 +221,11 @@ Quantization matches real UE reporting:
 ### 3. Measurement Realism
 Simulates imperfect real-world measurements:
 - **Dropout rates:**
-  - Serving cell RSRP: 5%
-  - Serving cell RSRQ/SINR: 10%
-  - CQI/RI: 15-20%
-  - PMI: 25%
-  - Neighbors: 30%
+ - Serving cell RSRP: 5%
+ - Serving cell RSRQ/SINR: 10%
+ - CQI/RI: 15-20%
+ - PMI: 25%
+ - Neighbors: 30%
 - **Temporal sequences:** 5-20 reports per UE
 - **Report intervals:** 200 ms (3GPP typical)
 - **Neighbor truncation:** Max 8 cells (3GPP limit)
@@ -233,9 +233,9 @@ Simulates imperfect real-world measurements:
 ### 4. Framework-Agnostic Storage
 Zarr enables clean separation:
 ```
-Sionna (TF) → Data Gen → Zarr ← Training (PyTorch)
-                ↑                    ↑
-              M2                    M3
+Sionna (TF) Data Gen Zarr Training (PyTorch)
+ ↑ ↑
+ M2 M3
 ```
 - M2 uses TensorFlow (Sionna dependency)
 - M3 uses PyTorch (transformer training)
@@ -245,9 +245,9 @@ Sionna (TF) → Data Gen → Zarr ← Training (PyTorch)
 Matches 3GPP protocol stack:
 ```
 Layer 3 (MAC/RRC): Cell IDs, TA, Throughput
-     ↓
+ ↓
 Layer 2 (PHY/FAPI): RSRP, CQI, RI, PMI
-     ↓
+ ↓
 Layer 1 (RT): Path gains, AoA/AoD, delays
 ```
 
@@ -289,54 +289,54 @@ Benefits:
 ```
 transformer-ue-localization/
 ├── src/
-│   └── data_generation/          # M2 module
-│       ├── __init__.py             # (49 lines)
-│       ├── measurement_utils.py    # (467 lines) - 3GPP measurements
-│       ├── features.py             # (636 lines) - 3-layer extractors
-│       ├── multi_layer_generator.py# (467 lines) - Pipeline orchestrator
-│       └── zarr_writer.py          # (413 lines) - Dataset storage
+│ └── data_generation/ # M2 module
+│ ├── __init__.py # (49 lines)
+│ ├── measurement_utils.py # (467 lines) - 3GPP measurements
+│ ├── features.py # (636 lines) - 3-layer extractors
+│ ├── multi_layer_generator.py# (467 lines) - Pipeline orchestrator
+│ └── zarr_writer.py # (413 lines) - Dataset storage
 ├── scripts/
-│   └── generate_dataset.py        # (176 lines) - Example CLI
+│ └── generate_dataset.py # (176 lines) - Example CLI
 ├── tests/
-│   └── test_m2_data_generation.py # (484 lines) - 27 tests
+│ └── test_m2_data_generation.py # (484 lines) - 27 tests
 ├── configs/
-│   └── data_generation.yaml       # Default config
-├── requirements-m2.txt            # Dependencies
-├── M2_COMPLETE.md                 # Full implementation guide
-├── M2_SUMMARY.md                  # This file
-└── TEST_RESULTS_M2.txt            # Test output
+│ └── data_generation.yaml # Default config
+├── requirements-m2.txt # Dependencies
+├── M2_COMPLETE.md # Full implementation guide
+├── M2_SUMMARY.md # This file
+└── TEST_RESULTS_M2.txt # Test output
 
 Total: 2,692 lines of code (implementation + tests + config)
 ```
 
 ---
 
-## M1 → M2 → M3 Interface
+## M1 M2 M3 Interface
 
 ### M2 Inputs (from M1)
 ```
 data/scenes/
 ├── scene_001/
-│   ├── scene.xml              # Sionna RT scene
-│   ├── buildings.obj          # Building meshes
-│   ├── terrain.obj            # Terrain meshes
-│   └── metadata.json          # Sites, materials
+│ ├── scene.xml # Sionna RT scene
+│ ├── buildings.obj # Building meshes
+│ ├── terrain.obj # Terrain meshes
+│ └── metadata.json # Sites, materials
 ├── scene_002/
-│   └── ...
-└── metadata.json              # Global metadata
+│ └── ...
+└── metadata.json # Global metadata
 ```
 
 ### M2 Outputs (for M3)
 ```
 data/synthetic/
 └── dataset_TIMESTAMP.zarr/
-    ├── rt_layer/              # Path-level features
-    ├── phy_fapi_layer/        # Link-level measurements
-    ├── mac_rrc_layer/         # System-level features
-    ├── positions/             # Ground truth UE positions
-    ├── timestamps/            # Temporal sequence
-    ├── metadata/              # Scene IDs, UE IDs
-    └── .zattrs                # Dataset metadata
+ ├── rt_layer/ # Path-level features
+ ├── phy_fapi_layer/ # Link-level measurements
+ ├── mac_rrc_layer/ # System-level features
+ ├── positions/ # Ground truth UE positions
+ ├── timestamps/ # Temporal sequence
+ ├── metadata/ # Scene IDs, UE IDs
+ └── .zattrs # Dataset metadata
 ```
 
 ### M3 Usage (PyTorch)
@@ -348,22 +348,22 @@ from torch.utils.data import Dataset
 store = zarr.open('data/synthetic/dataset_*.zarr', 'r')
 
 # Access features
-rsrp = store['phy_fapi_layer/rsrp'][:]       # [N, num_cells]
-positions = store['positions/ue_x'][:]        # [N]
+rsrp = store['phy_fapi_layer/rsrp'][:] # [N, num_cells]
+positions = store['positions/ue_x'][:] # [N]
 
 # PyTorch Dataset wrapper
 class ZarrDataset(Dataset):
-    def __getitem__(self, idx):
-        return {
-            'rsrp': self.store['phy_fapi_layer/rsrp'][idx],
-            'cqi': self.store['phy_fapi_layer/cqi'][idx],
-            'ta': self.store['mac_rrc_layer/timing_advance'][idx],
-            'position': np.array([
-                self.store['positions/ue_x'][idx],
-                self.store['positions/ue_y'][idx],
-                self.store['positions/ue_z'][idx],
-            ])
-        }
+ def __getitem__(self, idx):
+ return {
+ 'rsrp': self.store['phy_fapi_layer/rsrp'][idx],
+ 'cqi': self.store['phy_fapi_layer/cqi'][idx],
+ 'ta': self.store['mac_rrc_layer/timing_advance'][idx],
+ 'position': np.array([
+ self.store['positions/ue_x'][idx],
+ self.store['positions/ue_y'][idx],
+ self.store['positions/ue_z'][idx],
+ ])
+ }
 ```
 
 ---
@@ -373,29 +373,29 @@ class ZarrDataset(Dataset):
 With M2 complete, M3 (Transformer Model) will:
 
 1. **Define Dual-Encoder Architecture**
-   - Radio feature encoder (multi-layer measurements)
-   - Map encoder (Sionna + OSM geometry)
-   - Cross-attention fusion
+ - Radio feature encoder (multi-layer measurements)
+ - Map encoder (Sionna + OSM geometry)
+ - Cross-attention fusion
 
 2. **Implement Map Conditioning**
-   - Radio map: Sionna RT path loss maps
-   - Geometry map: OSM building footprints
-   - Fusion: Spatial cross-attention
+ - Radio map: Sionna RT path loss maps
+ - Geometry map: OSM building footprints
+ - Fusion: Spatial cross-attention
 
 3. **Create PyTorch Dataset**
-   - ZarrDataset wrapper
-   - Temporal sequence batching
-   - Map tile loading and caching
+ - ZarrDataset wrapper
+ - Temporal sequence batching
+ - Map tile loading and caching
 
 4. **Positional Encoding**
-   - Temporal: Sinusoidal position encoding
-   - Spatial: Learned map tile embeddings
-   - Protocol: Layer-aware position encoding
+ - Temporal: Sinusoidal position encoding
+ - Spatial: Learned map tile embeddings
+ - Protocol: Layer-aware position encoding
 
 5. **Training Pipeline**
-   - Loss: Weighted MSE (x, y, z)
-   - Optimizer: AdamW with scheduler
-   - Metrics: CDF, 50th/90th percentile error
+ - Loss: Weighted MSE (x, y, z)
+ - Optimizer: AdamW with scheduler
+ - Metrics: CDF, 50th/90th percentile error
 
 **M2 provides the foundation: M3 will train on this data.**
 

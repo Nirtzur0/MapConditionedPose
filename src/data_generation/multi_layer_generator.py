@@ -276,13 +276,13 @@ class MultiLayerDataGenerator:
     
     def _sample_ue_trajectories(self, scene_metadata: Dict) -> List[np.ndarray]:
         """
-        Sample UE positions and trajectories.
+        Samples UE positions and trajectories within scene bounds.
         
         Args:
-            scene_metadata: Scene metadata with bounding box
+            scene_metadata: Scene metadata including bounding box.
             
         Returns:
-            trajectories: List of [num_reports, 3] position arrays
+            List of [num_reports, 3] position arrays for UE trajectories.
         """
         # Get scene bounds
         bbox = scene_metadata.get('bbox', {})
@@ -293,12 +293,11 @@ class MultiLayerDataGenerator:
         
         trajectories = []
         for _ in range(self.config.num_ue_per_tile):
-            # Sample initial position
+            # Sample initial position and velocity
             x0 = np.random.uniform(x_min, x_max)
             y0 = np.random.uniform(y_min, y_max)
             z0 = np.random.uniform(*self.config.ue_height_range)
             
-            # Sample velocity
             speed = np.random.uniform(*self.config.ue_velocity_range)
             direction = np.random.uniform(0, 2*np.pi)
             vx = speed * np.cos(direction)
@@ -310,7 +309,7 @@ class MultiLayerDataGenerator:
                 dt = t * self.config.report_interval_ms / 1000.0
                 x = x0 + vx * dt
                 y = y0 + vy * dt
-                z = z0  # Fixed height
+                z = z0
                 
                 # Clip to bounds
                 x = np.clip(x, x_min, x_max)
@@ -330,19 +329,19 @@ class MultiLayerDataGenerator:
                                                              PHYFAPILayerFeatures,
                                                              MACRRCLayerFeatures]:
         """
-        Run simulation for single UE position.
+        Runs a simulation for a single UE position.
         
         Args:
-            scene: Sionna RT Scene
-            ue_position: [3] UE position (x, y, z)
-            site_positions: [num_sites, 3] site positions
-            cell_ids: [num_sites] cell IDs
+            scene: Sionna RT Scene.
+            ue_position: [3] UE position (x, y, z) in meters.
+            site_positions: [num_sites, 3] site positions.
+            cell_ids: [num_sites] cell IDs.
             
         Returns:
-            (rt_features, phy_features, mac_features)
+            Tuple of RT, PHY, and MAC layer features.
         """
         if not SIONNA_AVAILABLE or scene is None:
-            logger.debug("Sionna not available or no scene, using mock simulation")
+            logger.debug("Sionna unavailable or no scene; using mock simulation.")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
         
         rx_name = None
@@ -350,10 +349,9 @@ class MultiLayerDataGenerator:
             # Setup receiver at UE position
             rx_name = f"UE_{self._rx_counter}"
             self._rx_counter += 1
-            rx_name = self._setup_receiver(scene, ue_position, rx_name)
+            self._setup_receiver(scene, ue_position, rx_name)
             
             # Compute propagation paths using Sionna RT
-            logger.debug(f"Computing paths for UE at {ue_position}")
             from sionna.rt import PathSolver
             from mitsuba import Float
             
@@ -372,27 +370,24 @@ class MultiLayerDataGenerator:
                 diffraction=getattr(self.config, 'enable_diffraction', True),
                 edge_diffraction=False
             )
-            # Handle case where PathSolver might return a tuple
-            if isinstance(paths_result, tuple):
-                if len(paths_result) == 1:
-                    paths = paths_result[0]
-                else:
-                    logger.warning(f"PathSolver returned tuple of length {len(paths_result)}, using first element")
-                    paths = paths_result[0]
+            
+            if isinstance(paths_result, tuple): # Handle tuple return
+                paths = paths_result[0]
             else:
                 paths = paths_result
+            
             if not self._logged_sionna:
                 try:
                     valid_paths = int(paths.valid.numpy().sum())
                 except Exception:
                     valid_paths = 0
-                logger.info(f"Sionna RT paths computed: {valid_paths}")
+                logger.info(f"Sionna RT paths computed: {valid_paths}.")
                 self._logged_sionna = True
             
             # Extract RT features
             rt_features = self.rt_extractor.extract(paths)
             
-            # Compute channel matrices (frequency response across subcarriers)
+            # Compute channel matrices
             channel_matrix = None
             try:
                 num_subcarriers = getattr(self.config, 'num_subcarriers', 100)
@@ -405,13 +400,9 @@ class MultiLayerDataGenerator:
                     frequencies=Float(list(freqs)),
                     out_type='numpy'
                 )
-                # Handle case where cfr might return a tuple
-                if isinstance(cfr_result, tuple):
-                    if len(cfr_result) == 1:
-                        cfr = cfr_result[0]
-                    else:
-                        logger.warning(f"cfr returned tuple of length {len(cfr_result)}, using first element")
-                        cfr = cfr_result[0]
+                
+                if isinstance(cfr_result, tuple): # Handle tuple return
+                    cfr = cfr_result[0]
                 else:
                     cfr = cfr_result
                 channel_matrix = cfr[np.newaxis, ...]
@@ -446,8 +437,8 @@ class MultiLayerDataGenerator:
             if self._sionna_fail <= 3:
                 logger.error(f"Sionna simulation failed: {e}")
                 if self._sionna_fail == 3:
-                    logger.warning("Suppressing further Sionna errors (see log file for full details)")
-            logger.warning("Falling back to mock simulation")
+                    logger.warning("Suppressing further Sionna errors (see log for full details).")
+            logger.warning("Falling back to mock simulation.")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
         finally:
             if rx_name:
@@ -458,28 +449,28 @@ class MultiLayerDataGenerator:
     
     def _load_sionna_scene(self, scene_path: Path) -> Any:
         """
-        Load Mitsuba XML scene into Sionna RT.
+        Loads a Mitsuba XML scene into Sionna RT.
         
         Args:
-            scene_path: Path to scene.xml (Mitsuba format)
+            scene_path: Path to scene.xml (Mitsuba format).
             
         Returns:
-            Sionna RT Scene object
+            Sionna RT Scene object.
         """
         if not SIONNA_AVAILABLE:
-            logger.warning("Sionna not available, cannot load scene")
+            logger.warning("Sionna unavailable; cannot load scene.")
             return None
             
         from sionna.rt import load_scene
         
-        logger.info(f"Loading Sionna scene from {scene_path}")
+        logger.info(f"Loading Sionna scene from {scene_path}...")
         scene = load_scene(str(scene_path))
         
         # Apply scene-level settings
         scene.frequency = self.config.carrier_frequency_hz
         scene.synthetic_array = True
         
-        logger.info(f"Scene loaded: frequency={self.config.carrier_frequency_hz/1e9:.2f} GHz")
+        logger.info(f"Scene loaded: frequency={self.config.carrier_frequency_hz/1e9:.2f} GHz.")
         return scene
     
     def _setup_transmitters(self, scene: Any, 

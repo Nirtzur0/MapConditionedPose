@@ -1,7 +1,7 @@
 # Sionna Integration Status (RT + PHY + SYS)
 
-**Updated:** January 2026  
-**Status:** Partial integration with mock fallback  
+**Updated:** January 2026
+**Status:** Partial integration with mock fallback
 **TL;DR:** The code paths for real Sionna are in place, but the system still runs in mock mode unless you have Sionna installed and wired up to real scenes. Use this as the single source of truth for where things stand and what to do next.
 
 ---
@@ -19,20 +19,20 @@
 - Documentation drift: earlier “Implementation Complete” note was aspirational; this file replaces that claim.
 
 ## How to Use It Right Now
-1) Generate scenes with `scripts/scene_generation/generate_scenes.py` (or TileGenerator) → outputs to `data/scenes/` plus `metadata.json` index.  
+1) Generate scenes with `scripts/scene_generation/generate_scenes.py` (or TileGenerator) outputs to `data/scenes/` plus `metadata.json` index.
 2) Run data generation in mock mode for speed:
-   - Set `use_mock_mode: true` in your config or pass `use_mock_mode=True` to `DataGenerationConfig`.
-   - Point `scene_dir` and `scene_metadata_path` to `data/scenes` and `data/scenes/metadata.json`.
+ - Set `use_mock_mode: true` in your config or pass `use_mock_mode=True` to `DataGenerationConfig`.
+ - Point `scene_dir` and `scene_metadata_path` to `data/scenes` and `data/scenes/metadata.json`.
 3) To attempt real Sionna:
-   - Install Sionna + TensorFlow + Dr.Jit; ensure `sionna` imports succeed.
-   - Set `use_mock_mode: false` and keep ray counts small (`num_samples: 1_000_000`, `max_depth: 3-5`) for a smoke test.
-   - Expect to tweak antenna definitions in `_setup_transmitters/_setup_receiver` for your band (sub-6 vs. mmWave).
+ - Install Sionna + TensorFlow + Dr.Jit; ensure `sionna` imports succeed.
+ - Set `use_mock_mode: false` and keep ray counts small (`num_samples: 1_000_000`, `max_depth: 3-5`) for a smoke test.
+ - Expect to tweak antenna definitions in `_setup_transmitters/_setup_receiver` for your band (sub-6 vs. mmWave).
 
 ## Next Steps to Reach “Production”
-1) Validate one small scene end-to-end with real Sionna (no diffraction, small sample count) and record timings/quality.  
-2) Add graceful fallbacks and clearer logs when Sionna/TF isn’t present.  
-3) Tune antenna patterns and ray settings per band; document tested presets.  
-4) Wire a minimal “Sionna on/off” CLI flag into the dataset script for convenience.  
+1) Validate one small scene end-to-end with real Sionna (no diffraction, small sample count) and record timings/quality.
+2) Add graceful fallbacks and clearer logs when Sionna/TF isn’t present.
+3) Tune antenna patterns and ray settings per band; document tested presets.
+4) Wire a minimal “Sionna on/off” CLI flag into the dataset script for convenience.
 5) Add a regression test that loads a tiny Mitsuba scene and asserts non-mock outputs when Sionna is installed.
 
 ## Key Files (Sionna Path)

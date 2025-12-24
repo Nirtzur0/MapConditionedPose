@@ -11,7 +11,7 @@ streamlit run web/app.py --server.port 8501
 
 ## Services
 
-### 📊 Comet ML (https://www.comet.com/)
+### Comet ML (https://www.comet.com/)
 **For Training Monitoring**
 - Real-time loss curves and metrics
 - Learning rate schedules and hyperparameters
@@ -19,7 +19,7 @@ streamlit run web/app.py --server.port 8501
 - Experiment comparison and tracking
 - Set COMET_API_KEY to enable
 
-### 📍 Streamlit App (http://localhost:8501)  
+### 📍 Streamlit App (http://localhost:8501)
 **For Prediction Exploration**
 - Interactive map showing ground truth vs predictions
 - Error visualization with color-coded markers
@@ -51,7 +51,7 @@ streamlit run web/app.py --server.port 8501
 
 ## Philosophy
 
-The old app had too many placeholder pages with fake data. This new version focuses on **one thing**: 
+The old app had too many placeholder pages with fake data. This new version focuses on **one thing**:
 showing you where your model thinks the UE is versus where it actually is, with all the visual intuition you need.
 
 For training metrics, use TensorBoard - that's what PyTorch Lightning is designed for.

@@ -1,7 +1,7 @@
 # Sionna Integration - Status Correction
 
-**Updated:** January 2026  
-**Status:** Not fully complete — real Sionna path exists, validation pending  
+**Updated:** January 2026
+**Status:** Not fully complete — real Sionna path exists, validation pending
 **Next Step:** Run a real Sionna dataset as outlined in `docs/SIONNA_INTEGRATION_PLAN.md`
 
 ---

@@ -1,6 +1,6 @@
 # M4: Differentiable Physics Regularization
 
-**Status**: ✅ Complete (Implementation + Tests)  
+**Status**: Complete (Implementation + Tests)
 **Tests**: 17/17 passing
 
 ## Overview
@@ -12,25 +12,25 @@ M4 implements physics-consistency loss using precomputed Sionna radio maps with 
 ### Components
 
 1. **Differentiable Lookup** (`src/physics_loss/differentiable_lookup.py`)
-   - Bilinear interpolation using `F.grid_sample`
-   - Fully differentiable w.r.t. predicted positions
-   - Supports batch and multi-point sampling
+ - Bilinear interpolation using `F.grid_sample`
+ - Fully differentiable w.r.t. predicted positions
+ - Supports batch and multi-point sampling
 
 2. **Physics Loss** (`src/physics_loss/physics_loss.py`)
-   - Multi-feature weighted MSE loss
-   - Configurable feature weights (path_gain: 1.0, ToA: 0.5, AoA: 0.3, SNR/SINR: 0.8, throughput/BLER: 0.2)
-   - Supports MSE or Huber loss
-   - Optional feature normalization
+ - Multi-feature weighted MSE loss
+ - Configurable feature weights (path_gain: 1.0, ToA: 0.5, AoA: 0.3, SNR/SINR: 0.8, throughput/BLER: 0.2)
+ - Supports MSE or Huber loss
+ - Optional feature normalization
 
 3. **Radio Map Generator** (`src/physics_loss/radio_map_generator.py`)
-   - Generates precomputed Sionna RT maps (7 features × 512×512)
-   - Features: path_gain, toa, aoa, snr, sinr, throughput, bler
-   - Saves to Zarr format (~50-100 MB per scene)
+ - Generates precomputed Sionna RT maps (7 features × 512×512)
+ - Features: path_gain, toa, aoa, snr, sinr, throughput, bler
+ - Saves to Zarr format (~50-100 MB per scene)
 
 4. **Position Refinement** (`src/physics_loss/refinement.py`)
-   - Gradient-based optimization at inference time
-   - Configurable steps and learning rate
-   - Selective refinement based on confidence threshold
+ - Gradient-based optimization at inference time
+ - Configurable steps and learning rate
+ - Selective refinement based on confidence threshold
 
 ## Usage
 
@@ -39,11 +39,11 @@ M4 implements physics-consistency loss using precomputed Sionna radio maps with 
 ```bash
 # Generate radio maps for all scenes
 python scripts/generate_radio_maps.py \
-    --scenes-dir data/scenes \
-    --output-dir data/radio_maps \
-    --resolution 1.0 \
-    --map-size 512 512 \
-    --parallel 4
+ --scenes-dir data/scenes \
+ --output-dir data/radio_maps \
+ --resolution 1.0 \
+ --map-size 512 512 \
+ --parallel 4
 ```
 
 **Note**: Sionna RT is required for radio map generation. For training only, you can use precomputed maps.
@@ -54,41 +54,41 @@ Edit `configs/model.yaml`:
 
 ```yaml
 training:
-  loss:
-    use_physics_loss: true  # Enable physics loss
+ loss:
+ use_physics_loss: true # Enable physics loss
 
 physics_loss:
-  enabled: true
-  lambda_phys: 0.1  # Weight for physics loss (tune via validation)
-  radio_maps_dir: "data/radio_maps"
-  
-  feature_weights:
-    path_gain: 1.0
-    toa: 0.5
-    aoa: 0.3
-    snr: 0.8
-    sinr: 0.8
-    throughput: 0.2
-    bler: 0.2
+ enabled: true
+ lambda_phys: 0.1 # Weight for physics loss (tune via validation)
+ radio_maps_dir: "data/radio_maps"
+
+ feature_weights:
+ path_gain: 1.0
+ toa: 0.5
+ aoa: 0.3
+ snr: 0.8
+ sinr: 0.8
+ throughput: 0.2
+ bler: 0.2
 ```
 
 ### 3. Train with Physics Loss
 
 ```bash
 python scripts/train.py \
-    --config configs/model.yaml \
-    --wandb-project transformer-ue-localization-m4
+ --config configs/model.yaml \
+ --wandb-project transformer-ue-localization-m4
 ```
 
 ### 4. Use Inference-Time Refinement (Optional)
 
 ```yaml
 physics_loss:
-  refinement:
-    enabled: true
-    num_steps: 5
-    learning_rate: 0.5
-    min_confidence_threshold: 0.5  # Only refine low-confidence predictions
+ refinement:
+ enabled: true
+ num_steps: 5
+ learning_rate: 0.5
+ min_confidence_threshold: 0.5 # Only refine low-confidence predictions
 ```
 
 ## Loss Formulation
@@ -162,13 +162,13 @@ Observed features are extracted from temporal measurements by averaging:
 ```python
 # Mean across temporal dimension (ignoring masked values)
 observed = {
-    'path_gain': mean(rt_features[:, :, 0]),
-    'toa': mean(rt_features[:, :, 1]),
-    'aoa': mean(rt_features[:, :, 2]),
-    'snr': mean(phy_features[:, :, 2]),
-    'sinr': mean(phy_features[:, :, 3]),
-    'throughput': mean(mac_features[:, :, 0]),
-    'bler': mean(mac_features[:, :, 1]),
+ 'path_gain': mean(rt_features[:, :, 0]),
+ 'toa': mean(rt_features[:, :, 1]),
+ 'aoa': mean(rt_features[:, :, 2]),
+ 'snr': mean(phy_features[:, :, 2]),
+ 'sinr': mean(phy_features[:, :, 3]),
+ 'throughput': mean(mac_features[:, :, 0]),
+ 'bler': mean(mac_features[:, :, 1]),
 }
 ```
 
@@ -206,20 +206,20 @@ Based on IMPLEMENTATION_GUIDE.md specifications:
 
 ```
 src/physics_loss/
-├── __init__.py                  # Module exports
-├── differentiable_lookup.py     # F.grid_sample wrapper (180 lines)
-├── physics_loss.py              # Loss computation (252 lines)
-├── radio_map_generator.py       # Sionna RT map generation (280 lines)
-└── refinement.py                # Gradient-based refinement (200 lines)
+├── __init__.py # Module exports
+├── differentiable_lookup.py # F.grid_sample wrapper (180 lines)
+├── physics_loss.py # Loss computation (252 lines)
+├── radio_map_generator.py # Sionna RT map generation (280 lines)
+└── refinement.py # Gradient-based refinement (200 lines)
 
 scripts/
-└── generate_radio_maps.py       # CLI for map generation (230 lines)
+└── generate_radio_maps.py # CLI for map generation (230 lines)
 
 tests/
-└── test_m4_physics_loss.py      # 17 comprehensive tests (420 lines)
+└── test_m4_physics_loss.py # 17 comprehensive tests (420 lines)
 
 configs/
-└── model.yaml                   # Updated with physics_loss section
+└── model.yaml # Updated with physics_loss section
 ```
 
 **Total**: ~1,562 lines of code
@@ -233,15 +233,15 @@ pytest tests/test_m4_physics_loss.py -v
 ```
 
 All 17 tests should pass:
-- ✅ Coordinate normalization
-- ✅ Differentiable lookup (single & batch)
-- ✅ Gradient flow through lookup
-- ✅ Out-of-bounds handling
-- ✅ Physics loss computation
-- ✅ Per-feature loss analysis
-- ✅ Position refinement (basic, selective, convergence)
-- ✅ End-to-end pipeline
-- ✅ Training step simulation
+- Coordinate normalization
+- Differentiable lookup (single & batch)
+- Gradient flow through lookup
+- Out-of-bounds handling
+- Physics loss computation
+- Per-feature loss analysis
+- Position refinement (basic, selective, convergence)
+- End-to-end pipeline
+- Training step simulation
 
 ## Next Steps
 

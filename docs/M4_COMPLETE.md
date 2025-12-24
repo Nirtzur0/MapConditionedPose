@@ -1,7 +1,7 @@
-# M4 Implementation Complete ✅
+# M4 Implementation Complete
 
-**Date**: December 23, 2025  
-**Commit**: 920abd9  
+**Date**: December 23, 2025
+**Commit**: 920abd9
 **Status**: All 88 tests passing (M1:25, M2:27, M3:19, M4:17)
 
 ## Summary
@@ -56,10 +56,10 @@ Successfully implemented **M4: Differentiable Physics Regularization** per IMPLE
 
 **configs/model.yaml** (Updated)
 - Added `physics_loss` section with:
-  - `lambda_phys`: 0.1 (tunable hyperparameter)
-  - `feature_weights`: Configurable per feature
-  - `refinement`: Optional inference-time settings
-  - `radio_maps_dir`: Path to precomputed maps
+ - `lambda_phys`: 0.1 (tunable hyperparameter)
+ - `feature_weights`: Configurable per feature
+ - `refinement`: Optional inference-time settings
+ - `radio_maps_dir`: Path to precomputed maps
 
 **requirements-m4.txt**
 - Extends requirements-m3.txt
@@ -70,29 +70,29 @@ Successfully implemented **M4: Differentiable Physics Regularization** per IMPLE
 **tests/test_m4_physics_loss.py** (17 tests, 420 lines)
 
 Test Coverage:
-- ✅ TestDifferentiableLookup (5 tests)
-  - Coordinate normalization
-  - Single & batch lookup
-  - Gradient flow
-  - Out-of-bounds handling
-  
-- ✅ TestPhysicsLoss (6 tests)
-  - Initialization
-  - Forward pass
-  - Perfect match scenario
-  - Gradient flow through loss
-  - Per-feature loss analysis
-  - Functional API
-  
-- ✅ TestPositionRefinement (4 tests)
-  - Basic refinement
-  - Confidence-based selection
-  - Gradient descent convergence
-  - Boundary clipping
-  
-- ✅ TestIntegration (2 tests)
-  - End-to-end pipeline
-  - Training step simulation
+- TestDifferentiableLookup (5 tests)
+ - Coordinate normalization
+ - Single & batch lookup
+ - Gradient flow
+ - Out-of-bounds handling
+
+- TestPhysicsLoss (6 tests)
+ - Initialization
+ - Forward pass
+ - Perfect match scenario
+ - Gradient flow through loss
+ - Per-feature loss analysis
+ - Functional API
+
+- TestPositionRefinement (4 tests)
+ - Basic refinement
+ - Confidence-based selection
+ - Gradient descent convergence
+ - Boundary clipping
+
+- TestIntegration (2 tests)
+ - End-to-end pipeline
+ - Training step simulation
 
 ### 5. Documentation
 
@@ -113,19 +113,19 @@ L_total = L_coarse + λ_fine * L_fine + λ_phys * L_phys
 
 L_phys = Σ_f w_f * (observed_f - simulated_f)^2
 
-simulated_f = RadioMap[predicted_position]  # via F.grid_sample
+simulated_f = RadioMap[predicted_position] # via F.grid_sample
 ```
 
 ### Feature Weights (Default)
 
 ```yaml
-path_gain: 1.0    # Most reliable
-toa: 0.5          # Medium (NLOS bias)
-aoa: 0.3          # Lower (measurement noise)
-snr: 0.8          # High (signal quality)
-sinr: 0.8         # High (signal quality)
-throughput: 0.2   # Lower (scheduler dependent)
-bler: 0.2         # Lower (channel dependent)
+path_gain: 1.0 # Most reliable
+toa: 0.5 # Medium (NLOS bias)
+aoa: 0.3 # Lower (measurement noise)
+snr: 0.8 # High (signal quality)
+sinr: 0.8 # High (signal quality)
+throughput: 0.2 # Lower (scheduler dependent)
+bler: 0.2 # Lower (channel dependent)
 ```
 
 ### Gradient Flow
@@ -134,8 +134,8 @@ Physics loss is fully differentiable w.r.t. predicted positions:
 
 ```
 ∂L_phys/∂pred_xy = Σ_f w_f * 2 * (obs - sim) * ∂sim/∂pred_xy
-                    └─────────────────────────────┘
-                    From F.grid_sample gradients
+ └─────────────────────────────┘
+ From F.grid_sample gradients
 ```
 
 ## Performance Metrics
@@ -178,23 +178,23 @@ Breakdown:
 
 ```bash
 python scripts/generate_radio_maps.py \
-    --scenes-dir data/scenes \
-    --output-dir data/radio_maps \
-    --resolution 1.0 \
-    --parallel 4
+ --scenes-dir data/scenes \
+ --output-dir data/radio_maps \
+ --resolution 1.0 \
+ --parallel 4
 ```
 
 ### 2. Enable in Config
 
 ```yaml
 training:
-  loss:
-    use_physics_loss: true
+ loss:
+ use_physics_loss: true
 
 physics_loss:
-  enabled: true
-  lambda_phys: 0.1
-  radio_maps_dir: "data/radio_maps"
+ enabled: true
+ lambda_phys: 0.1
+ radio_maps_dir: "data/radio_maps"
 ```
 
 ### 3. Train
@@ -241,7 +241,7 @@ Next milestone from IMPLEMENTATION_GUIDE.md:
 Commit: 920abd9
 Branch: master
 Remote: https://github.com/Nirtzur0/CellularPositioningResearch
-Status: ✅ Pushed successfully
+Status: Pushed successfully
 ```
 
 ## References

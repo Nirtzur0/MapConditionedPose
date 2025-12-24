@@ -1,43 +1,29 @@
 # Transformer-Based UE Localization
 
-![Tests](https://img.shields.io/badge/tests-52%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-**Transformer-based deep learning system for 5G NR UE localization using multi-layer radio measurements.**
+A practical end-to-end pipeline for 5G NR UE localization using multi-layer radio measurements and a transformer model.
 
 ## Overview
 
-This project implements an end-to-end pipeline for training transformer models to localize 5G NR User Equipment (UE) using:
-- **Layer 1 (RT)**: Ray tracing propagation features (path gains, AoA/AoD, delays)
-- **Layer 2 (PHY/FAPI)**: Link-level measurements (RSRP, RSRQ, CQI, RI)
-- **Layer 3 (MAC/RRC)**: System-level features (cell IDs, timing advance, throughput)
-
-### Key Features
-
-✅ **3GPP Compliant**: All measurements follow official 3GPP specifications (38.215, 38.214, 38.213)  
-✅ **Multi-Layer Architecture**: RT → PHY/FAPI → MAC/RRC feature extraction  
-✅ **Synthetic Data Generation**: Sionna RT + OpenStreetMap for realistic scenarios  
-✅ **Map Conditioning**: Dual-encoder with radio + geometry maps  
-✅ **Production Ready**: 52 passing tests, comprehensive documentation  
-
----
+The pipeline learns to localize UEs using:
+- **Layer 1 (RT)**: propagation paths (gains, AoA/AoD, delays)
+- **Layer 2 (PHY/FAPI)**: link measurements (RSRP, RSRQ, CQI, RI)
+- **Layer 3 (MAC/RRC)**: system features (cell IDs, timing advance, throughput)
 
 ## Project Status
 
-| Milestone | Status | Tests | Implementation |
-|-----------|--------|-------|----------------|
-| M1: Scene Generation | ✅ COMPLETE | 25/26 passing | 1,461 lines |
-| M2: Data Generation | ✅ COMPLETE | 27/27 passing | 2,149 lines |
-| M3: Transformer Model | 🔄 NEXT | - | Planned |
-| M4: Training Pipeline | ⏭️ PENDING | - | Planned |
-| M5: Web UI | ⏭️ PENDING | - | Planned |
-
----
+| Milestone | Status | Notes |
+|-----------|--------|------|
+| M1: Scene Generation | Complete | OSM to Mitsuba scenes |
+| M2: Data Generation | Complete | RT/PHY/MAC features to Zarr |
+| M3: Transformer Model | Complete | Dual-encoder + fusion |
+| M4: Training Pipeline | Complete | Training + eval + Optuna |
+| M5: Web UI | Complete | Streamlit demo app |
 
 ## Quick Start
-
-### One-Command Pipeline (Easiest)
 
 ```bash
 # Quick test (recommended for first run)
@@ -46,8 +32,6 @@ python run_pipeline.py --quick-test
 # Full pipeline
 python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
 ```
-
-See [PIPELINE.md](PIPELINE.md) for complete orchestration guide.
 
 ### Hyperparameter Optimization (Optuna)
 
@@ -59,7 +43,9 @@ pip install optuna optuna-integration
 python run_pipeline.py --optimize --n-trials 20 --study-name ue-localization
 ```
 
-### Manual Installation
+See `QUICK_START.md` for the compact workflow and `docs/PIPELINE.md` for details.
+
+## Manual Installation
 
 ```bash
 # Clone repository
@@ -71,262 +57,39 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt  # All dependencies (M1-M5, testing, web)
+pip install -r requirements.txt
 ```
 
-### Run Tests
+## Tests
 
 ```bash
-# All tests
 pytest tests/ -v
-
-# M1 only (Scene Generation)
-pytest tests/test_m1_scene_generation.py -v
-
-# M2 only (Data Generation)
-pytest tests/test_m2_data_generation.py -v
 ```
 
-**Expected:** 52 passed, 1 skipped
-
----
-
-## Architecture
+## Architecture (High-Level)
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│              M1: Scene Generation                          │
-│  OpenStreetMap → Geo2SigMap → Mitsuba XML + Meshes       │
-│  + Material Randomization (ITU-R P.2040)                  │
-│  + Site Placement (grid/random/ISD/custom)                │
-└───────────────────────┬────────────────────────────────────┘
-                        │ scene.xml, meshes, metadata.json
-                        ▼
-┌────────────────────────────────────────────────────────────┐
-│              M2: Data Generation                           │
-│  Sionna RT → Path Features → PHY/FAPI → MAC/RRC          │
-│  + 3GPP Measurements (RSRP, CQI, TA, etc.)                │
-│  + Measurement Realism (dropout, quantization)            │
-│  + Zarr Storage (hierarchical, compressed)                │
-└───────────────────────┬────────────────────────────────────┘
-                        │ dataset.zarr (rt/phy/mac features)
-                        ▼
-┌────────────────────────────────────────────────────────────┐
-│          M3: Transformer Model (NEXT)                      │
-│  Dual Encoder (Radio + Map) → Cross-Attention → Position │
-│  + PyTorch Dataset from Zarr                              │
-│  + Temporal + Spatial + Protocol Positional Encoding      │
-└────────────────────────────────────────────────────────────┘
+M1: OSM -> Geo2SigMap -> Mitsuba scenes
+M2: Sionna RT -> RT/PHY/MAC features -> Zarr
+M3: Transformer (radio + map encoders -> fusion -> position)
+M4: Training + evaluation (+ optional physics loss)
+M5: Web UI for inspection and demos
 ```
-
----
-
-## Usage Examples
-
-### M1: Generate Synthetic Scenes
-
-```bash
-python scripts/scene_generation/generate_scenes.py \
-  --area "Boulder, CO" \
-  --num-sites 10 \
-  --site-strategy isd \
-  --randomize-materials \
-  --output-dir data/scenes/
-```
-
-### M2: Generate Training Dataset
-
-```bash
-python scripts/generate_dataset.py \
-  --scene-dir data/scenes/ \
-  --output-dir data/synthetic/ \
-  --num-ue 100 \
-  --num-reports 10 \
-  --carrier-freq 3.5e9 \
-  --enable-beam-mgmt
-```
-
-### M3: Train Transformer (Coming Soon)
-
-```bash
-python scripts/train.py \
-  --dataset data/synthetic/dataset_*.zarr \
-  --model-config configs/model.yaml \
-  --batch-size 32 \
-  --epochs 100
-```
-
----
-
-## Project Structure
-
-```
-transformer-ue-localization/
-├── src/
-│   ├── scene_generation/      # M1: Scene generation
-│   │   ├── core.py             # SceneGenerator
-│   │   ├── materials.py        # MaterialRandomizer
-│   │   ├── sites.py            # SitePlacer
-│   │   └── tiles.py            # TileGenerator
-│   └── data_generation/        # M2: Data generation
-│       ├── measurement_utils.py # 3GPP measurements
-│       ├── features.py          # RT/PHY/MAC extractors
-│       ├── multi_layer_generator.py # Pipeline orchestrator
-│       └── zarr_writer.py       # Dataset storage
-├── scripts/
-│   ├── scene_generation/
-│   │   └── generate_scenes.py      # M1 CLI
-│   └── generate_dataset.py     # M2 CLI
-├── tests/
-│   ├── test_m1_scene_generation.py  # 26 tests
-│   └── test_m2_data_generation.py   # 27 tests
-├── configs/
-│   ├── scene_generation/
-│   │   └── scene_generation.yaml   # M1 config
-│   ├── data_generation/
-│   │   └── data_generation.yaml    # M2 config
-│   ├── training/
-│   │   ├── training.yaml           # M3 baseline config
-│   │   ├── training_simple.yaml    # M3 simple config
-│   │   ├── training_full.yaml      # M3 full config
-│   │   └── training_diverse.yaml   # M3 diverse config
-└── docs/
-    ├── M1_COMPLETE.md          # M1 documentation
-    ├── M2_COMPLETE.md          # M2 documentation
-    └── PROJECT_STATUS.md       # Overall status
-```
-
----
-
-## Key Technologies
-
-- **Geo2SigMap v2.0.0**: OSM → Sionna scene pipeline
-- **Sionna RT v0.14+**: NVIDIA ray tracing framework
-- **Zarr v3**: Hierarchical array storage
-- **PyTorch 2.0+**: Deep learning framework
-- **3GPP Standards**: 38.215, 38.214, 38.213, 38.331
-
----
 
 ## Documentation
 
-- [Quick Start Guide](QUICK_START.md) - Get running in 5 minutes
-- [Technical Architecture](docs/ARCHITECTURE.md) - System design and theory
-- [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) - Full architecture and milestones
-- [System Integration Guide](docs/SYSTEM_INTEGRATION_GUIDE.md) - Data flow and architecture
-- [Project Status](docs/PROJECT_STATUS.md) - Overall progress and roadmap
-- [Milestone Documentation](docs/) - M1-M5 completion summaries
+- `QUICK_START.md` - Short start guide
+- `docs/PIPELINE.md` - Pipeline usage and options
+- `docs/IMPLEMENTATION_GUIDE.md` - Design + milestones
+- `docs/SYSTEM_INTEGRATION_GUIDE.md` - Data flow and integration
+- `docs/PROJECT_STATUS.md` - Current status and roadmap
 
----
+## Key Directories
 
-## Testing
-
-### Test Coverage
-
-- **M1 (Scene Generation)**: 26 tests
-  - MaterialRandomizer: 9 tests
-  - SitePlacer: 8 tests
-  - TileGenerator: 5 tests
-  - Integration: 4 tests
-
-- **M2 (Data Generation)**: 27 tests
-  - MeasurementUtils: 8 tests
-  - RTFeatureExtractor: 5 tests
-  - PHYFAPIFeatureExtractor: 3 tests
-  - MACRRCFeatureExtractor: 4 tests
-  - MultiLayerDataGenerator: 5 tests
-  - ZarrWriter: 2 tests
-
-**Total: 52 passing, 1 skipped**
-
-### Run Specific Tests
-
-```bash
-# Test material randomization
-pytest tests/test_m1_scene_generation.py::TestMaterialRandomizer -v
-
-# Test 3GPP measurements
-pytest tests/test_m2_data_generation.py::TestMeasurementUtils -v
-
-# Test Zarr storage
-pytest tests/test_m2_data_generation.py::TestZarrWriter -v
 ```
-
----
-
-## Performance
-
-### M1 Scene Generation
-- **Throughput**: 1-5 scenes/minute
-- **Scene size**: 50-200 MB (XML + meshes)
-- **Scaling**: Linear with geographic area
-
-### M2 Data Generation
-- **Mock mode**: ~100 UEs/second (CPU)
-- **Full Sionna RT**: ~10 UEs/second (GPU)
-- **Dataset size**: ~8 GB (compressed) for 1M samples
-
----
-
-## Dependencies
-
-### Core Requirements
+configs/ # Pipeline configs
+scripts/ # Dataset + training scripts
+src/ # Core code
+tests/ # Test suite
+web/ # Streamlit app
 ```
-numpy>=1.24.0
-pyproj>=3.6.0
-pyyaml>=6.0
-zarr>=2.16.0
-pytest>=7.4.0
-```
-
-### Optional (for production)
-```
-sionna>=0.14.0       # Ray tracing (requires TensorFlow)
-tensorflow>=2.13.0   # Sionna dependency
-torch>=2.0.0         # M3 training
-```
-
----
-
-## Contributing
-
-This is a research project. Contributions welcome for:
-- M3: Transformer model architecture
-- M4: Training pipeline and evaluation
-- M5: Web-based visualization UI
-- Performance optimizations
-- Additional test coverage
-
----
-
-## License
-
-MIT License - See LICENSE file for details
-
----
-
-## Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@software{transformer_ue_localization,
-  title={Transformer-Based UE Localization with Multi-Layer Radio Measurements},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/yourusername/transformer-ue-localization}
-}
-```
-
----
-
-## Acknowledgments
-
-- **Geo2SigMap**: OSM to Sionna scene conversion
-- **Sionna RT**: NVIDIA ray tracing framework
-- **3GPP**: Wireless specifications
-- **Zarr**: Array storage format
-
----
-
-**Status: M1 + M2 Complete | M3 In Progress**

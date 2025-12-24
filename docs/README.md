@@ -1,74 +1,33 @@
 # Documentation
 
-Complete technical documentation for the Transformer-based UE Localization project.
+A focused map of the project docs.
 
----
+## Core Docs
 
-## 📚 Core Documentation
+- `ARCHITECTURE.md` - System design and rationale
+- `IMPLEMENTATION_GUIDE.md` - End-to-end implementation guide
+- `SYSTEM_INTEGRATION_GUIDE.md` - Data flow and integration details
+- `PIPELINE.md` - CLI usage and pipeline behavior
+- `PIPELINE_SUMMARY.md` - Short pipeline reference
+- `PROJECT_STATUS.md` - Current status and roadmap
 
-### Architecture & Design
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture overview and design principles
-- **[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)** - Complete implementation guide with milestones
-- **[SYSTEM_INTEGRATION_GUIDE.md](SYSTEM_INTEGRATION_GUIDE.md)** - Data flow and component integration
-- **[PIPELINE.md](PIPELINE.md)** - End-to-end pipeline orchestration guide
-- **[PIPELINE_SUMMARY.md](PIPELINE_SUMMARY.md)** - Pipeline implementation summary
+## Sionna Integration
 
-### Project Management
-- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current status, metrics, and roadmap
+- `SIONNA_STATUS.md` - Current state and how to run
+- `SIONNA_INTEGRATION_PLAN.md` - What remains to validate
+- `SIONNA_IMPLEMENTATION_COMPLETE.md` - Status correction and definition of done
 
-### Sionna Integration
-- **[SIONNA_STATUS.md](SIONNA_STATUS.md)** - Current state of Sionna RT/PHY/SYS integration and how to run it
-- **[SIONNA_INTEGRATION_PLAN.md](SIONNA_INTEGRATION_PLAN.md)** - What’s left to validate real Sionna runs
-- **[SIONNA_IMPLEMENTATION_COMPLETE.md](SIONNA_IMPLEMENTATION_COMPLETE.md)** - Status correction and definition of done
+## Milestones
 
----
+- M1: `M1_COMPLETE.md`, `M1_ARCHITECTURE.md`, `M1_SUMMARY.md`, `M1_CHECKLIST.md`
+- M2: `M2_COMPLETE.md`, `M2_SUMMARY.md`
+- M4: `M4_COMPLETE.md`, `M4_PHYSICS_LOSS.md`
+- M5: `M5_COMPLETE.md`, `../web/README.md`
 
-## 🎯 Milestone Documentation
+## Start Here
 
-### M1: Scene Generation
-- **[M1_COMPLETE.md](M1_COMPLETE.md)** - Scene generation implementation
-- **[M1_ARCHITECTURE.md](M1_ARCHITECTURE.md)** - Deep dive into scene generation
-- **[M1_SUMMARY.md](M1_SUMMARY.md)** - Quick summary
-- **[M1_CHECKLIST.md](M1_CHECKLIST.md)** - Implementation checklist (completed)
+1. `../QUICK_START.md`
+2. `IMPLEMENTATION_GUIDE.md`
+3. `SYSTEM_INTEGRATION_GUIDE.md`
 
-### M2: Data Generation
-- **[M2_COMPLETE.md](M2_COMPLETE.md)** - Multi-layer data generation
-- **[M2_SUMMARY.md](M2_SUMMARY.md)** - Quick summary
-
-### M3: Transformer Model
-- **[IMPLEMENTATION_GUIDE.md#milestone-3](IMPLEMENTATION_GUIDE.md)** - Model architecture details
-
-### M4: Physics Loss
-- **[M4_COMPLETE.md](M4_COMPLETE.md)** - Physics loss implementation
-- **[M4_PHYSICS_LOSS.md](M4_PHYSICS_LOSS.md)** - Deep dive into physics regularization
-
-### M5: Web Visualization
-- **[M5_COMPLETE.md](M5_COMPLETE.md)** - Streamlit web interface
-- **[../web/README.md](../web/README.md)** - Web app user guide
-
----
-
-## 🚀 Getting Started
-
-**New to the project?** Start here:
-1. [Quick Start Guide](../QUICK_START.md) - Get running in 5 minutes
-2. [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) - Understand the full workflow
-3. [SYSTEM_INTEGRATION_GUIDE.md](SYSTEM_INTEGRATION_GUIDE.md) - See how components work together
-
----
-
-## 📊 Testing & Validation
-
-All modules have comprehensive test coverage. See:
-- [Test results in main README](../README.md#testing)
-- Test files in `../tests/`
-
----
-
-## 📝 Documentation Standards
-
-All documentation follows:
-- **Markdown format** for compatibility
-- **Clear section headers** for navigation
-- **Code examples** where applicable
-- **Links to related docs** for cross-reference
+Tests live under `../tests/`.
