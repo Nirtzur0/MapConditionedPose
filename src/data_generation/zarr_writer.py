@@ -314,6 +314,8 @@ class ZarrDatasetWriter:
         )
         
         logger.debug(f"Created array {name}: shape={shape}, dtype={dtype}, chunks={chunks}")
+        
+        logger.debug(f"Created array {name}: shape={shape}, dtype={dtype}, chunks={chunks}")
     
     def _write_layer(self, 
                     scene_data: Dict[str, np.ndarray],

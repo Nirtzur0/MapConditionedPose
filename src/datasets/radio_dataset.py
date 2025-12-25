@@ -51,6 +51,7 @@ class RadioLocalizationDataset(Dataset):
         self.scene_extent = self._resolve_scene_extent(scene_extent)
         self.normalize = normalize
         self.handle_missing = handle_missing
+        self._dataset_origin = None
         
         # Open Zarr store (read-only)
         self.store = zarr.open(str(self.zarr_path), mode='r')
@@ -60,6 +61,7 @@ class RadioLocalizationDataset(Dataset):
         
         # Load normalization stats if available
         self.norm_stats = self._load_normalization_stats()
+        self._dataset_origin = self._infer_dataset_origin()
         
         logger.info(f"Loaded {len(self)} samples for {split} split from {zarr_path}")
     
@@ -109,6 +111,18 @@ class RadioLocalizationDataset(Dataset):
                 for key in self.store['metadata']['normalization'].keys()
             }
         return None
+
+    def _infer_dataset_origin(self) -> Optional[Tuple[float, float]]:
+        if 'positions' not in self.store:
+            return None
+        try:
+            ue_x = np.asarray(self.store['positions/ue_x'])
+            ue_y = np.asarray(self.store['positions/ue_y'])
+            if ue_x.size == 0 or ue_y.size == 0:
+                return None
+            return float(np.nanmin(ue_x)), float(np.nanmin(ue_y))
+        except Exception:
+            return None
     
     def __len__(self) -> int:
         return len(self.indices)
@@ -130,13 +144,22 @@ class RadioLocalizationDataset(Dataset):
         ue_x = float(self.store['positions/ue_x'][zarr_idx])
         ue_y = float(self.store['positions/ue_y'][zarr_idx])
         
-        # Load scene bounding box (fallback to Boulder bbox if not available)
-        try:
+        # Load scene bounding box; fall back to dataset origin if missing/invalid.
+        scene_bbox = None
+        if 'metadata' in self.store and 'scene_bbox' in self.store['metadata']:
             scene_bbox = self.store['metadata/scene_bbox'][zarr_idx]
-        except KeyError:
-            # Fallback to Boulder scene bbox for datasets that don't have it
-            scene_bbox = torch.tensor([-105.28, 40.014, -105.27, 40.020], dtype=torch.float32)
-        x_min, y_min = scene_bbox[0], scene_bbox[1]
+        if scene_bbox is not None:
+            scene_bbox = np.asarray(scene_bbox, dtype=np.float32)
+            bbox_valid = np.isfinite(scene_bbox).all() and np.any(np.abs(scene_bbox) > 1e-6)
+        else:
+            bbox_valid = False
+
+        if bbox_valid:
+            x_min, y_min = scene_bbox[0], scene_bbox[1]
+        elif self._dataset_origin is not None:
+            x_min, y_min = self._dataset_origin
+        else:
+            x_min, y_min = 0.0, 0.0
 
         # Convert to local coordinates
         local_x = ue_x - x_min

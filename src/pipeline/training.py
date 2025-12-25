@@ -180,6 +180,7 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
             },
             'fine_head': {
                 'd_input': 512,
+                'd_hidden': 256,
                 'top_k': 5,
                 'dropout': 0.1,
             },
@@ -215,7 +216,7 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
     Train the transformer model.
     """
     import yaml
-    from .optuna_optimizer import run_optimization
+    from ..optuna_optimizer import run_optimization
 
     if args.skip_training:
         logger.info("Skipping training (--skip-training)")

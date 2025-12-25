@@ -298,11 +298,12 @@ class MultiLayerDataGenerator:
                 continue
             
             # Generate data for this scene
-            scene_data = self.generate_scene_data(scene_path, scene_id)
+            scene_metadata = self._load_scene_metadata(scene_id)
+            scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata)
             
             # Write to Zarr
             if self.zarr_writer is not None:
-                self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=None)
+                self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
         
@@ -315,9 +316,10 @@ class MultiLayerDataGenerator:
             logger.warning("Dataset generation complete but no data written (Zarr not available).")
             return self.config.output_dir
     
-    def generate_scene_data(self, 
+    def generate_scene_data(self,
                            scene_path: Path,
-                           scene_id: str) -> Dict[str, np.ndarray]:
+                           scene_id: str,
+                           scene_metadata: Optional[Dict] = None) -> Dict[str, np.ndarray]:
         """
         Generates multi-layer data for a single scene.
         
@@ -329,7 +331,8 @@ class MultiLayerDataGenerator:
             Dictionary with all generated features and positions.
         """
         # Load scene-specific metadata
-        scene_metadata = self._load_scene_metadata(scene_id)
+        if scene_metadata is None:
+            scene_metadata = self._load_scene_metadata(scene_id)
         
         # Load scene in Sionna
         if SIONNA_AVAILABLE:
