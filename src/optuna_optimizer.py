@@ -1,0 +1,200 @@
+"""
+Optuna Hyperparameter Optimization Module
+
+Handles hyperparameter optimization using Optuna with Comet ML integration.
+"""
+
+import os
+import logging
+from pathlib import Path
+from typing import Dict
+import yaml
+
+from src.utils.logging_utils import setup_logging
+from src.training import UELocalizationLightning
+
+# Import Optuna and Comet integration if available
+try:
+    import optuna
+    from optuna_integration.comet import CometPruner, CometCallback
+    COMET_AVAILABLE = True
+except ImportError:
+    COMET_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+def objective(trial, args, base_config_path: Path):
+    """
+    Optuna objective function.
+
+    This function is called for each trial in the study. It suggests
+    hyperparameters, creates and trains a model, and returns the
+    validation metric to be optimized.
+    """
+    print(f"Starting trial {trial.number}")
+
+    # 1. Load base config
+    with open(base_config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # 2. Suggest hyperparameters
+    # Radio Encoder
+    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [256, 512])
+    config['model']['radio_encoder']['nhead'] = trial.suggest_categorical('radio_nhead', [4, 8])
+    config['model']['radio_encoder']['num_layers'] = trial.suggest_int('radio_num_layers', 2, 6)
+    config['model']['radio_encoder']['dropout'] = trial.suggest_float('radio_dropout', 0.1, 0.3)
+
+    # Map Encoder
+    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [256, 512, 768])
+    config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8])
+    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 2, 6)
+    config['model']['map_encoder']['dropout'] = trial.suggest_float('map_dropout', 0.1, 0.3)
+
+    # Fusion
+    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [256, 512])
+    config['model']['fusion']['nhead'] = trial.suggest_categorical('fusion_nhead', [4, 8])
+    config['model']['fusion']['dropout'] = trial.suggest_float('fusion_dropout', 0.1, 0.3)
+
+    # Training params
+    config['training']['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [16, 32, 64])
+
+
+    # 3. Create a temporary config file for the trial
+    trial_config_path = Path(f"configs/trial_{trial.number}_config.yaml")
+    with open(trial_config_path, 'w') as f:
+        yaml.dump(config, f)
+
+    # 4. Create model
+    model = UELocalizationLightning(str(trial_config_path))
+
+    # 5. Setup callbacks
+    callbacks = []
+
+    # Optuna pruning callback
+    try:
+        from optuna_integration import PyTorchLightningPruningCallback
+        pruning_callback = PyTorchLightningPruningCallback(trial, monitor="val_median_error")
+        callbacks.append(pruning_callback)
+    except ImportError:
+        pass
+
+    # Checkpointing
+    from pytorch_lightning.callbacks import ModelCheckpoint
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=f"checkpoints/trial_{trial.number}",
+        filename='best_model',
+        monitor=config['infrastructure']['checkpoint']['monitor'],
+        mode=config['infrastructure']['checkpoint']['mode'],
+        save_top_k=1,
+    )
+    callbacks.append(checkpoint_callback)
+
+    # 6. Create trainer
+    import pytorch_lightning as pl
+    from pytorch_lightning.loggers import CometLogger
+
+    comet_logger = None
+    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        comet_logger = CometLogger(
+            api_key=os.environ.get('COMET_API_KEY'),
+            project_name=args.study_name,
+            workspace=os.environ.get('COMET_WORKSPACE'),
+        )
+        comet_logger.experiment.set_name(f"trial_{trial.number}")
+        comet_logger.experiment.log_parameters(trial.params)
+
+
+    trainer = pl.Trainer(
+        max_epochs=config['training']['num_epochs'],
+        accelerator=config['infrastructure']['accelerator'],
+        devices=config['infrastructure']['devices'],
+        precision=config['infrastructure']['precision'],
+        callbacks=callbacks,
+        logger=comet_logger,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+    )
+
+    # 7. Train
+    try:
+        trainer.fit(model)
+    except Exception as e:
+        import traceback
+        logger.error(f"Trial {trial.number} failed with exception: {e}")
+        logger.error(traceback.format_exc())
+        # Clean up temp config file
+        trial_config_path.unlink()
+        # Report failure to Optuna
+        raise optuna.exceptions.TrialPruned()
+
+
+    # 8. Return metric
+    # Clean up temp config file
+    trial_config_path.unlink()
+
+    return checkpoint_callback.best_model_score.item()
+
+
+def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
+    """
+    Run Optuna hyperparameter optimization study.
+    """
+    if optuna is None:
+        raise RuntimeError("Optuna is not installed. Install with: pip install optuna optuna-integration")
+    # Comet ML setup
+    comet_pruner = None
+    comet_callback = None
+    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        comet_pruner = CometPruner()
+        comet_callback = CometCallback(
+            metric_name="val_median_error",
+            experiment_name=args.study_name,
+        )
+        logger.info("Comet ML integration enabled.")
+    else:
+        logger.warning("Comet ML integration disabled. Set COMET_API_KEY to enable.")
+
+    # Create or load study
+    study = optuna.create_study(
+        study_name=args.study_name,
+        storage=args.storage,
+        direction='minimize',  # We want to minimize the localization error
+        pruner=comet_pruner,
+        load_if_exists=True,
+    )
+
+    # Add objective function as a lambda to pass extra arguments
+    obj_fn = lambda trial: objective(trial, args, base_config_path)
+
+    # Start optimization
+    try:
+        study.optimize(
+            obj_fn,
+            n_trials=args.n_trials,
+            callbacks=[comet_callback] if comet_callback else [],
+        )
+    except KeyboardInterrupt:
+        logger.info("Optimization stopped by user.")
+
+    # Print results
+    logger.info(f"Study statistics: ")
+    logger.info(f"  Number of finished trials: {len(study.trials)}")
+
+    pruned_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
+    complete_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
+
+    logger.info(f"  Pruned trials: {len(pruned_trials)}")
+    logger.info(f"  Complete trials: {len(complete_trials)}")
+
+    logger.info("Best trial:")
+    trial = study.best_trial
+
+    logger.info(f"  Value: {trial.value}")
+
+    logger.info("  Params: ")
+    for key, value in trial.params.items():
+        logger.info(f"    {key}: {value}")
+
+    return dict(trial.params)
