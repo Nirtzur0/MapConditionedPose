@@ -170,6 +170,15 @@ class UELocalizationLightning(pl.LightningModule):
 
         if hasattr(experiment, "log_figure"):
             experiment.log_figure(figure=fig, figure_name=f"{split}_maps")
+        
+        # Also save as PNG asset for reliable viewing
+        import io
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        if hasattr(experiment, "log_asset"):
+            experiment.log_asset(buf, file_name=f"{split}_maps.png")
+        
         plt.close(fig)
 
         if errors is not None and hasattr(experiment, "log_histogram"):
@@ -341,7 +350,7 @@ class UELocalizationLightning(pl.LightningModule):
         # self.log('val_success_5m', success_5m)
         # self.log('val_success_10m', success_10m)
 
-        # self._log_comet_visuals('val')
+        self._log_comet_visuals('val')
         
         # Clear
         self.validation_step_outputs.clear()

@@ -12,7 +12,7 @@ View training:
 
 import argparse
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, GPUStatsMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, DeviceStatsMonitor
 from pytorch_lightning.loggers import WandbLogger, CometLogger
 from pathlib import Path
 import yaml
@@ -106,9 +106,9 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
     
-    # GPU stats monitor
-    # gpu_monitor = GPUStatsMonitor()
-    # callbacks.append(gpu_monitor)
+    # Device stats monitor - commented out to reduce clutter in Comet ML
+    # device_monitor = DeviceStatsMonitor()
+    # callbacks.append(device_monitor)
     
     # Setup loggers
     loggers = []
@@ -125,6 +125,42 @@ def main():
             )
             if args.run_name:
                 comet_logger.experiment.set_name(args.run_name)
+            else:
+                # Auto-generate experiment name with scene/model info
+                dataset_path = config.get('dataset', {}).get('zarr_path', '')
+                
+                # Extract scene name more intelligently from dataset path
+                scene_name = "unknown"
+                path_parts = Path(dataset_path).parts
+                for part in reversed(path_parts):
+                    # Look for scene-like names in path components
+                    part_lower = part.lower()
+                    
+                    # Skip technical directory names
+                    if (part_lower in ['data', 'processed', 'dataset', 'zarr', 'datasets'] or 
+                        part.startswith('dataset_') or 
+                        '.zarr' in part_lower or 
+                        part_lower.endswith('.zarr')):
+                        continue
+                        
+                    if any(city in part_lower for city in ['austin', 'boulder', 'chicago', 'los_angeles', 'new_york', 'seattle']):
+                        # Extract city name
+                        for city in ['austin', 'boulder', 'chicago', 'los_angeles', 'new_york', 'seattle']:
+                            if city in part_lower:
+                                scene_name = city.replace('_', '').replace('los', 'la').replace('new', 'ny')
+                                break
+                        break
+                    elif 'sionna' in part_lower:
+                        scene_name = "sionna"
+                        break
+                    elif len(part) > 3 and not part.startswith(('20', '19')):  # Skip date-like names
+                        # Use the first meaningful directory name
+                        scene_name = part_lower.replace('_dataset', '').replace('_', '')
+                        break
+                
+                model_name = config.get('model', {}).get('name', 'unknown')
+                exp_name = f"{model_name}_{scene_name}_{Path(args.config).stem}"
+                comet_logger.experiment.set_name(exp_name)
             loggers.append(comet_logger)
             logger.info(f"\n📊 Comet ML logging enabled")
             logger.info(f"   Project: {project}")
