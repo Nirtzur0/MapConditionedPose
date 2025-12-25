@@ -48,7 +48,7 @@ class RadioLocalizationDataset(Dataset):
         self.zarr_path = Path(zarr_path)
         self.split = split
         self.map_resolution = map_resolution
-        self.scene_extent = scene_extent
+        self.scene_extent = self._resolve_scene_extent(scene_extent)
         self.normalize = normalize
         self.handle_missing = handle_missing
         
@@ -86,6 +86,14 @@ class RadioLocalizationDataset(Dataset):
             return indices[n_train:n_train + n_val]
         else:  # test
             return indices[n_train + n_val:]
+
+    @staticmethod
+    def _resolve_scene_extent(scene_extent: Optional[float]) -> float:
+        if isinstance(scene_extent, (list, tuple)):
+            if len(scene_extent) == 4:
+                return float(abs(scene_extent[2] - scene_extent[0]))
+            return float(scene_extent[-1])
+        return float(scene_extent) if scene_extent is not None else 512.0
     
     def _load_normalization_stats(self) -> Optional[Dict]:
         """Load pre-computed normalization statistics."""
@@ -111,7 +119,7 @@ class RadioLocalizationDataset(Dataset):
         Returns a dictionary containing:
             - measurements: Temporal sequence data (RT, PHY, MAC features, IDs, timestamps, mask)
             - radio_map: Radio signal map [5, H, W]
-            - osm_map: OSM building/geometry map [4, H, W]
+            - osm_map: OSM building/geometry map [5, H, W]
             - position: Ground truth (x, y) in meters
             - cell_grid: Ground truth coarse grid cell index
         """
@@ -319,9 +327,9 @@ class RadioLocalizationDataset(Dataset):
     def _load_radio_map(self, idx: int) -> torch.Tensor:
         """Load and process a precomputed Sionna radio map."""
         if 'radio_maps' not in self.store:
-            # Return dummy map if not available, padded to 7 channels
+            # Return dummy map if not available, padded to 5 channels
             H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(7, H, W, dtype=torch.float32)
+            return torch.zeros(5, H, W, dtype=torch.float32)
         
         # Load all radio map channels
         radio_map = torch.tensor(self.store['radio_maps'][idx], dtype=torch.float32)

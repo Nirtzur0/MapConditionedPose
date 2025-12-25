@@ -32,12 +32,12 @@ model:
   map_encoder:
     img_size: 256
     patch_size: 16
-    in_channels: 12
+    in_channels: 10
     d_model: 768
     nhead: 8
     num_layers: 6
     dropout: 0.1
-    radio_map_channels: 7
+    radio_map_channels: 5
     osm_map_channels: 5
     
   # Cross-Attention Fusion
@@ -98,55 +98,17 @@ infrastructure:
   num_workers: 4
   
   checkpoint:
-    monitor: "train_loss_epoch"
+    monitor: "val_median_error"
     mode: "min"
     save_top_k: 3
     
-  logging:
-    log_every_n_steps: 10
+  early_stopping:
+    monitor: "val_median_error"
+    patience: 10
+    mode: "min"
     
-  # Loss Function
-  loss:
-    coarse_weight: 1.0
-    fine_weight: 1.0
-    uncertainty_weight: 0.1  # For heteroscedastic loss
-    
-  # Regularization
-  regularization:
-    dropout: 0.1
-    label_smoothing: 0.05  # For coarse classification
-    
-  # Training Loop
-  epochs: 100
-  gradient_clip_val: 1.0
-  accumulate_grad_batches: 1
-  precision: "16-mixed"  # Mixed precision training
-  
-  # Callbacks
-  callbacks:
-    early_stopping:
-      monitor: "val/median_error_m"
-      patience: 15
-      mode: "min"
-      
-    model_checkpoint:
-      monitor: "val/median_error_m"
-      save_top_k: 3
-      mode: "min"
-      filename: "epoch{epoch:02d}-error{val/median_error_m:.2f}m"
-      
-    learning_rate_monitor:
-      logging_interval: "epoch"
-      
-  # Validation
-  validation:
-    check_val_every_n_epoch: 1
-    val_check_interval: null  # If set, validate within epoch
-    
-  # Logging
   logging:
     log_every_n_steps: 50
-    save_predictions_every_n_epochs: 5  # Save sample predictions
 
 # Weights & Biases Configuration
 wandb:

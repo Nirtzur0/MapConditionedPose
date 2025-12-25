@@ -121,7 +121,7 @@ class UELocalizationModel(nn.Module):
                 - timestamps: [batch, seq_len]
                 - mask: [batch, seq_len]
             radio_map: [batch, 5, H, W]
-            osm_map: [batch, 4, H, W]
+            osm_map: [batch, 5, H, W]
         
         Returns:
             Dictionary with predictions:

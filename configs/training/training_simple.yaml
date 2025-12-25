@@ -18,12 +18,12 @@ model:
   map_encoder:
     img_size: 256  # 256x256 pixel map
     patch_size: 16  # 16x16 patches
-    in_channels: 12  # Combined radio + OSM map features
+    in_channels: 10  # Combined radio + OSM map features
     d_model: 256
     nhead: 8
     num_layers: 4
     dropout: 0.1
-    radio_map_channels: 7  # PathGain, ToA, AoA, RSRP, SINR, Throughput, BLER
+    radio_map_channels: 5  # PathGain, ToA, SNR, SINR, Throughput
     osm_map_channels: 5  # height, footprint, material, road, terrain
     
   fusion:
@@ -36,7 +36,7 @@ model:
     dropout: 0.1
     
   fine_head:
-    type: "deterministic"
+    type: "heteroscedastic"
     top_k: 5
     d_hidden: 128
     dropout: 0.1
@@ -60,30 +60,17 @@ training:
   scheduler: "constant"
   warmup_steps: 10
     
-  loss:
-    coarse_weight: 1.0
-    fine_weight: 1.0
-    
-  epochs: 1  # Short test run
-  num_epochs: 1  # For trainer
+  num_epochs: 1  # Short test run
   gradient_clip: 1.0
   gradient_clip_val: 1.0
-  precision: "32"  # Full precision for CPU
-  warmup_steps: 10
     
   loss:
     coarse_weight: 1.0
     fine_weight: 1.0
     
-  epochs: 1  # Short test run
-  num_epochs: 1  # For trainer
-  gradient_clip: 1.0
-  gradient_clip_val: 1.0
-  precision: "32"  # Full precision for CPU
-  
   callbacks:
     model_checkpoint:
-      monitor: "val/median_error_m"
+      monitor: "val_median_error"
       save_top_k: 1
       mode: "min"
       
@@ -110,4 +97,3 @@ infrastructure:
     use_wandb: false
     project: "transformer-ue-localization"
     log_every_n_steps: 10
-

@@ -3,7 +3,7 @@ Map Encoder: Vision Transformer for Radio + OSM Maps
 
 Processes multi-channel maps with early fusion:
 - Radio maps: 5 channels (path_gain, toa, snr, sinr, throughput)
-- OSM maps: 4 channels (height, material, footprint, road)
+- OSM maps: 5 channels (height, material, footprint, road, terrain)
 
 Uses Vision Transformer (ViT) architecture with patch-based encoding.
 """
@@ -28,7 +28,7 @@ class PatchEmbedding(nn.Module):
         self,
         img_size: int = 512,
         patch_size: int = 16,
-        in_channels: int = 9,
+        in_channels: int = 10,
         embed_dim: int = 768,
     ):
         super().__init__()
@@ -116,28 +116,28 @@ class MapEncoder(nn.Module):
     Early fusion: concatenate all map channels, then encode with ViT.
     
     Args:
-        img_size: Input image size (512x512)
+        img_size: Input image size (256x256)
         patch_size: Patch size for ViT (16x16)
-        in_channels: Total input channels (5 radio + 4 OSM = 9)
+        in_channels: Total input channels (5 radio + 5 OSM = 10)
         d_model: Hidden dimension (embed_dim)
         nhead: Number of attention heads
         num_layers: Number of transformer layers
         dropout: Dropout rate
         radio_map_channels: Number of radio map channels (default: 5)
-        osm_map_channels: Number of OSM map channels (default: 4)
+        osm_map_channels: Number of OSM map channels (default: 5)
     """
     
     def __init__(
         self,
-        img_size: int = 512,
+        img_size: int = 256,
         patch_size: int = 16,
-        in_channels: int = 9,
+        in_channels: int = 10,
         d_model: int = 768,
         nhead: int = 8,
         num_layers: int = 12,
         dropout: float = 0.1,
         radio_map_channels: int = 5,
-        osm_map_channels: int = 4,
+        osm_map_channels: int = 5,
     ):
         super().__init__()
         
@@ -211,7 +211,7 @@ class MapEncoder(nn.Module):
         """
         Args:
             radio_map: [batch, 5, H, W] (path_gain, toa, snr, sinr, throughput)
-            osm_map: [batch, 4, H, W] (height, material, footprint, road)
+            osm_map: [batch, 5, H, W] (height, material, footprint, road, terrain)
         
         Returns:
             Spatial tokens [batch, num_patches, d_model]
@@ -221,7 +221,7 @@ class MapEncoder(nn.Module):
         device = radio_map.device
         
         # 1. Early fusion: concatenate radio and OSM maps
-        combined_map = torch.cat([radio_map, osm_map], dim=1)  # [B, 9, H, W]
+        combined_map = torch.cat([radio_map, osm_map], dim=1)  # [B, 10, H, W]
         
         # 2. Patch embedding
         patches, grid_size = self.patch_embed(combined_map)  # [B, num_patches, d_model]
@@ -280,7 +280,7 @@ class MapEncoder(nn.Module):
         
         Args:
             radio_map: [batch, 5, H, W]
-            osm_map: [batch, 4, H, W]
+            osm_map: [batch, 5, H, W]
             center: (x, y) center coordinates in pixels
             patch_size: Size of patch to extract
         

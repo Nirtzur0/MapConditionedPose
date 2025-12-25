@@ -32,12 +32,12 @@ model:
   map_encoder:
     img_size: 256
     patch_size: 16
-    in_channels: 12
+    in_channels: 10
     d_model: 768
     nhead: 8
     num_layers: 6
     dropout: 0.1
-    radio_map_channels: 7
+    radio_map_channels: 5
     osm_map_channels: 5
     
   # Cross-Attention Fusion
@@ -63,15 +63,9 @@ model:
 # Dataset Configuration (required by model)
 dataset:
   zarr_paths:
-<<<<<<< ours
     - "data/processed/dataset_paris.zarr"
     - "data/processed/dataset_nyc.zarr"
     - "data/processed/dataset_tokyo.zarr"
-=======
-    - "data/processed/quick_test_dataset/dataset_20251224_131441.zarr"
-    - "data/processed/quick_test_dataset/dataset_20251224_131826.zarr"
-    - "data/processed/quick_test_dataset/dataset_20251224_160620.zarr"
->>>>>>> theirs
   scene_extent: 856  # Scene size in meters (from Boulder scene)
   map_resolution: 1.0  # Meters per pixel
   normalize_features: true
@@ -130,11 +124,7 @@ wandb:
     - "transformer"
     - "map-conditioned"
     - "diverse-data"
-<<<<<<< ours
   notes: "Training run with combined data from Paris, NYC, and Tokyo."
-=======
-  notes: "Training run with combined data from multiple Boulder datasets for diverse training."
->>>>>>> theirs
   save_code: true
   log_model: true
 

@@ -7,6 +7,7 @@ Handles the evaluation of trained models on held-out datasets.
 import sys
 import logging
 from pathlib import Path
+from typing import Optional
 import yaml
 
 logger = logging.getLogger(__name__)

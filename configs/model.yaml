@@ -12,15 +12,15 @@ model:
     max_seq_len: 20 # Max measurement reports per sequence
     
     # Feature dimensions
-    rt_features_dim: 8    # path_gain, toa, aoa_az, aoa_el, aod_az, aod_el, doppler, rms_ds
-    phy_features_dim: 10  # rsrp, rsrq, sinr, cqi, ri, pmi, l1_rsrp (per beam, variable)
+    rt_features_dim: 10   # path_gain, toa, aoa_az, aoa_el, aod_az, aod_el, doppler, rms_ds, k_factor, num_paths
+    phy_features_dim: 8   # rsrp, rsrq, sinr, cqi, ri, pmi, l1_rsrp (per beam, variable)
     mac_features_dim: 6   # timing_advance, phr, serving_cell_id, throughput, bler, num_neighbors
   
   # Map Encoder (Vision Transformer)
   map_encoder:
-    img_size: 512          # Map resolution (pixels)
+    img_size: 256          # Map resolution (pixels)
     patch_size: 16         # Patch size for ViT
-    in_channels: 9         # 5 (radio) + 4 (OSM)
+    in_channels: 10        # 5 (radio) + 5 (OSM)
     d_model: 768           # Hidden dimension
     nhead: 8               # Attention heads
     num_layers: 12         # Transformer layers
@@ -28,7 +28,7 @@ model:
     
     # Channel configuration
     radio_map_channels: 5  # path_gain, toa, snr, sinr, throughput
-    osm_map_channels: 4    # height, material_id, footprint_mask, road_mask
+    osm_map_channels: 5    # height, material_id, footprint_mask, road_mask, terrain
   
   # Cross-Attention Fusion
   fusion:
@@ -89,7 +89,7 @@ dataset:
   test_split: 0.15
   
   # Map parameters
-  map_resolution: 1.0  # meters per pixel
+  map_resolution: 2.0  # meters per pixel
   scene_extent: [0.0, 0.0, 512.0, 512.0]  # [x_min, y_min, x_max, y_max] in meters
   
   # Preprocessing

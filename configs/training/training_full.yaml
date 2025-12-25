@@ -18,12 +18,12 @@ model:
   map_encoder:
     img_size: 256
     patch_size: 16
-    in_channels: 12
+    in_channels: 10
     d_model: 512  # 2x larger
     nhead: 16     # 2x more heads
     num_layers: 8  # 2x more layers
     dropout: 0.1
-    radio_map_channels: 7
+    radio_map_channels: 5
     osm_map_channels: 5
     
   fusion:
@@ -44,20 +44,12 @@ model:
 dataset:
   scene_extent: 856
   zarr_path: "data/processed/quick_test_dataset/dataset_20251223_230733.zarr"
-  sequence_length: 16
   map_resolution: 1.0
   normalize_features: true
   handle_missing_values: "zero"
 
 training:
   batch_size: 16
-  
-  data:
-    train_path: "data/processed/quick_test_dataset/dataset_20251223_230733.zarr"
-    val_path: null
-    batch_size: 16  # Keep reasonable for CPU
-    num_workers: 4
-    pin_memory: false
     
   optimizer: "adamw"
   learning_rate: 0.0001
@@ -72,7 +64,7 @@ training:
   loss:
     coarse_weight: 1.0
     fine_weight: 1.0
-    physics_weight: 0.1  # Enable physics loss
+    use_physics_loss: false
 
 infrastructure:
   accelerator: "cpu"

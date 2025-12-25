@@ -51,9 +51,14 @@ class UELocalizationLightning(pl.LightningModule):
         # Physics loss (if enabled)
         self.use_physics_loss = self.config['training']['loss'].get('use_physics_loss', False)
         if self.use_physics_loss:
+            scene_extent = self.config['dataset']['scene_extent']
+            if isinstance(scene_extent, (list, tuple)):
+                map_extent = tuple(scene_extent)
+            else:
+                map_extent = (0.0, 0.0, float(scene_extent), float(scene_extent))
             physics_config = PhysicsLossConfig(
                 feature_weights=self.config['physics_loss']['feature_weights'],
-                map_extent=tuple(self.config['dataset']['scene_extent']),
+                map_extent=map_extent,
                 loss_type=self.config['physics_loss'].get('loss_type', 'mse'),
                 normalize_features=self.config['physics_loss'].get('normalize_features', True),
             )
@@ -453,24 +458,42 @@ class UELocalizationLightning(pl.LightningModule):
         # Scheduler
         if cfg['scheduler'] == 'cosine_with_warmup':
             from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-            
-            warmup_scheduler = LinearLR(
-                optimizer,
-                start_factor=0.01,
-                total_iters=cfg['warmup_steps'],
-            )
-            
-            cosine_scheduler = CosineAnnealingLR(
-                optimizer,
-                T_max=cfg['num_epochs'] - cfg['warmup_steps'],
-                eta_min=cfg['learning_rate'] * 0.01,
-            )
-            
-            scheduler = SequentialLR(
-                optimizer,
-                schedulers=[warmup_scheduler, cosine_scheduler],
-                milestones=[cfg['warmup_steps']],
-            )
+
+            total_steps = None
+            if getattr(self, "trainer", None) is not None:
+                total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
+            if total_steps is None:
+                total_steps = cfg.get('num_epochs', 1)
+            total_steps = max(1, int(total_steps))
+
+            warmup_steps = int(cfg.get('warmup_steps', 0))
+            if warmup_steps >= total_steps:
+                warmup_steps = max(0, total_steps - 1)
+
+            if warmup_steps > 0:
+                warmup_scheduler = LinearLR(
+                    optimizer,
+                    start_factor=0.01,
+                    total_iters=warmup_steps,
+                )
+
+                cosine_scheduler = CosineAnnealingLR(
+                    optimizer,
+                    T_max=max(1, total_steps - warmup_steps),
+                    eta_min=cfg['learning_rate'] * 0.01,
+                )
+
+                scheduler = SequentialLR(
+                    optimizer,
+                    schedulers=[warmup_scheduler, cosine_scheduler],
+                    milestones=[warmup_steps],
+                )
+            else:
+                scheduler = CosineAnnealingLR(
+                    optimizer,
+                    T_max=total_steps,
+                    eta_min=cfg['learning_rate'] * 0.01,
+                )
             
             return {
                 'optimizer': optimizer,

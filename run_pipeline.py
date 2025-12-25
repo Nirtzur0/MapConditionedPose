@@ -37,7 +37,7 @@ from src.training import UELocalizationLightning
 from src.optuna_optimizer import run_optimization
 from src.pipeline.scene_generation import generate_scenes
 from src.pipeline.data_generation import generate_dataset
-from src.pipeline.training import train_model, _apply_optuna_params
+from src.pipeline.training import train_model, _apply_optuna_params, _create_training_config
 from src.pipeline.evaluation import evaluate_model
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ class PipelineOrchestrator:
     def step_3_train_model(self):
         """Train the transformer model"""
         train_model(self.args, self.project_root, self.checkpoint_dir, self.optuna_config_path,
-                   self.optuna_params, self.dataset_path, self.args.num_tx,
+                   self.optuna_params, self.train_dataset_paths, self.dataset_path, self.args.num_tx,
                    self.log_section, self.run_command)
 
     def step_3_optimize_model(self):
@@ -213,7 +213,8 @@ class PipelineOrchestrator:
 
         self.log_section("STEP 3: Optimize Model (Optuna)")
 
-        base_config_path = _create_training_config(self.args, self.project_root, self.dataset_path, self.checkpoint_dir, self.args.num_tx)
+        dataset_paths = self.train_dataset_paths or ([self.dataset_path] if self.dataset_path else [])
+        base_config_path = _create_training_config(self.args, self.project_root, self.checkpoint_dir, dataset_paths, self.args.num_tx)
         self.optuna_params = run_optimization(self.args, base_config_path)
 
         with open(base_config_path, 'r') as f:
