@@ -27,16 +27,14 @@ python run_pipeline.py \
  --eval-dataset data/processed/nyc.zarr
 ```
 ```bash
- ./venv/bin/python run_pipeline.py --scene-config configs/scene_generation/scene_generation.yaml \
+python run_pipeline.py --quick-test --light-train
+```
+```bash
+python run_pipeline.py --scene-config configs/scene_generation/scene_generation.yaml \
   --data-config configs/data_generation/data_generation_sionna.yaml \
   --optimize --n-trials 10 --study-name ue-localization \
   --eval-dataset data/processed/sionna_dataset_eval/dataset_eval.zarr \
   --run-name full_optuna_multi
-## Light training (fast sanity check)
-```
-
-```bash
-python run_pipeline.py --quick-test --light-train
 ```
 
 ## Optuna (optional)

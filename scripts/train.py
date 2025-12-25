@@ -12,7 +12,7 @@ View training:
 
 import argparse
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, GPUStatsMonitor
 from pytorch_lightning.loggers import WandbLogger, CometLogger
 from pathlib import Path
 import yaml
@@ -105,6 +105,10 @@ def main():
     # Learning rate monitor
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
+    
+    # GPU stats monitor
+    # gpu_monitor = GPUStatsMonitor()
+    # callbacks.append(gpu_monitor)
     
     # Setup loggers
     loggers = []

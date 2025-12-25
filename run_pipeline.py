@@ -41,13 +41,7 @@ try:
     from optuna_integration.comet import CometPruner, CometCallback
     COMET_AVAILABLE = True
 except ImportError:
-    optuna = None
     COMET_AVAILABLE = False
-    print("optuna or optuna-integration not installed. Optimization will be disabled.")
-    print("Install with: pip install optuna optuna-integration")
-
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +95,12 @@ def objective(trial, args, base_config_path: Path):
     callbacks = []
     
     # Optuna pruning callback
-    from optuna.integration import PyTorchLightningPruningCallback
-    pruning_callback = PyTorchLightningPruningCallback(trial, monitor="val_median_error")
-    callbacks.append(pruning_callback)
+    try:
+        from optuna_integration import PyTorchLightningPruningCallback
+        pruning_callback = PyTorchLightningPruningCallback(trial, monitor="val_median_error")
+        callbacks.append(pruning_callback)
+    except ImportError:
+        pass
 
     # Checkpointing
     from pytorch_lightning.callbacks import ModelCheckpoint
@@ -146,7 +143,9 @@ def objective(trial, args, base_config_path: Path):
     try:
         trainer.fit(model)
     except Exception as e:
+        import traceback
         logger.error(f"Trial {trial.number} failed with exception: {e}")
+        logger.error(traceback.format_exc())
         # Clean up temp config file
         trial_config_path.unlink()
         # Report failure to Optuna
@@ -252,7 +251,11 @@ class PipelineOrchestrator:
         output_path = data_gen.get('output', {}).get('path') or config.get('output', {}).get('path')
         output_dir = config.get('output_dir')
         if output_path:
-            return self.project_root / output_path
+            full_path = self.project_root / output_path
+            if full_path.is_dir():
+                return self._latest_dataset_in_dir(full_path)
+            else:
+                return full_path
         if output_dir:
             return self._latest_dataset_in_dir(self.project_root / output_dir)
         return None
@@ -466,7 +469,7 @@ class PipelineOrchestrator:
         """Generate synthetic dataset from scenes using Sionna ray tracing"""
         if self.args.skip_dataset:
             logger.info("Skipping dataset generation (--skip-dataset)")
-            if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config or self.args.eval_dataset:
+            if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config:
                 for config_path in self.args.train_data_configs or []:
                     dataset_path = self._resolve_data_output_path(config_path)
                     if dataset_path is None:
@@ -493,6 +496,7 @@ class PipelineOrchestrator:
             # Attempt to find the dataset path from the most recent data config if available
             if self.args.data_config:
                 self.dataset_path = self._resolve_data_output_path(self.args.data_config)
+                print(f"Resolved dataset_path: {self.dataset_path}")
                 if self.dataset_path is None or not self.dataset_path.exists():
                      raise RuntimeError(f"No dataset available to reuse at: {self.dataset_path}")
             else: # Fallback to original behavior
@@ -505,7 +509,7 @@ class PipelineOrchestrator:
 
         self.log_section("STEP 2: Generate Dataset")
 
-        if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config or self.args.eval_dataset:
+        if self.args.train_data_configs or self.args.train_datasets or self.args.eval_data_config:
             for config_path in self.args.train_data_configs or []:
                 logger.info(f"Using training data config: {config_path}")
                 self._run_dataset_generation_for_config(config_path)
@@ -535,6 +539,21 @@ class PipelineOrchestrator:
                 logger.info(f"Training datasets: {[p.name for p in self.train_dataset_paths]}")
             if self.eval_dataset_path:
                 logger.info(f"Eval dataset: {self.eval_dataset_path.name}")
+            return
+        
+        else:
+            print("In else, data_config:", self.args.data_config)
+            if self.args.data_config:
+                self.dataset_path = self._resolve_data_output_path(self.args.data_config)
+                print("Resolved:", self.dataset_path)
+                if self.dataset_path is None or not self.dataset_path.exists():
+                     raise RuntimeError(f"No dataset available to reuse at: {self.dataset_path}")
+            else:
+                zarr_files = sorted(self.dataset_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if not zarr_files:
+                    raise RuntimeError(f"No dataset available to reuse in: {self.dataset_dir}")
+                self.dataset_path = zarr_files[0]
+            logger.info(f"Reusing dataset: {self.dataset_path}")
             return
         
         cmd = [sys.executable, "scripts/generate_dataset.py"]
@@ -595,6 +614,9 @@ class PipelineOrchestrator:
             raise RuntimeError(f"Dataset not created at: {self.dataset_path}")
             
         logger.info(f"Created dataset: {self.dataset_path.name}")
+        
+        if self.args.eval_dataset:
+            self.eval_dataset_path = self.project_root / self.args.eval_dataset
         
     def step_3_train_model(self):
         """Train the transformer model"""
@@ -720,7 +742,7 @@ class PipelineOrchestrator:
         config_path = self.checkpoint_dir / "training_config.yaml"
         
         # Load base config
-        base_config = self.project_root / "configs" / "training_simple.yaml"
+        base_config = self.project_root / "configs" / "training" / "training_simple.yaml"
         with open(base_config, 'r') as f:
             import yaml
             config = yaml.safe_load(f)

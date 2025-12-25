@@ -245,8 +245,8 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Log losses
         self.log('train_loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train_coarse_loss', losses['coarse_loss'], on_step=False, on_epoch=True)
-        self.log('train_fine_loss', losses['fine_loss'], on_step=False, on_epoch=True)
+        # self.log('train_coarse_loss', losses['coarse_loss'], on_step=False, on_epoch=True)
+        # self.log('train_fine_loss', losses['fine_loss'], on_step=False, on_epoch=True)
         if self.use_physics_loss:
             self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=False, on_epoch=True)
         
@@ -331,17 +331,17 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Log metrics
         self.log('val_loss', avg_loss, prog_bar=True)
-        self.log('val_coarse_loss', avg_coarse)
-        self.log('val_fine_loss', avg_fine)
+        # self.log('val_coarse_loss', avg_coarse)
+        # self.log('val_fine_loss', avg_fine)
         self.log('val_median_error', median_error, prog_bar=True)
-        self.log('val_rmse', rmse)
-        self.log('val_p67', percentile_67)
-        self.log('val_p90', percentile_90)
-        self.log('val_p95', percentile_95)
-        self.log('val_success_5m', success_5m)
-        self.log('val_success_10m', success_10m)
+        # self.log('val_rmse', rmse)
+        # self.log('val_p67', percentile_67)
+        # self.log('val_p90', percentile_90)
+        # self.log('val_p95', percentile_95)
+        # self.log('val_success_5m', success_5m)
+        # self.log('val_success_10m', success_10m)
 
-        self._log_comet_visuals('val')
+        # self._log_comet_visuals('val')
         
         # Clear
         self.validation_step_outputs.clear()

@@ -36,7 +36,7 @@ model:
     dropout: 0.1
     
   fine_head:
-    type: "heteroscedastic"
+    type: "deterministic"
     top_k: 5
     d_hidden: 128
     dropout: 0.1
@@ -57,7 +57,7 @@ training:
   learning_rate: 0.0001
   weight_decay: 0.01
     
-  scheduler: "cosine_with_warmup"
+  scheduler: "constant"
   warmup_steps: 10
     
   loss:
@@ -94,7 +94,7 @@ training:
     log_every_n_steps: 10
 
 infrastructure:
-  accelerator: "cpu"
+  accelerator: "gpu"
   devices: 1
   precision: "32"
   num_workers: 2

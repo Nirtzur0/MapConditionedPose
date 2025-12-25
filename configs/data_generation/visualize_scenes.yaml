@@ -1,0 +1,8 @@
+
+data_generation:
+  scenes:
+    root_dir: data/scenes/austin_texas
+  output:
+    path: data/processed/dummy_dataset
+  debug_radio_maps: true
+  radio_maps_output_dir: visualizations

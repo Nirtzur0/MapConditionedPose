@@ -1,51 +1,51 @@
-# Sionna data generation config
-# Matches DataGenerationConfig in src/data_generation/multi_layer_generator.py
+data_generation:
+  scenes:
+    root_dir: data/scenes
+  scene_metadata_path: data/scenes/metadata.json
 
-scene_dir: data/scenes
-scene_metadata_path: data/scenes/metadata.json
+  # RF parameters
+  carrier_frequency_hz: 3.5e9
+  bandwidth_hz: 100e6
+  tx_power_dbm: 43.0
+  noise_figure_db: 9.0
 
-# RF parameters
-carrier_frequency_hz: 3.5e9
-bandwidth_hz: 100e6
-tx_power_dbm: 43.0
-noise_figure_db: 9.0
+  # Sionna RT parameters
+  use_mock_mode: false
+  max_depth: 5
+  num_samples: 100_000
+  enable_diffraction: true
 
-# Sionna RT parameters
-use_mock_mode: false
-max_depth: 5
-num_samples: 1_000_000
-enable_diffraction: true
+  # Sampling strategy
+  num_ue_per_tile: 100
+  ue_height_range: [1.5, 1.5]
+  ue_velocity_range: [0.0, 1.5]
 
-# Sampling strategy
-num_ue_per_tile: 100
-ue_height_range: [1.5, 1.5]
-ue_velocity_range: [0.0, 1.5]
+  # Temporal sequence
+  num_reports_per_ue: 10
+  report_interval_ms: 200.0
 
-# Temporal sequence
-num_reports_per_ue: 10
-report_interval_ms: 200.0
+  # Feature extraction
+  enable_k_factor: false
+  enable_beam_management: true
+  num_beams: 64
+  max_neighbors: 8
 
-# Feature extraction
-enable_k_factor: false
-enable_beam_management: true
-num_beams: 64
-max_neighbors: 8
+  # Measurement realism
+  measurement_dropout_rates:
+    rsrp: 0.0
+    rsrq: 0.05
+    sinr: 0.10
+    cqi: 0.15
+    ri: 0.20
+    pmi: 0.25
+    neighbor_rsrp: 0.10
+  quantization_enabled: true
 
-# Measurement realism
-measurement_dropout_rates:
-  rsrp: 0.0
-  rsrq: 0.05
-  sinr: 0.10
-  cqi: 0.15
-  ri: 0.20
-  pmi: 0.25
-  neighbor_rsrp: 0.10
-quantization_enabled: true
+  # Output
+  output:
+    path: data/processed/sionna_dataset/dataset.zarr
+  zarr_chunk_size: 100
 
-# Output
-output_dir: data/processed/sionna_dataset
-zarr_chunk_size: 100
-
-# Debug radio maps
-debug_radio_maps: true
+  # Debug radio maps
+  debug_radio_maps: true
 radio_maps_output_dir: data/radio_maps_debug

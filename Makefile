@@ -51,10 +51,27 @@ dataset:
 		--num-trajectories 100 \
 		--num-ues 50
 
+dataset-austin:
+	@echo "Generating Austin dataset..."
+	. venv/bin/activate && python scripts/generate_dataset.py \
+		--scene-dir data/scenes/austin_texas \
+		--output-dir data/processed/austin_dataset \
+		--num-trajectories 100 \
+		--num-ues 50
+
 train:
 	@echo "Training model..."
 	. venv/bin/activate && python scripts/train.py \
 		--config configs/training/training_simple.yaml
+
+visualize:
+	@echo "Generating visualizations..."
+	. venv/bin/activate && python scripts/generate_radio_maps.py \
+		--scenes-dir data/scenes/austin_texas \
+		--output-dir visualizations \
+		--save-plots \
+		--plots-dir visualizations/plots \
+		--pattern "**/scene_*/scene.xml"
 
 test:
 	@echo "Running tests..."
