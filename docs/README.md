@@ -1,33 +1,30 @@
 # Documentation 📚
 
-A focused map of the project docs.
+Technical documentation for the UE Localization project.
 
-## Core Docs
+---
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design and rationale
-- [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) - End-to-end implementation guide
-- [SYSTEM_INTEGRATION_GUIDE.md](SYSTEM_INTEGRATION_GUIDE.md) - Data flow and integration details
-- [PIPELINE.md](PIPELINE.md) - CLI usage and pipeline behavior
-- [PIPELINE_SUMMARY.md](PIPELINE_SUMMARY.md) - Short pipeline reference
-- [PROJECT_STATUS.md](PROJECT_STATUS.md) - Current status and roadmap
+## Start Here
 
-## Sionna Integration 🛰️
+| Document | Description |
+|----------|-------------|
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Quick installation and first run |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Technical deep-dive with math |
+| [PIPELINE.md](PIPELINE.md) | CLI reference for `run_pipeline.py` |
 
-- [SIONNA_STATUS.md](SIONNA_STATUS.md) - Current state and how to run
-- [SIONNA_INTEGRATION_PLAN.md](SIONNA_INTEGRATION_PLAN.md) - What remains to validate
-- [SIONNA_IMPLEMENTATION_COMPLETE.md](SIONNA_IMPLEMENTATION_COMPLETE.md) - Status correction and definition of done
+---
 
-## Milestones
+## Reference
 
-- M1: [M1_COMPLETE.md](M1_COMPLETE.md), [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md), [M1_SUMMARY.md](M1_SUMMARY.md), [M1_CHECKLIST.md](M1_CHECKLIST.md)
-- M2: [M2_COMPLETE.md](M2_COMPLETE.md), [M2_SUMMARY.md](M2_SUMMARY.md)
-- M4: [M4_COMPLETE.md](M4_COMPLETE.md), [M4_PHYSICS_LOSS.md](M4_PHYSICS_LOSS.md)
-- M5: [M5_COMPLETE.md](M5_COMPLETE.md), [../web/README.md](../web/README.md)
+| Document | Description |
+|----------|-------------|
+| [MILESTONES.md](MILESTONES.md) | Implementation status (M1-M5) |
+| [SIONNA.md](SIONNA.md) | Ray-tracing integration |
 
-## Start Here ✅
+---
 
-1. [../QUICK_START.md](../QUICK_START.md)
-2. [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
-3. [SYSTEM_INTEGRATION_GUIDE.md](SYSTEM_INTEGRATION_GUIDE.md)
+## Quick Links
 
-Tests live under `../tests/`.
+- **Run tests**: `pytest tests/ -v`
+- **Start web UI**: `streamlit run web/app.py`
+- **Quick pipeline test**: `python run_pipeline.py --quick-test`
