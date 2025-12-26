@@ -5,7 +5,7 @@ echo "🚀 Starting UE Localization Web Interface..."
 echo ""
 
 # Check if in correct directory
-if [ ! -f "streamlit_app.py" ]; then
+if [ ! -f "app.py" ]; then
     echo "⚠️  Not in web directory. Changing directory..."
     cd "$(dirname "$0")"
 fi
@@ -48,4 +48,4 @@ echo "Press Ctrl+C to stop the server"
 echo ""
 
 # Run Streamlit
-streamlit run streamlit_app.py
+streamlit run app.py

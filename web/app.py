@@ -27,7 +27,7 @@ st.set_page_config(
 # Try to import model components
 try:
     from src.models.ue_localization_model import UELocalizationModel
-    from src.training import LitUELocalization
+    from src.training import UELocalizationLightning as LitUELocalization
     MODEL_AVAILABLE = True
 except ImportError as e:
     st.error(f"Could not import model: {e}")
@@ -92,11 +92,7 @@ def generate_predictions(_model, _device, dataset_path: str, num_samples: int = 
         return None
     
     try:
-        # Load dataset
-        from src.datasets.radio_dataset import RadioDataset
-        from torch.utils.data import DataLoader
-        
-        dataset = RadioDataset(dataset_path, sequence_length=16)
+        from src.datasets.radio_dataset import RadioLocalizationDataset as RadioDataset
         
         # Sample subset
         indices = np.random.choice(len(dataset), min(num_samples, len(dataset)), replace=False)

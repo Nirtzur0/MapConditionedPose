@@ -12,7 +12,7 @@ export COMET_PROJECT_NAME="ue-localization"
 # Experiment Settings
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 STUDY_NAME="ue-localization-${TIMESTAMP}"
-N_TRIALS=50
+N_TRIALS=10
 RUN_NAME="multi_city_optuna_${TIMESTAMP}"
 
 # Datasets
