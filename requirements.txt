@@ -7,6 +7,9 @@
 numpy>=1.24.0
 pyproj>=3.6.0  # Coordinate transforms
 pyyaml>=6.0    # Configuration files
+easydict>=1.10   # Attribute dict access
+optuna>=3.0.0    # Hyperparameter optimization
+optuna-integration>=3.0.0 # Optuna integrations
 
 # =============================================================================
 # Deep Learning (PyTorch Stack)
