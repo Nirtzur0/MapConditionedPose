@@ -214,7 +214,7 @@ class PipelineOrchestrator:
         self.log_section("STEP 3: Optimize Model (Optuna)")
 
         dataset_paths = self.train_dataset_paths or ([self.dataset_path] if self.dataset_path else [])
-        base_config_path = _create_training_config(self.args, self.project_root, self.checkpoint_dir, dataset_paths, self.args.num_tx)
+        base_config_path = _create_training_config(self.args, self.project_root, self.checkpoint_dir, dataset_paths, self.eval_dataset_path, self.args.num_tx)
         self.optuna_params = run_optimization(self.args, base_config_path)
 
         with open(base_config_path, 'r') as f:
