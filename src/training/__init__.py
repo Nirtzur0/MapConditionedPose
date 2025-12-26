@@ -526,6 +526,11 @@ class UELocalizationLightning(pl.LightningModule):
     def _build_dataset(self, split: str):
         dataset_config = self.config['dataset']
         
+        # Get augmentation config (only for training)
+        augmentation = None
+        if split == 'train' and 'training' in self.config:
+            augmentation = self.config['training'].get('augmentation', None)
+        
         # Determine paths and split mode
         paths = None
         single_path = None
@@ -564,6 +569,7 @@ class UELocalizationLightning(pl.LightningModule):
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
+                augmentation=augmentation,
             )
 
         if single_path:
@@ -574,6 +580,7 @@ class UELocalizationLightning(pl.LightningModule):
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
+                augmentation=augmentation,
             )
         
         raise ValueError(f"No dataset configuration found for split {split}")

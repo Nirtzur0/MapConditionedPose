@@ -74,12 +74,17 @@ training:
   dropout: 0.1
   gradient_clip: 1.0
   
-  # Data augmentation
+  # Data augmentation (training only)
   augmentation:
-    rotation_degrees: 5
-    scale_range: [0.9, 1.1]
-    feature_dropout: 0.15
-    temporal_dropout: 0.25
+    # Feature-level augmentations
+    feature_noise: 0.1         # Gaussian noise std (proportional to feature magnitude)
+    feature_dropout: 0.15      # Probability of zeroing individual features
+    temporal_dropout: 0.2      # Probability of dropping time steps
+    
+    # Map-level augmentations
+    random_flip: true          # Random horizontal flip
+    random_rotation: true      # Random 90° rotations
+    scale_range: [0.9, 1.1]    # Random scale jitter [min, max]
 
 # Dataset configuration
 dataset:
