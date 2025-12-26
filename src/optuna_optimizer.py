@@ -13,16 +13,20 @@ import yaml
 from src.utils.logging_utils import setup_logging
 from src.training import UELocalizationLightning
 
+logger = logging.getLogger(__name__)
+
 # Import Optuna and Comet integration if available
 try:
     import optuna
-    from optuna_integration.comet import CometPruner, CometCallback
+    from optuna_integration.comet import CometCallback
     COMET_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Comet import failed: {e}")
     COMET_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
-
+# Debug
+logger.info(f"COMET_AVAILABLE: {COMET_AVAILABLE}")
+logger.info(f"COMET_API_KEY in env: {'COMET_API_KEY' in os.environ}")
 
 def objective(trial, args, base_config_path: Path):
     """
@@ -137,34 +141,35 @@ def objective(trial, args, base_config_path: Path):
 
     return checkpoint_callback.best_model_score.item()
 
-
 def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
     """
     Run Optuna hyperparameter optimization study.
     """
     if optuna is None:
         raise RuntimeError("Optuna is not installed. Install with: pip install optuna optuna-integration")
-    # Comet ML setup
-    comet_pruner = None
-    comet_callback = None
-    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
-        comet_pruner = CometPruner()
-        comet_callback = CometCallback(
-            metric_name="val_median_error",
-            experiment_name=args.study_name,
-        )
-        logger.info("Comet ML integration enabled.")
-    else:
-        logger.warning("Comet ML integration disabled. Set COMET_API_KEY to enable.")
-
     # Create or load study
     study = optuna.create_study(
         study_name=args.study_name,
         storage=args.storage,
         direction='minimize',  # We want to minimize the localization error
-        pruner=comet_pruner,
         load_if_exists=True,
     )
+
+    # Comet ML setup
+    comet_callback = None
+    if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        try:
+            comet_callback = CometCallback(
+                study,
+                metric_names=["val_median_error"],
+                project_name=args.study_name,
+                workspace=os.environ.get('COMET_WORKSPACE')
+            )
+            logger.info("Comet ML integration enabled.")
+        except Exception as e:
+            logger.warning(f"Failed to initialize CometCallback: {e}")
+    else:
+        logger.warning("Comet ML integration disabled. Set COMET_API_KEY to enable.")
 
     # Add objective function as a lambda to pass extra arguments
     obj_fn = lambda trial: objective(trial, args, base_config_path)

@@ -65,7 +65,12 @@ class ZarrDatasetWriter:
         
         metadata/
             scene_ids: [N] object (string)
+            scene_indices: [N] int16 (index into maps)
             ue_ids: [N] int32
+        
+        maps/
+            radio_maps: [num_scenes, C, H, W] float32
+            osm_maps: [num_scenes, C, H, W] float32
     """
     
     def __init__(self, 
@@ -99,8 +104,10 @@ class ZarrDatasetWriter:
         # Track dataset statistics
         self.stats = {
             'num_samples': 0,
+            'num_samples': 0,
             'num_scenes': 0,
-            'scene_ids': [],
+            'scene_ids': [], # List of scene_id strings
+            'scene_map_indices': {}, # Map scene_id -> index in maps array
         }
         
         logger.info(f"ZarrDatasetWriter initialized: {self.store_path}")
@@ -111,8 +118,11 @@ class ZarrDatasetWriter:
         Append data from one scene to the dataset.
         
         Args:
+        Args:
             scene_data: Dictionary with all features and metadata
             scene_id: Scene identifier for tracking
+            scene_metadata: Optional metadata for the scene (e.g., bbox)
+            scene_idx: Optional explicit index for this scene (if linking to maps)
         """
         # Determine number of samples in this scene
         positions = scene_data.get('positions')
@@ -122,6 +132,16 @@ class ZarrDatasetWriter:
         
         num_samples = len(positions)
         logger.info(f"Appending {num_samples} samples from scene {scene_id}")
+        
+        # Track scene index
+        if scene_id not in self.stats['scene_map_indices']:
+            new_idx = len(self.stats['scene_map_indices'])
+            self.stats['scene_map_indices'][scene_id] = new_idx
+            # Add to list if not present (handled by set logic usually, but here strict)
+            if scene_id not in self.stats['scene_ids']:
+                 self.stats['scene_ids'].append(scene_id)
+        
+        current_scene_idx = self.stats['scene_map_indices'][scene_id]
         
         # Create arrays on first append
         if self.current_idx == 0:
@@ -164,12 +184,16 @@ class ZarrDatasetWriter:
         else:
             self.store['metadata/scene_bbox'][self.current_idx:end_idx] = np.zeros((num_samples, 4), dtype=np.float32)
 
+        # Scene Indices
+        self.store['metadata/scene_indices'][self.current_idx:end_idx] = np.full(num_samples, current_scene_idx, dtype=np.int16)
+
         
         # Update index and stats
         self.current_idx = end_idx
         self.stats['num_samples'] = end_idx
-        self.stats['num_scenes'] += 1
-        self.stats['scene_ids'].append(scene_id)
+        self.stats['num_samples'] = end_idx
+        # self.stats['num_scenes'] updated via write_scene_maps or implicitly tracked
+        self.stats['num_scenes'] = len(self.stats['scene_ids'])
         
         logger.info(f"  Total samples: {self.current_idx}")
     
@@ -203,6 +227,22 @@ class ZarrDatasetWriter:
         self._create_array('metadata/scene_ids', dtype='<U64', shape=(0,))  # Unicode string 64 chars
         self._create_array('metadata/scene_bbox', dtype='float32', shape=(0, 4))
         self._create_array('metadata/ue_ids', dtype='int32', shape=(0,))
+        self._create_array('metadata/scene_indices', dtype='int16', shape=(0,))
+        
+        # Maps (growable by scene)
+        if 'radio_maps' not in self.store:
+            self._create_array('radio_maps', dtype='float32', shape=(0, 5, 256, 256)) 
+        
+        if 'osm_maps' not in self.store:
+            self._create_array('osm_maps', dtype='float32', shape=(0, 5, 256, 256))
+        
+        # We store maps at root level for now as per previous schema expectation in dataset.py, 
+        # or we update dataset.py to look in maps/. Let's stick to root based on dataset.py code:
+        # self.store['radio_maps'][idx] -> Wait, dataset.py needs an update anyway.
+        # Let's put them in root to match potential earlier expectations or `maps/` if preferred.
+        # Reader expects: self.store['radio_maps'][idx] currently. 
+        # But wait, the reader was failing because they didn't exist.
+        # I will create them at root `radio_maps` and `osm_maps` to be simple.
         
         num_arrays = len([k for k in self.store.keys()])
         logger.info(f"Created {num_arrays} Zarr arrays")
@@ -244,6 +284,10 @@ class ZarrDatasetWriter:
         """Resize all arrays to accommodate more data."""
         def resize_group(group):
             for key in group.keys():
+                if key in ['radio_maps', 'osm_maps']:
+                    # Do not resize scene-level maps with sample count
+                    continue
+
                 item = group[key]
                 if isinstance(item, zarr.core.Array):
                     # Resize first dimension
@@ -349,6 +393,46 @@ class ZarrDatasetWriter:
                 except Exception as e:
                     logger.error(f"Error writing {key}: {e}")
                     logger.debug(f"  Shape: {value.shape}, Target: [{start_idx}:{end_idx}]")
+
+    def write_scene_maps(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
+        """
+        Write radio and OSM maps for a specific scene.
+        
+        Args:
+            scene_id: Scene ID
+            radio_map: [C, H, W] array
+            osm_map: [C, H, W] array
+        """
+        if scene_id not in self.stats['scene_map_indices']:
+            new_idx = len(self.stats['scene_map_indices'])
+            self.stats['scene_map_indices'][scene_id] = new_idx
+            if scene_id not in self.stats['scene_ids']:
+                 self.stats['scene_ids'].append(scene_id)
+        
+        idx = self.stats['scene_map_indices'][scene_id]
+        
+        # Ensure arrays exist (if created before first append)
+        if 'radio_maps' not in self.store:
+             # Infer shape from input
+             C, H, W = radio_map.shape
+             self._create_array('radio_maps', dtype='float32', shape=(0, C, H, W))
+             self._create_array('osm_maps', dtype='float32', shape=(0, osm_map.shape[0], H, W))
+             # Also ensure metadata arrays created if not yet
+             if 'metadata/scene_indices' not in self.store:
+                 self._create_array('metadata/scene_indices', dtype='int16', shape=(0,))
+
+
+        # Resize if needed
+        current_size = self.store['radio_maps'].shape[0]
+        if idx >= current_size:
+            new_size = idx + 1
+            self.store['radio_maps'].resize(new_size, *self.store['radio_maps'].shape[1:])
+            self.store['osm_maps'].resize(new_size, *self.store['osm_maps'].shape[1:])
+        
+        # Write
+        self.store['radio_maps'][idx] = radio_map
+        self.store['osm_maps'][idx] = osm_map
+        logger.info(f"Wrote maps for scene {scene_id} at index {idx}")
     
     def finalize(self) -> Path:
         """

@@ -55,8 +55,8 @@ class PipelineOrchestrator:
         self.scene_dir = self.project_root / "data" / "scenes" / args.scene_name
         self.dataset_dir = self.project_root / "data" / "processed" / f"{args.scene_name}_dataset"
         self.checkpoint_dir = self.project_root / "checkpoints" / args.run_name
-        self.train_dataset_paths = []
-        self.eval_dataset_path = None
+        self.train_dataset_paths = [Path(p) for p in args.train_datasets] if args.train_datasets else []
+        self.eval_dataset_path = Path(args.eval_dataset) if args.eval_dataset else None
         self.eval_config_path = None
         self.optuna_params: Optional[Dict[str, float]] = None
         self.optuna_config_path: Optional[Path] = None
@@ -203,8 +203,8 @@ class PipelineOrchestrator:
     def step_3_train_model(self):
         """Train the transformer model"""
         train_model(self.args, self.project_root, self.checkpoint_dir, self.optuna_config_path,
-                   self.optuna_params, self.train_dataset_paths, self.dataset_path, self.args.num_tx,
-                   self.log_section, self.run_command)
+                   self.optuna_params, self.train_dataset_paths, self.dataset_path, self.eval_dataset_path,
+                   self.args.num_tx, self.log_section, self.run_command)
 
     def step_3_optimize_model(self):
         """Run Optuna hyperparameter optimization."""
@@ -399,7 +399,7 @@ Examples:
                        help='Limit number of scenes to process')
     parser.add_argument('--train-datasets', nargs='+', default=None,
                        help='Paths to training Zarr datasets (skip generation)')
-    parser.add_argument('--eval-dataset', type=str, default=None,
+    parser.add_argument('--eval-dataset', type=Path, default=None,
                        help='Path to evaluation Zarr dataset (skip generation)')
     
     # Training parameters

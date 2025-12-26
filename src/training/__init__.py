@@ -507,28 +507,58 @@ class UELocalizationLightning(pl.LightningModule):
     
     def _build_dataset(self, split: str):
         dataset_config = self.config['dataset']
-        split_key = f"{split}_zarr_paths"
-        zarr_paths = dataset_config.get(split_key) or dataset_config.get('zarr_paths')
-        zarr_path = dataset_config.get(f"{split}_zarr_path") or dataset_config.get('zarr_path')
+        
+        # Determine paths and split mode
+        paths = None
+        single_path = None
+        target_split = split
 
-        if zarr_paths:
+        # Check for new explicit configuration
+        train_paths = dataset_config.get('train_zarr_paths')
+        test_path = dataset_config.get('test_zarr_path')
+        test_on_eval = dataset_config.get('test_on_eval', False)
+
+        if train_paths or (test_path and test_on_eval):
+            if split == 'test' and test_on_eval and test_path:
+                # Test on explicit evaluation dataset (use all data)
+                single_path = test_path
+                target_split = 'all'
+            elif split == 'train':
+                # Train on training datasets (80% split)
+                paths = train_paths 
+                target_split = 'train_80'
+            elif split == 'val':
+                # Val on training datasets (20% split)
+                paths = train_paths
+                target_split = 'val_20'
+        else:
+            # Legacy fallback
+            split_key = f"{split}_zarr_paths"
+            paths = dataset_config.get(split_key) or dataset_config.get('zarr_paths')
+            single_path = dataset_config.get(f"{split}_zarr_path") or dataset_config.get('zarr_path')
+
+        # Instantiate Dataset
+        if paths:
             return CombinedRadioLocalizationDataset(
-                zarr_paths=zarr_paths,
-                split=split,
+                zarr_paths=paths,
+                split=target_split,
                 map_resolution=dataset_config['map_resolution'],
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
             )
 
-        return RadioLocalizationDataset(
-            zarr_path=zarr_path,
-            split=split,
-            map_resolution=dataset_config['map_resolution'],
-            scene_extent=dataset_config['scene_extent'],
-            normalize=dataset_config['normalize_features'],
-            handle_missing=dataset_config['handle_missing_values'],
-        )
+        if single_path:
+            return RadioLocalizationDataset(
+                zarr_path=single_path,
+                split=target_split,
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+            )
+        
+        raise ValueError(f"No dataset configuration found for split {split}")
 
     def train_dataloader(self):
         """Create training dataloader."""

@@ -116,109 +116,129 @@ class RadioMapGenerator:
         """
         self.logger.info(f"Generating radio map for scene with {len(cell_sites)} cell sites")
         
-        # Create radio map solver
-        solver = sn.rt.RadioMapSolver(scene)
-        
-        # Configure grid
+        # Configure grid parameters
         width, height = self.config.map_size
         x_min, y_min, x_max, y_max = self.config.map_extent
         
-        # Create sampling grid
-        x = np.linspace(x_min, x_max, width)
-        y = np.linspace(y_min, y_max, height)
-        z = np.full_like(x, self.config.ue_height)
+        # Calculate center and size for RadioMapSolver
+        center_x = (x_min + x_max) / 2
+        center_y = (y_min + y_max) / 2
+        size_x = x_max - x_min
+        size_y = y_max - y_min
         
         # Initialize feature maps
         num_features = len(self.config.features)
         radio_map = np.zeros((num_features, height, width), dtype=np.float32)
         
-        # Process each cell site
-        for site_idx, site in enumerate(cell_sites):
-            self.logger.info(f"Processing cell site {site_idx + 1}/{len(cell_sites)}")
+        # Set default values for specific features
+        for i, feature in enumerate(self.config.features):
+            if feature in ['path_gain', 'snr', 'sinr']:
+                radio_map[i] = -np.inf
+            elif feature == 'toa':
+                radio_map[i] = np.inf
+
+
+
+        try:
+            # Create solver and compute radio map
+            solver = sn.rt.RadioMapSolver()
             
-            # Set transmitter position and orientation
-            tx_pos = site['position']
-            tx_orient = site.get('orientation', (0.0, 0.0))
+            # center uses z=1.5 default if not specified, but we should match config
+            # RadioMapSolver expects center as Point3f or array
+            center = [center_x, center_y, self.config.ue_height]
+            size = [size_x, size_y]
+            orientation = [0.0, 0.0, 0.0]
             
-            # Compute paths using ray tracing
-            paths = solver.compute_paths(
-                tx=tx_pos,
-                rx_positions=(x, y, z),
-                max_depth=self.config.max_depth,
-                num_samples=self.config.num_samples,
-            )
+            # Run solver
+            self.logger.info(f"Running RadioMapSolver (center={center}, size={size})...")
+            # cell_size needs to be array-like [dx, dy]
+            cell_size = [size_x/width, size_y/height]
+            rm = solver(scene, center=center, size=size, cell_size=cell_size, orientation=orientation)
             
-            # Extract RT features
+            # Extract features
+            # rm.path_gain is [num_tx, height, width]
+            # We take max over transmitters for coverage map
+            
             if 'path_gain' in self.config.features:
                 idx = self.config.features.index('path_gain')
-                # Path gain in dB
-                path_gain = 10 * np.log10(np.abs(paths.a) ** 2 + 1e-12)
-                radio_map[idx] = np.maximum(radio_map[idx], path_gain.reshape(height, width))
+                # Path gain in dB (convert linear to dB)
+                # Ensure we handle CPU/GPU tensor conversion
+                try:
+                    pg_linear = rm.path_gain.numpy() 
+                except:
+                    pg_linear = rm.path_gain # Maybe already numpy or list
+                    
+                pg_db = 10 * np.log10(np.maximum(pg_linear, 1e-15))
+                # Take max over TXs
+                if pg_db.shape[0] > 0:
+                    radio_map[idx] = np.max(pg_db, axis=0)
             
-            if 'toa' in self.config.features:
-                idx = self.config.features.index('toa')
-                # Time of arrival in ns
-                toa = paths.tau * 1e9
-                # Use minimum ToA (first arrival)
-                toa_map = np.where(paths.tau > 0, toa, np.inf).min(axis=-1)
-                radio_map[idx] = np.where(
-                    radio_map[idx] == 0,
-                    toa_map.reshape(height, width),
-                    np.minimum(radio_map[idx], toa_map.reshape(height, width))
-                )
-            
-            if 'aoa' in self.config.features:
-                idx = self.config.features.index('aoa')
-                # Angle of arrival (azimuth)
-                aoa = np.arctan2(paths.theta[..., 1], paths.theta[..., 0]) * 180 / np.pi
-                # Use strongest path's AoA
-                strongest_idx = np.argmax(np.abs(paths.a), axis=-1)
-                aoa_map = np.take_along_axis(aoa, strongest_idx[..., None], axis=-1).squeeze(-1)
-                radio_map[idx] = aoa_map.reshape(height, width)
-            
-            # Compute PHY features (SNR, SINR)
-            if 'snr' in self.config.features or 'sinr' in self.config.features:
-                # Received signal power
-                rx_power_dbm = self.config.tx_power + path_gain
+            if 'snr' in self.config.features:
+                idx = self.config.features.index('snr')
+                # RSS in dBm (if available) or compute from Path Gain
+                try:
+                    rss_linear = rm.rss.numpy()
+                except:
+                    rss_linear = rm.rss
+                    
+                rss_dbm = 10 * np.log10(np.maximum(rss_linear, 1e-18)) + 30
                 
                 # Thermal noise power
-                k_boltzmann = 1.380649e-23  # J/K
-                T = 290  # K (room temperature)
-                noise_power_dbm = 10 * np.log10(
-                    k_boltzmann * T * self.config.bandwidth
-                ) + 30 + self.config.noise_figure
+                k_boltzmann = 1.380649e-23
+                T = 290
+                noise_power_dbm = 10 * np.log10(k_boltzmann * T * self.config.bandwidth) + 30 + self.config.noise_figure
                 
-                if 'snr' in self.config.features:
-                    idx = self.config.features.index('snr')
-                    snr_db = rx_power_dbm - noise_power_dbm
-                    radio_map[idx] = np.maximum(radio_map[idx], snr_db.reshape(height, width))
-                
-                if 'sinr' in self.config.features:
-                    idx = self.config.features.index('sinr')
-                    # For now, SINR = SNR (no interference model)
-                    # In multi-cell scenario, would add interference from other cells
-                    sinr_db = rx_power_dbm - noise_power_dbm
-                    radio_map[idx] = np.maximum(radio_map[idx], sinr_db.reshape(height, width))
-            
-            # SYS features (throughput, BLER) - simplified models
-            if 'throughput' in self.config.features:
+                snr_db = rss_dbm - noise_power_dbm
+                if snr_db.shape[0] > 0:
+                    radio_map[idx] = np.max(snr_db, axis=0)
+
+            if 'sinr' in self.config.features:
+                idx = self.config.features.index('sinr')
+                try:
+                    sinr_linear = rm.sinr.numpy()
+                except:
+                    sinr_linear = rm.sinr
+                    
+                sinr_db = 10 * np.log10(np.maximum(sinr_linear, 1e-12))
+                if sinr_db.shape[0] > 0:
+                    radio_map[idx] = np.max(sinr_db, axis=0)
+
+            # SYS features (throughput, BLER) - derived from SNR
+            if 'throughput' in self.config.features and 'snr' in self.config.features:
                 idx = self.config.features.index('throughput')
-                # Shannon capacity approximation
-                snr_linear = 10 ** (radio_map[self.config.features.index('snr')] / 10)
-                capacity_bps = self.config.bandwidth * np.log2(1 + snr_linear)
-                capacity_mbps = capacity_bps / 1e6
-                radio_map[idx] = np.maximum(radio_map[idx], capacity_mbps)
+                snr_val = radio_map[self.config.features.index('snr')]
+                # Shannon capacity
+                snr_linear = 10**(snr_val/10)
+                capacity_mbps = (self.config.bandwidth * np.log2(1 + snr_linear)) / 1e6
+                radio_map[idx] = capacity_mbps
             
-            if 'bler' in self.config.features:
+            if 'bler' in self.config.features and 'snr' in self.config.features:
                 idx = self.config.features.index('bler')
-                # Simplified BLER model based on SNR
-                snr_db = radio_map[self.config.features.index('snr')]
-                # BLER decreases with SNR (simple exponential model)
-                bler = np.exp(-snr_db / 10)
+                snr_val = radio_map[self.config.features.index('snr')]
+                bler = np.exp(-snr_val / 10)
                 bler = np.clip(bler, 0.0, 1.0)
                 radio_map[idx] = bler
+                
+            self.logger.warning("RadioMapSolver does not provide ToA/AoA. These features will remain default (Inf/0).")
+            
+        except Exception as e:
+            self.logger.error(f"Error in RadioMapSolver: {e}")
+            # If solver fails, return empty map (already initialized)
+            pass
+
+        # Post-process to remove Infs/NaNs
+        # Replace -inf in dB features with min value (e.g. -200 dB)
+        radio_map[np.isneginf(radio_map)] = -200.0
         
+        # Replace inf (e.g. in ToA) with 0 or max value
+        # For ToA, if no signal, 0 is safer for NN than a huge number which implies huge delay
+        radio_map[np.isposinf(radio_map)] = 0.0
+        
+        # Replace NaNs with 0
+        radio_map[np.isnan(radio_map)] = 0.0
+
         self.logger.info(f"Radio map generation complete. Shape: {radio_map.shape}")
+        self.logger.info(f"Final Map Stats: Min={np.min(radio_map):.2f}, Max={np.max(radio_map):.2f}")
         return radio_map
     
     def save_to_zarr(

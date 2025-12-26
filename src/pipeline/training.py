@@ -40,7 +40,8 @@ def _apply_optuna_params(config: Dict, params: Dict[str, float]) -> Dict:
 def _resolve_training_datasets(train_dataset_paths: Optional[List[Path]],
                                dataset_path: Optional[Path]) -> List[Path]:
     if train_dataset_paths:
-        return list(train_dataset_paths)
+        # Deduplicate while preserving order
+        return list(dict.fromkeys(train_dataset_paths))
     if dataset_path:
         return [dataset_path]
     return []
@@ -55,43 +56,41 @@ def _dataset_defaults(args) -> Dict:
     }
 
 
-def _apply_dataset_paths(dataset_config: Dict, dataset_paths: List[Path]) -> None:
-    if not dataset_paths:
-        return
-
-    paths = [str(p) for p in dataset_paths]
-    if len(paths) == 1:
-        dataset_config['zarr_path'] = paths[0]
-        dataset_config['train_zarr_path'] = paths[0]
-        dataset_config['val_zarr_path'] = paths[0]
-        dataset_config.pop('zarr_paths', None)
-        dataset_config.pop('train_zarr_paths', None)
-        dataset_config.pop('val_zarr_paths', None)
-        return
-
-    dataset_config['zarr_paths'] = paths
-    dataset_config['train_zarr_paths'] = paths
-    dataset_config['val_zarr_paths'] = paths
+def _apply_dataset_paths(dataset_config: Dict, train_paths: List[Path], test_path: Optional[Path]) -> None:
+    # 1. Training Paths
+    paths = [str(p) for p in train_paths]
+    if paths:
+        dataset_config['train_zarr_paths'] = paths
+        # Map resolution/extent still applies globally for now
+    
+    # 2. Test Path
+    if test_path:
+        dataset_config['test_zarr_path'] = str(test_path)
+        dataset_config['test_on_eval'] = True
+    
+    # Clean up old keys
     dataset_config.pop('zarr_path', None)
-    dataset_config.pop('train_zarr_path', None)
+    dataset_config.pop('zarr_paths', None)
     dataset_config.pop('val_zarr_path', None)
+    dataset_config.pop('val_zarr_paths', None)
+    dataset_config.pop('train_zarr_path', None)
 
 
-def _ensure_dataset_config(config: Dict, args, dataset_paths: List[Path]) -> Dict:
+def _ensure_dataset_config(config: Dict, args, train_paths: List[Path], test_path: Optional[Path]) -> Dict:
     dataset_config = config.setdefault('dataset', {})
     for key, value in _dataset_defaults(args).items():
         dataset_config.setdefault(key, value)
-    _apply_dataset_paths(dataset_config, dataset_paths)
+    _apply_dataset_paths(dataset_config, train_paths, test_path)
     return config
 
 
 def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
-                            dataset_paths: List[Path], num_tx: int) -> Path:
+                            train_paths: List[Path], test_path: Optional[Path], num_tx: int) -> Path:
     """Create a training config file based on command line args"""
     import yaml
 
     dataset_config = _dataset_defaults(args)
-    _apply_dataset_paths(dataset_config, dataset_paths)
+    _apply_dataset_paths(dataset_config, train_paths, test_path)
 
     config = {
         'dataset': dataset_config,
@@ -210,7 +209,7 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
 
 def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_path: Optional[Path],
                 optuna_params: Optional[Dict], train_dataset_paths: List[Path],
-                dataset_path: Optional[Path], num_tx: int,
+                dataset_path: Optional[Path], eval_dataset_path: Optional[Path], num_tx: int,
                 log_section_func, run_command_func):
     """
     Train the transformer model.
@@ -226,6 +225,7 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
     log_section_func(step_label)
 
     dataset_paths = _resolve_training_datasets(train_dataset_paths, dataset_path)
+    eval_path = eval_dataset_path if eval_dataset_path else None
 
     # Use existing config or create custom one
     if optuna_config_path:
@@ -235,11 +235,11 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
     else:
         if not dataset_paths:
             raise RuntimeError("No training datasets provided. Use --train-datasets or run dataset generation.")
-        config_path = _create_training_config(args, project_root, checkpoint_dir, dataset_paths, num_tx)
+        config_path = _create_training_config(args, project_root, checkpoint_dir, dataset_paths, eval_path, num_tx)
 
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-    config = _ensure_dataset_config(config, args, dataset_paths)
+    config = _ensure_dataset_config(config, args, dataset_paths, eval_path)
 
     resolved_config_path = checkpoint_dir / "training_config.yaml"
     with open(resolved_config_path, 'w') as f:
@@ -251,7 +251,7 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         config = _apply_optuna_params(config, optuna_params)
-        config = _ensure_dataset_config(config, args, dataset_paths)
+        config = _ensure_dataset_config(config, args, dataset_paths, eval_path)
         optuna_config_path = checkpoint_dir / "training_config.yaml"
         with open(optuna_config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)

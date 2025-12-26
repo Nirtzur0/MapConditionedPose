@@ -15,12 +15,16 @@ from .features import (
     RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
 )
 from .measurement_utils import add_measurement_dropout
+from src.physics_loss import RadioMapGenerator, RadioMapConfig
+from src.datasets.radio_dataset import RadioLocalizationDataset # Reusing for OSM logic if possible, or build custom generator
 
 logger = logging.getLogger(__name__)
 
 # Try importing Zarr writer (optional)
 try:
     from .zarr_writer import ZarrDatasetWriter
+    from .osm_rasterizer import OSMRasterizer
+
     ZARR_AVAILABLE = True
 except ImportError:
     ZARR_AVAILABLE = False
@@ -299,10 +303,24 @@ class MultiLayerDataGenerator:
             
             # Generate data for this scene
             scene_metadata = self._load_scene_metadata(scene_id)
-            scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata)
             
+            # Load scene here to share between data and map generation
+            scene_obj = None
+            if SIONNA_AVAILABLE:
+                scene_obj = self._load_sionna_scene(scene_path)
+            
+            scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata, scene_obj=scene_obj)
+            
+            # Generate Maps
+            radio_map = self._generate_radio_map_for_scene(scene_obj, scene_path, scene_metadata)
+            osm_map = self._generate_osm_map_for_scene(scene_obj, scene_metadata)
+
             # Write to Zarr
             if self.zarr_writer is not None:
+
+                # First write maps
+                self.zarr_writer.write_scene_maps(scene_id, radio_map, osm_map)
+                # Then append samples (linked by scene_id internal index)
                 self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
@@ -319,13 +337,16 @@ class MultiLayerDataGenerator:
     def generate_scene_data(self,
                            scene_path: Path,
                            scene_id: str,
-                           scene_metadata: Optional[Dict] = None) -> Dict[str, np.ndarray]:
+                           scene_metadata: Optional[Dict] = None,
+                           scene_obj: Any = None) -> Dict[str, np.ndarray]:
         """
         Generates multi-layer data for a single scene.
         
         Args:
             scene_path: Path to scene.xml.
             scene_id: Identifier for the scene.
+            scene_metadata: Optional pre-loaded metadata.
+            scene_obj: Optional pre-loaded Sionna scene.
             
         Returns:
             Dictionary with all generated features and positions.
@@ -335,11 +356,13 @@ class MultiLayerDataGenerator:
             scene_metadata = self._load_scene_metadata(scene_id)
         
         # Load scene in Sionna
-        if SIONNA_AVAILABLE:
-            scene = self._load_sionna_scene(scene_path)
-        else:
-            logger.warning("Sionna unavailable; using mock data.")
-            scene = None
+        scene = scene_obj
+        if scene is None:
+            if SIONNA_AVAILABLE:
+                scene = self._load_sionna_scene(scene_path)
+            else:
+                logger.warning("Sionna unavailable; using mock data.")
+                scene = None
         
         # Load site positions and cell IDs from metadata
         sites = scene_metadata.get('sites', [])
@@ -797,7 +820,69 @@ class MultiLayerDataGenerator:
             return scene_data
         
         # Apply dropout to PHY/FAPI measurements
-        phy_fapi_keys = [k for k in scene_data.keys() if k.startswith('phy_fapi/')]
+        return scene_data
+
+    def _generate_radio_map_for_scene(self, scene: Any, scene_path: Path, scene_metadata: Dict) -> np.ndarray:
+        """
+        Generates a radio map for the scene using RadioMapGenerator.
+        Returns: [C, H, W] array.
+        """
+        if not SIONNA_AVAILABLE:
+             logger.warning("Radio Map Gen: Sionna not available.")
+             return np.zeros((5, 256, 256), dtype=np.float32)
+        if scene is None:
+             logger.warning("Radio Map Gen: Scene is None.")
+             return np.zeros((5, 256, 256), dtype=np.float32)
+
+        logger.info("Radio Map Gen: Starting generation...")
+
+        try:
+             # Configure Radio Map Generator
+             # Using hardcoded resolution/size for now to match model expectation (256x256)
+             # Ideally this comes from config
+             radius = 128.0 # Half of 256
+             map_config = RadioMapConfig(
+                 resolution=1.0, # 1 meter/pixel logic, might need adjustment based on scene size
+                 map_size=(256, 256),
+                 map_extent=(-radius, -radius, radius, radius),
+                 output_dir=Path("/tmp"), # Not used usually if we just want array
+             )
+             
+             # Extract cell sites
+             sites = scene_metadata.get('sites', [])
+             valid_sites = [s for s in sites if s.get('cell_id') is not None]
+             site_positions = [s['position'] for s in valid_sites]
+             if not site_positions:
+                 # Minimal fallback
+                 site_positions = [[0,0,30]]
+             
+             # Re-construct simple cell site dicts for generator
+             cell_sites_for_gen = [{'position': p} for p in site_positions]
+
+             generator = RadioMapGenerator(map_config)
+             
+             # Generate
+             # Note: generate_for_scene returns [C, H, W] (or H,W,C?) - checked, it's [C, H, W] or [H,W,C] depending on generator.
+             # scripts/generate_radio_maps.py checks dims and permutes. We should do same.
+             radio_map = generator.generate_for_scene(scene, cell_sites_for_gen, show_progress=False)
+             
+             # Ensure [C, H, W]
+             if radio_map.ndim == 3:
+                 if radio_map.shape[-1] < radio_map.shape[0]: # [H, W, C]
+                      radio_map = np.transpose(radio_map, (2, 0, 1))
+             
+             # Pad or clip channels to 5
+             if radio_map.shape[0] > 5:
+                 radio_map = radio_map[:5]
+             elif radio_map.shape[0] < 5:
+                 padding = np.zeros((5 - radio_map.shape[0], radio_map.shape[1], radio_map.shape[2]), dtype=np.float32)
+                 radio_map = np.concatenate([radio_map, padding], axis=0)
+                 
+             return radio_map
+
+        except Exception as e:
+            logger.error(f"Failed to generate radio map for scene: {e}")
+            return np.zeros((5, 256, 256), dtype=np.float32)
         phy_fapi_dict = {k: scene_data[k] for k in phy_fapi_keys if isinstance(scene_data[k], np.ndarray)}
         
         # Map keys to dropout rates
@@ -822,6 +907,37 @@ class MultiLayerDataGenerator:
                     f"{sum(dropout_rates.values())/len(dropout_rates)*100:.1f}% avg")
         
         return scene_data
+
+
+    def _generate_osm_map_for_scene(self, scene: Any, metadata: Dict) -> np.ndarray:
+        """
+        Generates 5-channel OSM map for the scene.
+        """
+        # Default empty map
+        default_map = np.zeros((5, 256, 256), dtype=np.float32)
+
+        if scene is None:
+             return default_map
+             
+        try:
+             # Config (should match RadioMapConfig)
+             # Center is 0,0 relative to scene origin in typical quick_test setup
+             # But we should verify. 
+             # RadioMapGenerator uses config.map_extent.
+             # quick_test uses scene center at 0,0 locally? 
+             # Yes, Sionna scene usually centered or we convert coords.
+             
+             radius = 128.0 
+             map_size = (256, 256)
+             map_extent = (-radius, -radius, radius, radius)
+             
+             rasterizer = OSMRasterizer(map_size=map_size, map_extent=map_extent)
+             osm_map = rasterizer.rasterize(scene)
+             return osm_map
+             
+        except Exception as e:
+             logger.error(f"Failed to generate OSM map: {e}")
+             return default_map
 
 
 if __name__ == "__main__":

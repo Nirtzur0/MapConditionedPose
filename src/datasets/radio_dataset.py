@@ -79,6 +79,18 @@ class RadioLocalizationDataset(Dataset):
         np.random.seed(42)  # Reproducible splits
         np.random.shuffle(indices)
         
+        if self.split == 'all':
+            return indices
+            
+        # Standard splits
+        if self.split == 'train_80':
+            n_split = int(0.8 * total_samples)
+            return indices[:n_split]
+        elif self.split == 'val_20':
+            n_split = int(0.8 * total_samples)
+            return indices[n_split:]
+            
+        # Default legacy split: 70% train, 15% val, 15% test
         n_train = int(0.7 * total_samples)
         n_val = int(0.15 * total_samples)
         
@@ -349,39 +361,46 @@ class RadioLocalizationDataset(Dataset):
     
     def _load_radio_map(self, idx: int) -> torch.Tensor:
         """Load and process a precomputed Sionna radio map."""
+        # Indirection: Use scene_index to find the correct map
+        scene_idx = 0
+        if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
+            scene_idx = int(self.store['metadata']['scene_indices'][idx])
+        
         if 'radio_maps' not in self.store:
             # Return dummy map if not available, padded to 5 channels
             H = W = int(self.scene_extent / self.map_resolution)
             return torch.zeros(5, H, W, dtype=torch.float32)
         
-        # Load all radio map channels
-        radio_map = torch.tensor(self.store['radio_maps'][idx], dtype=torch.float32)
+        # Load radio map for the specific scene
+        # Handle shape [NumScenes, C, H, W] or [NumScenes, H, W, C]
+        radio_map = torch.tensor(self.store['radio_maps'][scene_idx], dtype=torch.float32)
         
         # Ensure channel-first format [C, H, W]
-        if radio_map.dim() == 3 and radio_map.shape[0] == radio_map.shape[1] and radio_map.shape[1] == radio_map.shape[2]:
-            if radio_map.shape[-1] < radio_map.shape[0]:
-                radio_map = radio_map.permute(2, 0, 1)
-        elif radio_map.dim() == 3 and radio_map.shape[-1] < min(radio_map.shape[0], radio_map.shape[1]):
-            radio_map = radio_map.permute(2, 0, 1)
+        if radio_map.dim() == 3:
+             # Check if channel is last [H, W, C]
+             if radio_map.shape[-1] < radio_map.shape[0]: 
+                 radio_map = radio_map.permute(2, 0, 1)
         
         return radio_map[:5]
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
         """Load and process an OSM building/geometry map."""
+        scene_idx = 0
+        if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
+            scene_idx = int(self.store['metadata']['scene_indices'][idx])
+
         if 'osm_maps' not in self.store:
             # Return dummy map if not available, padded to 5 channels
             H = W = int(self.scene_extent / self.map_resolution)
             return torch.zeros(5, H, W, dtype=torch.float32)
         
-        # Load OSM map channels
-        osm_map = torch.tensor(self.store['osm_maps'][idx], dtype=torch.float32)
+        # Load OSM map for the specific scene
+        osm_map = torch.tensor(self.store['osm_maps'][scene_idx], dtype=torch.float32)
         
         # Ensure channel-first format [C, H, W]
-        if osm_map.dim() == 3 and osm_map.shape[0] == osm_map.shape[1] and osm_map.shape[1] == osm_map.shape[2]:
-            if osm_map.shape[-1] < osm_map.shape[0]:
-                osm_map = osm_map.permute(2, 0, 1)
-        elif osm_map.dim() == 3 and osm_map.shape[-1] < min(osm_map.shape[0], osm_map.shape[1]):
-            osm_map = osm_map.permute(2, 0, 1)
+        if osm_map.dim() == 3:
+             if osm_map.shape[-1] < osm_map.shape[0]:
+                 osm_map = osm_map.permute(2, 0, 1)
         
         # Pad to 5 channels if needed
         if osm_map.shape[0] < 5:
