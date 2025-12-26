@@ -78,3 +78,8 @@ checkpoints/
 *.obj
 *.xml
 *.bin
+
+# Experiments objects
+lightning_logs/
+optuna_study.db
+configs/trial_*.yaml

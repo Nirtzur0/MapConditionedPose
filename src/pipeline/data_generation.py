@@ -21,7 +21,10 @@ def _resolve_data_output_path(config_path: Path, project_root: Path) -> Optional
 
     data_gen = config.get('data_generation', {})
     if data_gen and 'output' in data_gen and 'path' in data_gen['output']:
-        return project_root / data_gen['output']['path']
+        dataset_path = project_root / data_gen['output']['path']
+        if dataset_path.is_dir() and not (dataset_path / '.zgroup').exists() and not (dataset_path / '.zarray').exists():
+            return _latest_dataset_in_dir(dataset_path) or dataset_path
+        return dataset_path
     return None
 
 
@@ -156,6 +159,11 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
             config = yaml.safe_load(f)
         if 'data_generation' in config:
             dataset_path = project_root / config['data_generation']['output']['path']
+            # If path points to a directory that contains Zarrs (but isn't one), resolve to latest
+            if dataset_path.is_dir() and not (dataset_path / '.zgroup').exists() and not (dataset_path / '.zarray').exists():
+                latest = _latest_dataset_in_dir(dataset_path)
+                if latest:
+                    dataset_path = latest
         else:
             output_dir = project_root / config.get('output_dir')
             dataset_path = _latest_dataset_in_dir(output_dir)

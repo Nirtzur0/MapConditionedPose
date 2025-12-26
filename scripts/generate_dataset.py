@@ -130,13 +130,15 @@ def main():
         return 1
     
     # Check for scenes
-    scene_dirs = list(config.scene_dir.glob('scene_*'))
-    if len(scene_dirs) == 0:
-        scene_dirs = list(config.scene_dir.rglob('scene_*'))
+    # Check for scenes (directories containing scene.xml)
+    scene_xmls = list(config.scene_dir.rglob('scene.xml'))
+    scene_dirs = [p.parent for p in scene_xmls]
+    
     if len(scene_dirs) == 0:
         logger.error(f"No scenes found in {config.scene_dir}")
-        logger.info("Expected directory structure: scene_dir/**/scene_*/scene.xml")
+        logger.info("Expected to find 'scene.xml' files in subdirectories")
         return 1
+
     
     logger.info(f"Found {len(scene_dirs)} scenes in {config.scene_dir}")
     
