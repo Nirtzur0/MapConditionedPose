@@ -5,7 +5,7 @@ model:
   radio_encoder:
     num_cells: 512  # Max number of unique cell IDs
     num_beams: 64   # Max number of beam IDs
-    d_model: 512    # Hidden dimension
+    d_model: 256    # Hidden dimension (Reduced from 512)
     nhead: 8        # Attention heads
     num_layers: 6   # Transformer layers
     dropout: 0.1
@@ -21,9 +21,9 @@ model:
     img_size: 256          # Map resolution (pixels)
     patch_size: 16         # Patch size for ViT
     in_channels: 10        # 5 (radio) + 5 (OSM)
-    d_model: 768           # Hidden dimension
+    d_model: 384           # Hidden dimension (Reduced from 768 - ViT-Small)
     nhead: 8               # Attention heads
-    num_layers: 12         # Transformer layers
+    num_layers: 6          # Transformer layers (Reduced from 12)
     dropout: 0.1
     
     # Channel configuration
@@ -32,21 +32,21 @@ model:
   
   # Cross-Attention Fusion
   fusion:
-    d_radio: 512     # From radio encoder
-    d_map: 768       # From map encoder
-    d_fusion: 768    # Output dimension
+    d_radio: 256     # From radio encoder
+    d_map: 384       # From map encoder
+    d_fusion: 512    # Output dimension (Reduced from 768)
     nhead: 8
     dropout: 0.1
   
   # Coarse Head (Grid Classification)
   coarse_head:
     grid_size: 32    # 32x32 grid cells
-    d_input: 768     # From fusion
+    d_input: 512     # From fusion (Updated)
     dropout: 0.1
   
   # Fine Head (Offset Regression)
   fine_head:
-    d_input: 768     # From fusion
+    d_input: 512     # From fusion (Updated)
     d_hidden: 256
     top_k: 5         # Number of candidate cells
     patch_size: 64   # High-res patch size (pixels)

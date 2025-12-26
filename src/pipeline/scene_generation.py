@@ -68,10 +68,10 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
                 run_command_func(city_cmd, f"Scene Generation ({scene_slug})")
             return
 
-        if config.city.name:
-            cmd.extend(["--area", config.city.name])
-        elif config.city.bounding_box:
+        if config.city.bounding_box:
             cmd.extend(["--bbox"] + [str(c) for c in config.city.bounding_box])
+        elif config.city.name:
+            cmd.extend(["--area", config.city.name])
 
         scene_dir = project_root / "data" / "scenes" / config.city.name.replace(", ", "_").replace(" ", "_").lower()
         cmd.extend(["--output", str(scene_dir)])
