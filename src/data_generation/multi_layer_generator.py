@@ -375,13 +375,30 @@ class MultiLayerDataGenerator:
             logger.warning(f"No sites in metadata for {scene_id}, using mock")
             site_positions = np.array([[0, 0, 30], [500, 0, 30]])
             cell_ids = np.array([1, 2])
+            
+        # Calculate coordinate offsets (center of bbox)
+        bbox = scene_metadata.get('bbox', {})
+        if 'x_min' in bbox and 'x_max' in bbox:
+            offset_x = (bbox['x_min'] + bbox['x_max']) / 2.0
+            offset_y = (bbox['y_min'] + bbox['y_max']) / 2.0
+            logger.info(f"Normalizing coordinates by offset: ({offset_x:.2f}, {offset_y:.2f})")
+        else:
+            offset_x, offset_y = 0.0, 0.0
+            logger.warning("No bbox found in metadata; assuming local coordinates.")
+
+        # Normalize site positions
+        if len(site_positions) > 0:
+            site_positions[:, 0] -= offset_x
+            site_positions[:, 1] -= offset_y
         
         # Setup transmitters in Sionna
         if scene is not None:
+            # Update site metadata with normalized positions for consistency? 
+            # Or just pass normalized positions. _setup_transmitters uses site_positions arg.
             self._setup_transmitters(scene, site_positions, sites if sites else {})
         
-        # Sample UE positions and trajectories
-        ue_trajectories = self._sample_ue_trajectories(scene_metadata)
+        # Sample UE positions and trajectories (pass offset to normalize them)
+        ue_trajectories = self._sample_ue_trajectories(scene_metadata, offset=(offset_x, offset_y))
         
         # Collect data for all UEs and time steps
         all_data = {
@@ -426,12 +443,13 @@ class MultiLayerDataGenerator:
         
         return scene_data
     
-    def _sample_ue_trajectories(self, scene_metadata: Dict) -> List[np.ndarray]:
+    def _sample_ue_trajectories(self, scene_metadata: Dict, offset: Tuple[float, float] = (0.0, 0.0)) -> List[np.ndarray]:
         """
         Samples UE positions and trajectories within scene bounds.
         
         Args:
             scene_metadata: Scene metadata including bounding box.
+            offset: (x, y) offset to subtract from sampled positions.
             
         Returns:
             List of [num_reports, 3] position arrays for UE trajectories.
@@ -467,7 +485,11 @@ class MultiLayerDataGenerator:
                 x = np.clip(x, x_min, x_max)
                 y = np.clip(y, y_min, y_max)
                 
-                trajectory.append([x, y, z])
+                # Apply offset to convert to local coordinates
+                x_local = x - offset[0]
+                y_local = y - offset[1]
+                
+                trajectory.append([x_local, y_local, z])
             
             trajectories.append(np.array(trajectory))
         
@@ -857,7 +879,18 @@ class MultiLayerDataGenerator:
                  site_positions = [[0,0,30]]
              
              # Re-construct simple cell site dicts for generator
-             cell_sites_for_gen = [{'position': p} for p in site_positions]
+             # Normalize positions
+             bbox = scene_metadata.get('bbox', {})
+             if 'x_min' in bbox and 'x_max' in bbox:
+                 ox = (bbox['x_min'] + bbox['x_max']) / 2.0
+                 oy = (bbox['y_min'] + bbox['y_max']) / 2.0
+             else:
+                 ox, oy = 0.0, 0.0
+             
+             cell_sites_for_gen = []
+             for p in site_positions:
+                 p_norm = [p[0] - ox, p[1] - oy, p[2]]
+                 cell_sites_for_gen.append({'position': p_norm})
 
              generator = RadioMapGenerator(map_config)
              

@@ -10,9 +10,10 @@ export COMET_WORKSPACE="nirtzur0"
 export COMET_PROJECT_NAME="ue-localization"
 
 # Experiment Settings
-STUDY_NAME="ue-localization"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+STUDY_NAME="ue-localization-${TIMESTAMP}"
 N_TRIALS=50
-RUN_NAME="multi_city_optuna_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="multi_city_optuna_${TIMESTAMP}"
 
 # Datasets
 # Define explicit Evaluation Dataset (Strictly held-out)

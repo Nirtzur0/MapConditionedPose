@@ -89,6 +89,22 @@ class UELocalizationLightning(pl.LightningModule):
         return None
 
     @staticmethod
+    def _normalize_db_map(data, min_db=-150.0, max_db=-40.0):
+        """Normalize dB map (e.g. path gain) for visualization."""
+        import numpy as np
+        
+        data = np.asarray(data, dtype=np.float32)
+        # Handle -inf or very low values
+        data = np.nan_to_num(data, nan=min_db, posinf=max_db, neginf=min_db)
+        
+        # Clip to range
+        clipped = np.clip(data, min_db, max_db)
+        
+        # Scale to [0, 1]
+        normalized = (clipped - min_db) / (max_db - min_db)
+        return normalized
+
+    @staticmethod
     def _normalize_map(data):
         import numpy as np
 
@@ -141,7 +157,9 @@ class UELocalizationLightning(pl.LightningModule):
         true_pos = sample['true_pos'].numpy()
         pred_pos = sample['pred_pos'].numpy()
 
-        radio_img = self._normalize_map(radio_map[0])
+        # Use fixed dB normalization for radio map (Path Gain)
+        radio_img = self._normalize_db_map(radio_map[0], min_db=-160.0, max_db=-40.0)
+
         h, w = radio_img.shape
 
         osm_channels = []
