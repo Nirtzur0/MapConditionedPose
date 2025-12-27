@@ -1,5 +1,5 @@
 
-\documentclass[11pt,a4paper,twocolumn]{article}
+\documentclass[11pt,a4paper]{article}
 
 % ---------------------------------------------
 % Packages
@@ -9,7 +9,7 @@
 \usepackage{lmodern}
 \usepackage{microtype}
 \usepackage{geometry}
-\geometry{margin=0.75in}
+\geometry{margin=1in}
 
 \usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
 \usepackage{bm}
@@ -41,7 +41,7 @@
 % ---------------------------------------------
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{Confidential Research Draft}
+\lhead{Research Draft}
 \rhead{Physics-Informed Map-Conditioned UE Localization}
 \cfoot{\thepage}
 \setlength{\headheight}{14pt}
@@ -67,7 +67,7 @@
 % ---------------------------------------------
 \title{\vspace{-0.8cm}\textbf{Physics-Informed Map-Conditioned Transformers for Probabilistic UE Localization}\\
 \vspace{0.1cm}\large Coarse-to-Fine Mixture Posteriors, Differentiable Radio-Map Likelihoods, and Test-Time Refinement}
-\author{Anonymous Author(s)}
+\author{Nir Tzur}
 \date{\vspace{-0.2cm}\today}
 
 \begin{document}
@@ -83,7 +83,7 @@ We detail the model end-to-end from first principles, including the induced inva
 \end{abstract}
 
 % ---------------------------------------------
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
 \begin{tikzpicture}[
   node distance=1.15cm,
@@ -108,7 +108,7 @@ We detail the model end-to-end from first principles, including the induced inva
 \vspace{-0.2cm}
 \caption{End-to-end pipeline: GIS/OSM $\rightarrow$ scenes and deployments $\rightarrow$ differentiable RT $\rightarrow$ dataset $\rightarrow$ training $\rightarrow$ probabilistic inference with optional refinement.}
 \label{fig:pipeline}
-\end{figure*}
+\end{figure}
 
 % ---------------------------------------------
 \section{Introduction}
@@ -177,7 +177,7 @@ Define the cell-index function $c(\mathbf{y})$ as the unique index such that $\m
 We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical mixture posterior (Sec.~\ref{sec:posterior}).
 
 % ---------------------------------------------
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
 \begin{tikzpicture}[
   node distance=1.05cm,
@@ -217,7 +217,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \vspace{-0.2cm}
 \caption{Model overview. A set-based radio Transformer produces a global embedding $\mathbf{z}_r$, a ViT encodes map context into spatial tokens $\mathbf{S}$, cross-attention yields a fused embedding $\mathbf{z}_f$, and a coarse-to-fine head outputs a top-$K$ Gaussian mixture posterior over 2D UE position.}
 \label{fig:architecture}
-\end{figure*}
+\end{figure}
 
 % ---------------------------------------------
 \section{Map-Conditioned Transformer Posterior}
@@ -236,11 +236,10 @@ Each measurement event $\mathbf{x}_t=(c_t,b_t,\tau_t,\mathbf{f}_t)$ is mapped to
 \end{equation}
 where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features, and $\psi$ is a time embedding.
 In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time axis}:
-\begin{align}
-  \delta_t &= \tau_t-\tau_1,\qquad \bar\delta_t=\frac{\delta_t}{\max_s \delta_s + \varepsilon}, \nonumber \\
-  \psi(\tau_t;\bm\tau)&=\mathrm{PE}(\bar\delta_t),
+\begin{equation}
+  \delta_t = \tau_t-\tau_1,\qquad \bar\delta_t=\frac{\delta_t}{\max_s \delta_s + \varepsilon},\qquad \psi(\tau_t;\bm\tau)=\mathrm{PE}(\bar\delta_t),
   \label{eq:time_norm}
-\end{align}
+\end{equation}
 where $\mathrm{PE}$ is a sinusoidal lookup table (as in standard Transformers \cite{vaswani2017transformer}).
 
 A Transformer encoder processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with padding masks) and outputs contextualized embeddings; we use a learnable \texttt{[CLS]} token to pool the sequence into a global representation $\mathbf{z}_r\in\R^{d_r}$.
@@ -269,12 +268,12 @@ These spatial tokens preserve the map geometry while enabling long-range interac
 \label{sec:fusion}
 
 We fuse radio and map modalities by cross-attention, using the radio embedding as the query and map tokens as keys/values:
-\begin{align}
+\begin{equation}
   \mathbf{z}_f
-  &= \mathrm{MHA}\big(Q=\mathbf{z}_r W_Q,\;K=\mathbf{S} W_K,\;V=\mathbf{S} W_V\big) \nonumber \\
-  &\quad \in \R^{d_f}.
+  = \underbrace{\mathrm{MHA}\big(Q=\mathbf{z}_r W_Q,\;K=\mathbf{S} W_K,\;V=\mathbf{S} W_V\big)}_{\text{cross-attention}}
+  \;\in\;\R^{d_f}.
   \label{eq:crossattn}
-\end{align}
+\end{equation}
 A residual MLP refines $\mathbf{z}_f$ (standard Transformer block structure \cite{vaswani2017transformer}).
 Intuitively, cross-attention performs \emph{soft data association} between measurement evidence and spatial map regions, allowing the model to focus on map patches that best explain the observed radio signature.
 
@@ -284,18 +283,16 @@ Intuitively, cross-attention performs \emph{soft data association} between measu
 
 \paragraph{Hierarchical latent variable view.}
 We introduce a discrete latent cell variable $C\in\{1,\dots,G^2\}$ and factor the posterior as
-\begin{align}
+\begin{equation}
   p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})
-  &= \sum_{c=1}^{G^2} p_\theta(C=c\mid \mathcal{X},\mathcal{M}) \times \nonumber \\
-  &\quad p_\theta(\mathbf{y}\mid C=c,\mathcal{X},\mathcal{M}).
+  = \sum_{c=1}^{G^2} p_\theta(C=c\mid \mathcal{X},\mathcal{M})~p_\theta(\mathbf{y}\mid C=c,\mathcal{X},\mathcal{M}).
   \label{eq:hier_posterior}
-\end{align}
+\end{equation}
 The coarse head outputs logits over cells and a categorical distribution
-\begin{align}
-  \pi_c &= p_\theta(C=c\mid\mathcal{X},\mathcal{M}) = \softmax(\mathbf{u})_c, \nonumber \\
-  \mathbf{u} &= \mathrm{MLP}_{\text{coarse}}(\mathbf{z}_f).
+\begin{equation}
+  \pi_c \;=\; p_\theta(C=c\mid\mathcal{X},\mathcal{M}) = \softmax(\mathbf{u})_c,\qquad \mathbf{u}=\mathrm{MLP}_{\text{coarse}}(\mathbf{z}_f).
   \label{eq:coarse_pi}
-\end{align}
+\end{equation}
 
 \paragraph{Cell-conditioned continuous refinement.}
 For each cell $c$, the fine head parameterizes a local Gaussian over positions centered at the cell center $\mathbf{c}_c$:
@@ -309,18 +306,16 @@ This \emph{cell-conditioned} parameterization is essential: without $e_{\text{ce
 
 \paragraph{Top-$K$ truncation.}
 Evaluating all $G^2$ components can be expensive. We therefore retain only the top-$K$ most likely cells $\{c_k\}_{k=1}^K$ under $\bm\pi$ and renormalize:
-\begin{align}
-  \hat\pi_k &= \frac{\pi_{c_k}}{\sum_{j=1}^K \pi_{c_j}}, \nonumber \\
-  k &= 1,\dots,K.
+\begin{equation}
+  \hat\pi_k = \frac{\pi_{c_k}}{\sum_{j=1}^K \pi_{c_j}},\qquad k=1,\dots,K.
   \label{eq:topk_pi}
-\end{align}
+\end{equation}
 The resulting approximation is the top-$K$ mixture posterior
-\begin{align}
+\begin{equation}
   p_{\theta,K}(\mathbf{y}\mid \mathcal{X},\mathcal{M})
-  &= \sum_{k=1}^K \hat\pi_k \times \nonumber \\
-  &\quad \mathcal{N}\!\left(\mathbf{y};\mathbf{c}_{c_k}+\bm\mu_{c_k},\diag(\bm\sigma_{c_k}^2)\right).
+  = \sum_{k=1}^K \hat\pi_k~\mathcal{N}\!\left(\mathbf{y};\mathbf{c}_{c_k}+\bm\mu_{c_k},\diag(\bm\sigma_{c_k}^2)\right).
   \label{eq:topk_mixture}
-\end{align}
+\end{equation}
 This truncation preserves multi-modality while controlling computation; see Appendix~\ref{app:topk} for a quantitative discussion of the approximation error.
 
 \paragraph{Uncertainty decomposition.}
@@ -329,8 +324,8 @@ The mixture posterior supports a principled decomposition of predictive uncertai
   \E[\mathbf{y}] &= \sum_{k=1}^K \hat\pi_k\,\bm m_k,
   \qquad \bm m_k=\mathbf{c}_{c_k}+\bm\mu_{c_k}, \\
   \Cov[\mathbf{y}]
-  &= \sum_{k=1}^K \hat\pi_k \Big(\bm\Sigma_k + \nonumber \\
-  &\quad (\bm m_k-\E[\mathbf{y}])(\bm m_k-\E[\mathbf{y}])^\top\Big).
+  &= \sum_{k=1}^K \hat\pi_k \Big(\bm\Sigma_k + (\bm m_k-\E[\mathbf{y}])(\bm m_k-\E[\mathbf{y}])^\top\Big),
+  \quad \bm\Sigma_k=\diag(\bm\sigma_{c_k}^2),
   \label{eq:mixture_cov}
 \end{align}
 where the first term is within-component (heteroscedastic) uncertainty and the second captures between-component multi-modality.
@@ -362,12 +357,12 @@ This term is particularly important with top-$K$ routing: if the true cell is no
 \label{sec:nll}
 
 Given the top-$K$ posterior $p_{\theta,K}$ (Eq.~\eqref{eq:topk_mixture}), the proper scoring rule for density prediction is the negative log-likelihood
-\begin{align}
-  \mathcal{L}_{\text{fine}}(\theta) &= -\log p_{\theta,K}(\mathbf{y}^\star\mid \mathcal{X},\mathcal{M}) \nonumber \\
-  &= -\LogSumExp_{k=1}^K \Big( \log \hat\pi_k + \nonumber \\
-  &\quad \log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k) \Big).
+\begin{equation}
+  \mathcal{L}_{\text{fine}}(\theta)
+  = -\log p_{\theta,K}(\mathbf{y}^\star\mid \mathcal{X},\mathcal{M})
+  = -\LogSumExp_{k=1}^K \left(\log \hat\pi_k + \log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k)\right).
   \label{eq:mixture_nll}
-\end{align}
+\end{equation}
 Equation~\eqref{eq:mixture_nll} is \emph{not} equal to the commonly used surrogate $\sum_k \hat\pi_k\,\big(-\log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k)\big)$.
 By Jensen's inequality, the surrogate upper-bounds the true mixture NLL and tends to encourage \emph{all} components to explain every sample, reducing useful multi-modality. In contrast, Eq.~\eqref{eq:mixture_nll} rewards allocating probability mass to \emph{at least one} well-placed component, which is the correct likelihood for mixture density networks \cite{bishop1994mdn}.
 
@@ -394,12 +389,14 @@ Let $\mathbf{m}\in\R^{C_{\text{phys}}}$ denote a vector of observed features ext
   \label{eq:phys_noise}
 \end{equation}
 The negative log-likelihood (up to constants) yields a weighted squared residual:
-\begin{align}
+\begin{equation}
   -\log p(\mathbf{m}\mid \mathbf{y},\mathbf{R})
-  &\propto \sum_{j=1}^{C_{\text{phys}}} \frac{(m_j-r_j(\mathbf{y}))^2}{\sigma_{\text{phys},j}^2} \nonumber \\
-  &= \big\| W_{\text{phys}}(\mathbf{m}-\mathbf{r}(\mathbf{y}))\big\|_2^2,
+  \;\propto\;
+  \sum_{j=1}^{C_{\text{phys}}} \frac{(m_j-r_j(\mathbf{y}))^2}{\sigma_{\text{phys},j}^2}
+  \;=\;
+  \big\| W_{\text{phys}}(\mathbf{m}-\mathbf{r}(\mathbf{y}))\big\|_2^2,
   \label{eq:phys_nll}
-\end{align}
+\end{equation}
 with $W_{\text{phys}}=\diag(\sigma_{\text{phys},j}^{-1})$. This motivates the physics loss
 \begin{equation}
   \mathcal{L}_{\text{phys}}(\mathbf{y})
@@ -415,13 +412,13 @@ Normalizing each feature channel by its empirical mean and standard deviation (a
 \label{sec:total_loss}
 
 Let $\theta$ denote all neural parameters. We minimize
-\begin{align}
+\begin{equation}
   \min_\theta~ 
-  &\lambda_{\text{coarse}}\,\E\!\left[\mathcal{L}_{\text{coarse}}(\theta)\right]
-  + \lambda_{\text{fine}}\,\E\!\left[\mathcal{L}_{\text{fine}}(\theta)\right] \nonumber \\
-  &+ \lambda_{\text{phys}}\,\E\!\left[\mathcal{L}_{\text{phys}}\big(\hat{\mathbf{y}}_\theta(\mathcal{X},\mathcal{M})\big)\right],
+  \lambda_{\text{coarse}}\,\E\!\left[\mathcal{L}_{\text{coarse}}(\theta)\right]
+  + \lambda_{\text{fine}}\,\E\!\left[\mathcal{L}_{\text{fine}}(\theta)\right]
+  + \lambda_{\text{phys}}\,\E\!\left[\mathcal{L}_{\text{phys}}\big(\hat{\mathbf{y}}_\theta(\mathcal{X},\mathcal{M})\big)\right],
   \label{eq:total_loss}
-\end{align}
+\end{equation}
 where $\hat{\mathbf{y}}_\theta$ is a point estimate extracted from the posterior (Sec.~\ref{sec:inference}) and expectations are over the training distribution of $(\mathcal{X},\mathcal{M},\mathbf{y}^\star)$. The weights $\lambda_{\text{coarse}},\lambda_{\text{fine}},\lambda_{\text{phys}}$ control the relative influence of gating accuracy, probabilistic calibration, and physical consistency.
 
 
@@ -441,11 +438,11 @@ The MAP mean is robust for multi-modal distributions (it chooses a single hypoth
 \label{sec:refine}
 
 The physics loss enables test-time refinement. We define an energy over $\mathbf{y}$ that can combine the learned posterior density and the physics likelihood:
-\begin{align}
-  \mathcal{E}(\mathbf{y}) &= \alpha\Big(-\log p_{\theta,K}(\mathbf{y}\mid\mathcal{X},\mathcal{M})\Big) \nonumber \\
-  &\quad + \beta\,\mathcal{L}_{\text{phys}}(\mathbf{y}),
+\begin{equation}
+  \mathcal{E}(\mathbf{y})
+  = \alpha\Big(-\log p_{\theta,K}(\mathbf{y}\mid\mathcal{X},\mathcal{M})\Big) + \beta\,\mathcal{L}_{\text{phys}}(\mathbf{y}),
   \label{eq:refine_energy}
-\end{align}
+\end{equation}
 where $\alpha\ge 0$ and $\beta\ge 0$ control the trust in the network posterior and the physics term, respectively. 
 The special case $\alpha=0$ corresponds to \emph{physics-only} refinement (the setting used in our current refinement module), while $\alpha>0$ yields a composite MAP objective that keeps refined solutions in high-density regions of the learned posterior.
 
