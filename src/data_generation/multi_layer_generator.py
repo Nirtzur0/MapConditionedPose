@@ -371,71 +371,100 @@ class MultiLayerDataGenerator:
         sites = scene_metadata.get('sites', [])
         # Filter sites with valid cell_id
         valid_sites = [s for s in sites if s.get('cell_id') is not None]
-        site_positions = np.array([s['position'] for s in valid_sites])
+        site_positions = np.array([s['position'] for s in valid_sites], dtype=np.float32)
         cell_ids = np.array([s['cell_id'] for s in valid_sites], dtype=int)
         
-        if len(sites) == 0:
-            logger.warning(f"No sites in metadata for {scene_id}, using mock")
-            site_positions = np.array([[0, 0, 30], [500, 0, 30]])
-            cell_ids = np.array([1, 2])
-            
         # Calculate coordinate offsets (center of bbox)
         bbox = scene_metadata.get('bbox', {})
         if 'x_min' in bbox and 'x_max' in bbox:
-            offset_x = (bbox['x_min'] + bbox['x_max']) / 2.0
-            offset_y = (bbox['y_min'] + bbox['y_max']) / 2.0
-            logger.info(f"Normalizing coordinates by offset: ({offset_x:.2f}, {offset_y:.2f})")
+            # Simulation Frame: Centered (for optimizing ray tracing precision)
+            sim_offset_x = (bbox['x_min'] + bbox['x_max']) / 2.0
+            sim_offset_y = (bbox['y_min'] + bbox['y_max']) / 2.0
+            
+            # Storage Frame: Bottom-Left Logic (Standard Image Coords [0, W])
+            store_offset_x = bbox['x_min']
+            store_offset_y = bbox['y_min']
+            
+            logger.info(f"Coord Frames -> Sim Offset: ({sim_offset_x:.2f}, {sim_offset_y:.2f}), Store Offset: ({store_offset_x:.2f}, {store_offset_y:.2f})")
         else:
-            offset_x, offset_y = 0.0, 0.0
+            sim_offset_x, sim_offset_y = 0.0, 0.0
+            store_offset_x, store_offset_y = 0.0, 0.0
             logger.warning("No bbox found in metadata; assuming local coordinates.")
 
-        # Normalize site positions
-        if len(site_positions) > 0:
-            site_positions[:, 0] -= offset_x
-            site_positions[:, 1] -= offset_y
+        if len(sites) == 0:
+            logger.warning(f"No sites in metadata for {scene_id}, using mock")
+            # Place mock sites relative to Sim Center (so they end up at 0,0 and 500,0 after subtraction)
+            # Global Pos = Sim Pos + Offset
+            site_positions = np.array([
+                [sim_offset_x, sim_offset_y, 30.0], 
+                [sim_offset_x + 500.0, sim_offset_y, 30.0]
+            ], dtype=np.float32)
+            cell_ids = np.array([1, 2])
+
+        # Normalize site positions for Simulation
+        # (Assuming scene geometry is centered relative to global, which implies we must simulate in Centered Frame)
+        site_positions_sim = site_positions.copy()
+        if len(site_positions_sim) > 0:
+            site_positions_sim[:, 0] -= sim_offset_x
+            site_positions_sim[:, 1] -= sim_offset_y
         
-        # Setup transmitters in Sionna
+        # Setup transmitters in Sionna (Sim Frame)
         if scene is not None:
-            # Update site metadata with normalized positions for consistency? 
-            # Or just pass normalized positions. _setup_transmitters uses site_positions arg.
-            self._setup_transmitters(scene, site_positions, sites if sites else {})
+            self._setup_transmitters(scene, site_positions_sim, sites if sites else {})
+            
+        # Sample UE trajectories in GLOBAL frame (offset=0)
+        # We will convert them to Sim/Store frames as needed
+        trajectories_global = self._sample_ue_trajectories(scene_metadata, offset=(0.0, 0.0))
         
-        # Sample UE positions and trajectories (pass offset to normalize them)
-        ue_trajectories = self._sample_ue_trajectories(scene_metadata, offset=(offset_x, offset_y))
-        
-        # Collect data for all UEs and time steps
-        all_data = {
-            'rt': [],
-            'phy_fapi': [],
-            'mac_rrc': [],
-            'positions': [],
-            'timestamps': [],
+        # Collect data
+        all_features = {
+            'rt': [], 'phy_fapi': [], 'mac_rrc': [], 'positions': [], 'timestamps': []
         }
         
-        num_ues = len(ue_trajectories)
-        for ue_idx, trajectory in enumerate(ue_trajectories):
-            if (ue_idx + 1) % 10 == 0:
-                logger.info(f"  Processing UE {ue_idx+1}/{num_ues}")
+        total_reports = 0
+        
+        for traj_global in trajectories_global:
+            # traj_global is [num_reports, 3] (Global Coords)
             
-            # Generate temporal sequence
-            for t_idx, ue_pos in enumerate(trajectory):
-                # Run simulation for this UE position
-                rt_features, phy_features, mac_features = self._simulate_measurement(
-                    scene, ue_pos, site_positions, cell_ids
+            measurements_per_ue = {
+                'rt': [], 'phy_fapi': [], 'mac_rrc': []
+            }
+            
+            for t_step, ue_pos_global in enumerate(traj_global):
+                # Convert to Sim Frame for Sionna
+                ue_pos_sim = ue_pos_global.copy()
+                ue_pos_sim[0] -= sim_offset_x
+                ue_pos_sim[1] -= sim_offset_y
+                
+                # Simulate (Sim Frame)
+                rt, phy, mac = self._simulate_measurement(
+                    scene, ue_pos_sim, site_positions_sim, cell_ids
                 )
                 
-                # Store features
-                all_data['rt'].append(rt_features.to_dict())
-                all_data['phy_fapi'].append(phy_features.to_dict())
-                all_data['mac_rrc'].append(mac_features.to_dict())
-                all_data['positions'].append(ue_pos)
+                measurements_per_ue['rt'].append(rt)
+                measurements_per_ue['phy_fapi'].append(phy)
+                measurements_per_ue['mac_rrc'].append(mac)
                 
-                # Timestamp
-                timestamp = t_idx * self.config.report_interval_ms / 1000.0  # seconds
-                all_data['timestamps'].append(timestamp)
+                # Store Position (Storage Frame: Bottom-Left)
+                ue_pos_store = ue_pos_global.copy()
+                ue_pos_store[0] -= store_offset_x
+                ue_pos_store[1] -= store_offset_y
+                
+                all_features['positions'].append(ue_pos_store)
+                all_features['timestamps'].append(t_step * self.config.report_interval_ms / 1000.0)
+                
+                total_reports += 1
         
+            # After processing all time steps for a UE, append its measurements
+            for rt_feat in measurements_per_ue['rt']:
+                all_features['rt'].append(rt_feat.to_dict())
+            for phy_feat in measurements_per_ue['phy_fapi']:
+                all_features['phy_fapi'].append(phy_feat.to_dict())
+            for mac_feat in measurements_per_ue['mac_rrc']:
+                all_features['mac_rrc'].append(mac_feat.to_dict())
+
         # Stack into arrays
-        scene_data = self._stack_scene_data(all_data)
+        scene_data = self._stack_scene_data(all_features)
         
         # Apply measurement realism
         scene_data = self._apply_measurement_realism(scene_data)
@@ -465,10 +494,51 @@ class MultiLayerDataGenerator:
         y_max = bbox.get('y_max', 500)
         
         trajectories = []
-        for _ in range(self.config.num_ue_per_tile):
-            # Sample initial position and velocity
-            x0 = np.random.uniform(x_min, x_max)
-            y0 = np.random.uniform(y_min, y_max)
+        # Stratified Sampling (Grid-Jittered)
+        # Guarantees uniform coverage by dividing the area into a grid
+        num_ues = self.config.num_ue_per_tile
+        
+        # Calculate aspect ratio to distribute grid cells
+        width = x_max - x_min
+        height = y_max - y_min
+        aspect_ratio = width / height if height > 0 else 1.0
+        
+        # Determine grid dimensions (cols * rows ≈ num_ues)
+        # cols / rows ≈ aspect_ratio  =>  cols ≈ rows * aspect_ratio
+        # rows * (rows * aspect_ratio) ≈ num_ues  =>  rows^2 ≈ num_ues / aspect_ratio
+        num_rows = int(np.sqrt(num_ues / aspect_ratio))
+        num_cols = int(num_ues / num_rows) if num_rows > 0 else 1
+        
+        # Adjust to match exact count or close to it
+        actual_ues = num_rows * num_cols
+        
+        # Grid cell sizes
+        cell_w = width / num_cols
+        cell_h = height / num_rows
+        
+        logger.info(f"Using Stratified Sampling: {num_cols}x{num_rows} grid ({actual_ues} UEs). bbox: {width:.0f}x{height:.0f}m")
+        
+        trajectories = []
+        
+        # Generate grid cells
+        cells = []
+        for r in range(num_rows):
+            for c in range(num_cols):
+                cells.append((r, c))
+                
+        # If we need more UEs to match exact request, add random cells
+        # (Though usually acceptable to be slightly under/over, let's just fill the grid primarily)
+        
+        for i in range(actual_ues):
+            r, c = cells[i]
+            
+            # Cell bounds
+            cell_x_min = x_min + c * cell_w
+            cell_y_min = y_min + r * cell_h
+            
+            # Sample ONE point uniformly within this cell (Jittered)
+            x0 = np.random.uniform(cell_x_min, cell_x_min + cell_w)
+            y0 = np.random.uniform(cell_y_min, cell_y_min + cell_h)
             z0 = np.random.uniform(*self.config.ue_height_range)
             
             speed = np.random.uniform(*self.config.ue_velocity_range)
@@ -495,7 +565,36 @@ class MultiLayerDataGenerator:
                 trajectory.append([x_local, y_local, z])
             
             trajectories.append(np.array(trajectory))
-        
+            
+        # Add any remaining UEs randomly if grid count was less than requested
+        remaining = num_ues - actual_ues
+        if remaining > 0:
+            logger.debug(f"Adding {remaining} extra random UEs to match requested count.")
+            for _ in range(remaining):
+                x0 = np.random.uniform(x_min, x_max)
+                y0 = np.random.uniform(y_min, y_max)
+                z0 = np.random.uniform(*self.config.ue_height_range)
+                
+                speed = np.random.uniform(*self.config.ue_velocity_range)
+                direction = np.random.uniform(0, 2*np.pi)
+                vx = speed * np.cos(direction)
+                vy = speed * np.sin(direction)
+                
+                trajectory = []
+                for t in range(self.config.num_reports_per_ue):
+                    dt = t * self.config.report_interval_ms / 1000.0
+                    x = x0 + vx * dt
+                    y = y0 + vy * dt
+                    z = z0
+                    
+                    x = np.clip(x, x_min, x_max)
+                    y = np.clip(y, y_min, y_max)
+                    
+                    x_local = x - offset[0]
+                    y_local = y - offset[1]
+                    trajectory.append([x_local, y_local, z])
+                trajectories.append(np.array(trajectory))
+
         return trajectories
     
     def _simulate_measurement(self,
@@ -808,26 +907,33 @@ class MultiLayerDataGenerator:
         # PHY/FAPI features
         for key in all_data['phy_fapi'][0].keys():
             arrays = [d[key] for d in all_data['phy_fapi']]
-            arrays_squeezed = [np.squeeze(a) if a is not None and a.size > 0 else a 
-                              for a in arrays]
             
-            if arrays_squeezed[0] is not None:
+            # Use safe extraction from [batch, rx, ...] to avoid collapsing num_cells=1
+            def safe_extract_layers(a):
+                if a is None or a.size == 0: return a
+                if a.ndim >= 2:
+                    # Remove batch and rx dimensions only
+                    return a[0, 0]
+                return np.squeeze(a)
+                
+            arrays_cleaned = [safe_extract_layers(a) for a in arrays]
+            
+            if arrays_cleaned[0] is not None:
                 try:
-                    stacked[key] = np.stack(arrays_squeezed, axis=0)
+                    stacked[key] = np.stack(arrays_cleaned, axis=0)
                 except (ValueError, TypeError):
-                    stacked[key] = arrays_squeezed
+                    stacked[key] = arrays_cleaned
         
         # MAC/RRC features
         for key in all_data['mac_rrc'][0].keys():
             arrays = [d[key] for d in all_data['mac_rrc']]
-            arrays_squeezed = [np.squeeze(a) if a is not None and a.size > 0 else a 
-                              for a in arrays]
+            arrays_cleaned = [safe_extract_layers(a) for a in arrays]
             
-            if arrays_squeezed[0] is not None:
+            if arrays_cleaned[0] is not None:
                 try:
-                    stacked[key] = np.stack(arrays_squeezed, axis=0)
+                    stacked[key] = np.stack(arrays_cleaned, axis=0)
                 except (ValueError, TypeError):
-                    stacked[key] = arrays_squeezed
+                    stacked[key] = arrays_cleaned
         
         return stacked
     
@@ -1027,27 +1133,51 @@ class MultiLayerDataGenerator:
             safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
             
             # Helper: Percentile-based normalization
-            def normalize_map(data):
+            # Helper: Percentile-based normalization with fallback
+            def normalize_map(data, fixed_range=None):
                 data = np.asarray(data, dtype=np.float32)
-                percentile_data = np.where(np.isinf(data), np.nan, data)
-                if not np.isfinite(percentile_data).any():
-                    return np.zeros_like(data, dtype=np.float32)
-                vmin = np.nanpercentile(percentile_data, 2)
-                vmax = np.nanpercentile(percentile_data, 98)
+                # Replace Inf with NaN for percentile calc
+                valid_data = np.where(np.isinf(data), np.nan, data)
+                
+                # Filter out "background" values (e.g. -200 or 0 for linear) if they dominate
+                # For Path Gain (dB), background is usually <= -150
+                signal_mask = valid_data > -150
+                
+                if not np.any(signal_mask):
+                    # No signal at all
+                    return np.zeros_like(data)
+                
+                if fixed_range:
+                    vmin, vmax = fixed_range
+                else:
+                    # Calculate percentiles only on "signal" pixels to avoid background skewing
+                    if np.sum(signal_mask) > 10: # Sufficient samples
+                        vmin = np.nanpercentile(valid_data[signal_mask], 2)
+                        vmax = np.nanpercentile(valid_data[signal_mask], 98)
+                    else:
+                        vmin = np.nanmin(valid_data)
+                        vmax = np.nanmax(valid_data)
+                
+                # Safety check
                 if vmax - vmin < 1e-6:
-                    return np.full(data.shape, 0.5, dtype=np.float32) if np.nanmedian(percentile_data) > 1e-6 else np.zeros_like(data)
-                safe_data = np.nan_to_num(data, nan=vmin, posinf=vmax, neginf=vmin)
-                return np.clip((safe_data - vmin) / (vmax - vmin), 0.0, 1.0)
+                    vmax = vmin + 10.0 # Arbitrary range to avoid div/0
+                
+                # Normalize
+                # Use entire array (including background)
+                normalized = np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
+                return normalized
             
             # Create figure with radio and OSM maps
             fig, axes = plt.subplots(1, 2, figsize=(12, 5))
             
             # Radio Map - Path Gain (first channel)
-            radio_img = normalize_map(radio_map[0])
+            # Use fixed range for Path Gain to ensure consistent visualization
+            # -120 dB (weak) to -50 dB (strong) covers typical cellular range
+            radio_img = normalize_map(radio_map[0], fixed_range=(-120, -50))
             im0 = axes[0].imshow(radio_img, cmap='inferno', origin='lower')
             axes[0].set_title(f"Radio Map (Path Gain)\n{scene_id}")
             axes[0].axis("off")
-            plt.colorbar(im0, ax=axes[0], shrink=0.8, label="Normalized Path Gain")
+            plt.colorbar(im0, ax=axes[0], shrink=0.8, label="Normalized Path Gain (-120 to -50 dB)")
             
             # OSM Map - RGB visualization (R:Height, G:Footprint, B:Road+Terrain)
             h, w = osm_map.shape[1], osm_map.shape[2]
@@ -1118,6 +1248,10 @@ if __name__ == "__main__":
         num_ue_per_tile=10,
         num_reports_per_ue=5,
         output_dir=Path("test_output"),
+        carrier_frequency_hz=3.5e9,
+        bandwidth_hz=100e6,
+        tx_power_dbm=43.0,
+        noise_figure_db=9.0
     )
     
     # Create mock scene directory

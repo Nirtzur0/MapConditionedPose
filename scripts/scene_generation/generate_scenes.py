@@ -245,8 +245,9 @@ def main():
     num_tx = args.num_tx
     if not args.fixed_sites:
         # Default to 1-3 if num_tx is at its default (3) or unspecified
-        num_tx = random.randint(1, min(args.num_tx if args.num_tx > 0 else 3, 4))
-        logger.info(f"Randomized number of transmitters: {num_tx} (1-{min(args.num_tx, 4)})")
+        upper_limit = min(args.num_tx if args.num_tx > 0 else 3, 3)
+        num_tx = random.randint(1, upper_limit)
+        logger.info(f"Randomized number of transmitters: {num_tx} (1-{upper_limit})")
     
     # Tile mode or single scene?
     if args.tiles:

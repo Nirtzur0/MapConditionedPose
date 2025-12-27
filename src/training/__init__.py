@@ -224,7 +224,7 @@ class UELocalizationLightning(pl.LightningModule):
         Extract and summarize observed radio features from measurements.
         
         Returns:
-            Aggregated features: [batch, 7] (path_gain, toa, aoa, snr, sinr, throughput, bler)
+            Aggregated features: [batch, 5] (path_gain, snr, sinr, throughput, bler)
         """
         batch_size = measurements['rt_features'].shape[0]
         device = measurements['rt_features'].device
@@ -232,17 +232,12 @@ class UELocalizationLightning(pl.LightningModule):
         # Extract features (use mean across temporal dimension, ignoring masked values)
         mask = measurements['mask']  # (batch, seq_len)
         
-        # RT features: path_gain (0), toa (1), aoa_azimuth (2)
-        rt_features = measurements['rt_features']  # (batch, seq_len, 8)
+        # RT features: path_gain (0)
+        rt_features = measurements['rt_features']  # (batch, seq_len, 10 or 8)
         path_gain = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         
-        # Note: toa and aoa are currently not provided by RadioMapSolver
-        # We set them to zero to avoid duplicating path_gain
-        toa = torch.zeros_like(path_gain)
-        aoa = torch.zeros_like(path_gain)
-        
         # PHY features: snr (2), sinr (3)
-        phy_features = measurements['phy_features']  # (batch, seq_len, 10)
+        phy_features = measurements['phy_features']  # (batch, seq_len, 8)
         snr = (phy_features[:, :, 2] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         sinr = (phy_features[:, :, 3] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         
@@ -251,8 +246,8 @@ class UELocalizationLightning(pl.LightningModule):
         throughput = (mac_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         bler = (mac_features[:, :, 1] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
         
-        # Stack into (batch, 7)
-        observed = torch.stack([path_gain, toa, aoa, snr, sinr, throughput, bler], dim=1)
+        # Stack into (batch, 5)
+        observed = torch.stack([path_gain, snr, sinr, throughput, bler], dim=1)
         
         return observed
     

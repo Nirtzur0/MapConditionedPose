@@ -450,6 +450,7 @@ class ZarrDatasetWriter:
             'scene_ids': self.stats['scene_ids'],
             'chunk_size': self.chunk_size,
             'compression': self.compression,
+            'coordinate_system': 'local_bottom_left',  # Explicitly define stored system
         }
         
         # Write to .zattrs

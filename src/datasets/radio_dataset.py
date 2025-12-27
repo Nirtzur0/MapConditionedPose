@@ -182,10 +182,29 @@ class RadioLocalizationDataset(Dataset):
         else:
             x_min, y_min = 0.0, 0.0
 
-        # Convert to local coordinates
-        local_x = ue_x - x_min
-        local_y = ue_y - y_min
+        # Standard Coordinate Handling (Local Bottom-Left [0, W])
+        # We assume stored data is in the correct Local frame.
+        local_x = ue_x
+        local_y = ue_y
         
+        # Backward Compatibility / Safety:
+        # If values appear to be Global UTM (> 10,000), convert to Local.
+        if abs(local_x) > 10000:
+             local_x -= x_min
+        if abs(local_y) > 10000:
+             local_y -= y_min
+             
+        # If values appear to be Centered-Local (Negative), shift to Bottom-Left [0, W]
+        # (This handles datasets generated with the old 'Centered' logic)
+        # Note: This assumes valid range is [0, W]. If we see -W/2, we shift.
+        if local_x < -100: # Allow small noise/margin
+             bbox_width = scene_bbox[2] - scene_bbox[0] if bbox_valid else self.scene_extent
+             local_x += (bbox_width / 2.0)
+             
+        if local_y < -100:
+             bbox_height = scene_bbox[3] - scene_bbox[1] if bbox_valid else self.scene_extent
+             local_y += (bbox_height / 2.0)
+
         position = torch.tensor([local_x, local_y], dtype=torch.float32)
         
         

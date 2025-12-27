@@ -40,8 +40,6 @@ class PhysicsLossConfig:
             # Default weights from IMPLEMENTATION_GUIDE.md
             self.feature_weights = {
                 'path_gain': 1.0,   # High weight, most reliable
-                'toa': 0.5,         # Medium, affected by NLOS bias
-                'aoa': 0.3,         # Lower, high measurement noise
                 'snr': 0.8,         # High, good signal quality indicator
                 'sinr': 0.8,        # High, good signal quality indicator
                 'throughput': 0.2,  # Lower, depends on scheduler/load
@@ -69,8 +67,8 @@ class PhysicsLoss(nn.Module):
         self.config = config
         
         # Convert feature weights to tensor for efficient computation
-        # Assume feature order: [path_gain, toa, aoa, snr, sinr, throughput, bler]
-        feature_names = ['path_gain', 'toa', 'aoa', 'snr', 'sinr', 'throughput', 'bler']
+        # Assume feature order: [path_gain, snr, sinr, throughput, bler]
+        feature_names = ['path_gain', 'snr', 'sinr', 'throughput', 'bler']
         weights = [config.feature_weights.get(name, 1.0) for name in feature_names]
         self.register_buffer('feature_weights', torch.tensor(weights))
         
@@ -96,8 +94,8 @@ class PhysicsLoss(nn.Module):
         Example:
             >>> physics_loss = PhysicsLoss(PhysicsLossConfig())
             >>> predicted_xy = torch.tensor([[100.0, 200.0], [150.0, 250.0]])
-            >>> observed = torch.randn(2, 7)  # 7 features
-            >>> radio_maps = torch.randn(2, 7, 512, 512)
+            >>> observed = torch.randn(2, 5)  # 5 features
+            >>> radio_maps = torch.randn(2, 5, 512, 512)
             >>> loss = physics_loss(predicted_xy, observed, radio_maps)
         """
         # Sample radio map features at predicted positions
@@ -181,7 +179,7 @@ class PhysicsLoss(nn.Module):
         mean_losses = feature_losses.mean(dim=0)  # (C,)
         
         # Map to feature names
-        feature_names = ['path_gain', 'toa', 'aoa', 'snr', 'sinr', 'throughput', 'bler']
+        feature_names = ['path_gain', 'snr', 'sinr', 'throughput', 'bler']
         loss_dict = {name: mean_losses[i] for i, name in enumerate(feature_names)}
         
         return loss_dict
