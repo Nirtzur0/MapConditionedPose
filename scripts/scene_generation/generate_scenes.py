@@ -17,6 +17,7 @@ import logging
 import sys
 from pathlib import Path
 import json
+import random
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
@@ -96,8 +97,13 @@ def parse_args():
     parser.add_argument(
         "--site-strategy",
         choices=["grid", "random", "isd"],
-        default="grid",
-        help="Site placement strategy (default: grid)",
+        default="random",
+        help="Site placement strategy (default: random)",
+    )
+    parser.add_argument(
+        "--fixed-sites",
+        action="store_true",
+        help="Disable random number of sites (use --num-tx exactly)",
     )
     parser.add_argument(
         "--isd",
@@ -166,17 +172,21 @@ def load_polygon(polygon_path: Path):
 
 def get_simple_bbox(area_name: str):
     """Get a small bbox for testing (hardcoded locations)."""
-    # Hardcoded test locations
+    # Hardcoded test locations (approx 1km x 1km box)
     locations = {
-        "Boulder, CO": (-105.30, 40.00, -105.25, 40.03),
-        "Boulder": (-105.30, 40.00, -105.25, 40.03),
-        "Durham, NC": (-78.95, 35.98, -78.90, 36.01),
-        "Durham": (-78.95, 35.98, -78.90, 36.01),
+        "Boulder, CO": (-105.275, 40.015, -105.265, 40.025),
+        "Boulder": (-105.275, 40.015, -105.265, 40.025),
+        "Durham, NC": (-78.940, 36.000, -78.930, 36.010),
+        "Durham": (-78.940, 36.000, -78.930, 36.010),
+        "Austin, TX": (-97.745, 30.265, -97.735, 30.275),
+        "Austin": (-97.745, 30.265, -97.735, 30.275),
+        "Chicago, IL": (-87.635, 41.875, -87.625, 41.885),
+        "Chicago": (-87.635, 41.875, -87.625, 41.885),
     }
     
     for key, bbox in locations.items():
         if key.lower() in area_name.lower():
-            logger.info(f"Using bbox for {key}: {bbox}")
+            logger.info(f"Using small test bbox for {key}: {bbox}")
             return bbox
     
     raise ValueError(
@@ -230,6 +240,12 @@ def main():
         strategy=args.site_strategy,
         seed=args.seed,
     )
+
+    # Randomize number of sites if not fixed
+    num_tx = args.num_tx
+    if not args.fixed_sites and args.num_tx == 3:  # Only if default/unspecified
+        num_tx = random.randint(1, 3)
+        logger.info(f"Randomized number of transmitters: {num_tx} (1-3)")
     
     # Tile mode or single scene?
     if args.tiles:
@@ -266,7 +282,7 @@ def main():
         
         # Create site config
         site_config = {
-            'num_tx': args.num_tx,
+            'num_tx': num_tx,
             'num_rx': args.num_rx,
             'strategy': args.site_strategy,
         }
