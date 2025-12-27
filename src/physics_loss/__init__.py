@@ -14,12 +14,9 @@ Components:
 
 from .differentiable_lookup import differentiable_lookup, normalize_coords
 from .physics_loss import PhysicsLoss, compute_physics_loss, PhysicsLossConfig
-from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 from .refinement import refine_position, RefineConfig
 
 __all__ = [
-    'RadioMapGenerator',
-    'RadioMapConfig',
     'differentiable_lookup',
     'normalize_coords',
     'PhysicsLoss',

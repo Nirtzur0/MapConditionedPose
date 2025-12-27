@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 from typing import Dict
 import yaml
+import gc
+import torch
 
 from src.utils.logging_utils import setup_logging
 from src.training import UELocalizationLightning
@@ -124,8 +126,8 @@ def objective(trial, args, base_config_path: Path):
         precision=config['infrastructure']['precision'],
         callbacks=callbacks,
         logger=comet_logger,
-        enable_progress_bar=False,
-        enable_model_summary=False,
+        enable_progress_bar=True,
+        enable_model_summary=True,
     )
 
     # 7. Train
@@ -135,15 +137,35 @@ def objective(trial, args, base_config_path: Path):
         import traceback
         logger.error(f"Trial {trial.number} failed with exception: {e}")
         logger.error(traceback.format_exc())
-        # Clean up temp config file
-        trial_config_path.unlink()
+        # Clean up
+        if trial_config_path.exists():
+            trial_config_path.unlink()
+        
+        # Memory cleanup
+        del model
+        del trainer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if hasattr(torch, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        gc.collect()
+
         # Report failure to Optuna
         raise optuna.exceptions.TrialPruned()
 
-
     # 8. Return metric
+    # Memory cleanup
+    del model
+    del trainer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if hasattr(torch, "mps") and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+
     # Clean up temp config file
-    trial_config_path.unlink()
+    if trial_config_path.exists():
+        trial_config_path.unlink()
 
     return checkpoint_callback.best_model_score.item()
 

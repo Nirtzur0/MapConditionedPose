@@ -137,7 +137,56 @@ class RadioMapGenerator:
             elif feature == 'toa':
                 radio_map[i] = np.inf
 
-
+        # Validate and setup scene transmitters
+        # If scene has no transmitters, we MUST try to add them from cell_sites
+        if len(scene.transmitters) == 0:
+            self.logger.info(f"Scene has no transmitters. Adding {len(cell_sites)} from config.")
+            if len(cell_sites) == 0:
+                self.logger.warning("No cell sites provided and no transmitters in scene. Map will be empty.")
+            else:
+                # Need to configure tx_array first
+                if not hasattr(scene, 'tx_array') or scene.tx_array is None:
+                    # Default array (similar to MultiLayerDataGenerator logic)
+                    if self.config.carrier_frequency < 10e9:
+                         scene.tx_array = sn.rt.PlanarArray(
+                            num_rows=8, num_cols=8,
+                            vertical_spacing=0.5, horizontal_spacing=0.5,
+                            pattern="iso", polarization="V"
+                        )
+                    else:
+                        scene.tx_array = sn.rt.PlanarArray(
+                            num_rows=16, num_cols=16,
+                            vertical_spacing=0.5, horizontal_spacing=0.5,
+                            pattern="iso", polarization="V"
+                        )
+                
+                # Add transmitters with height enforcement
+                for i, site in enumerate(cell_sites):
+                     # Parse site dict
+                     pos = site.get('position')
+                     if pos is None: continue
+                     
+                     # Enforce minimum height for transmitters (e.g. 25m) to ensure coverage
+                     # unless explicitly marked as 'small_cell' or similar (not available here)
+                     min_tx_h = 25.0
+                     if pos[2] < min_tx_h:
+                         self.logger.warning(f"  Site {i} height {pos[2]:.1f}m too low. Bumping to {min_tx_h}m.")
+                         pos[2] = min_tx_h
+                     
+                     # Orientation
+                     orient = site.get('orientation', [0, 0, 0])
+                     
+                     tx = sn.rt.Transmitter(
+                         name=f"Gen_TX_{i}",
+                         position=pos,
+                         orientation=orient
+                     )
+                     scene.add(tx)
+        
+        # Ensure tx_array is present (RadioMapSolver requirement)
+        if not hasattr(scene, 'tx_array') or scene.tx_array is None:
+             self.logger.warning("Scene missing tx_array. Setting default.")
+             scene.tx_array = sn.rt.PlanarArray(num_rows=1, num_cols=1, pattern="iso", polarization="V")
 
         try:
             # Create solver and compute radio map
@@ -153,7 +202,21 @@ class RadioMapGenerator:
             self.logger.info(f"Running RadioMapSolver (center={center}, size={size})...")
             # cell_size needs to be array-like [dx, dy]
             cell_size = [size_x/width, size_y/height]
-            rm = solver(scene, center=center, size=size, cell_size=cell_size, orientation=orientation)
+            
+            # Enable advanced physics for better urban coverage
+            rm = solver(
+                scene, 
+                center=center, 
+                size=size, 
+                cell_size=cell_size, 
+                orientation=orientation,
+                diffraction=True,  # Enable diffraction
+                # scattering=True, # Not supported in RadioMapSolver __call__ apparently
+                # num_samples=self.config.num_samples # Not supported in RadioMapSolver __call__
+            )
+            
+            # Debug available attributes
+            self.logger.info(f"Solver output attributes: {[a for a in dir(rm) if not a.startswith('_')]}")
             
             # Extract features
             # rm.path_gain is [num_tx, height, width]
@@ -161,17 +224,22 @@ class RadioMapGenerator:
             
             if 'path_gain' in self.config.features:
                 idx = self.config.features.index('path_gain')
-                # Path gain in dB (convert linear to dB)
-                # Ensure we handle CPU/GPU tensor conversion
+                # Path Gain
                 try:
                     pg_linear = rm.path_gain.numpy() 
                 except:
-                    pg_linear = rm.path_gain # Maybe already numpy or list
+                    pg_linear = rm.path_gain 
                     
                 pg_db = 10 * np.log10(np.maximum(pg_linear, 1e-15))
                 # Take max over TXs
                 if pg_db.shape[0] > 0:
                     radio_map[idx] = np.max(pg_db, axis=0)
+            
+            # ToA / AoA / Delay Spread
+            # Check if available in rm
+            if 'toa' in self.config.features and hasattr(rm, 'time_of_arrival'):
+                 # If implemented in future Sionna versions
+                 pass
             
             if 'snr' in self.config.features:
                 idx = self.config.features.index('snr')

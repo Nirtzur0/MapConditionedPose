@@ -15,7 +15,7 @@ from .features import (
     RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
 )
 from .measurement_utils import add_measurement_dropout
-from src.physics_loss import RadioMapGenerator, RadioMapConfig
+from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 from src.datasets.radio_dataset import RadioLocalizationDataset # Reusing for OSM logic if possible, or build custom generator
 
 logger = logging.getLogger(__name__)
@@ -322,6 +322,9 @@ class MultiLayerDataGenerator:
                 self.zarr_writer.write_scene_maps(scene_id, radio_map, osm_map)
                 # Then append samples (linked by scene_id internal index)
                 self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+                
+                # Save map visualizations as reference images
+                self._save_map_visualizations(scene_id, radio_map, osm_map)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
         
@@ -860,14 +863,33 @@ class MultiLayerDataGenerator:
 
         try:
              # Configure Radio Map Generator
-             # Using hardcoded resolution/size for now to match model expectation (256x256)
-             # Ideally this comes from config
-             radius = 128.0 # Half of 256
+             # Configure Radio Map Generator
+             # Calculate dynamic extent to cover the whole scene
+             bbox = scene_metadata.get('bbox', {})
+             x_min = bbox.get('x_min', -1000)
+             x_max = bbox.get('x_max', 1000)
+             y_min = bbox.get('y_min', -1000)
+             y_max = bbox.get('y_max', 1000)
+             
+             # Calculate dimensions based on bbox centered at (0,0) after normalization
+             # Scene normalization offsets by center, so new extent is [-W/2, W/2]
+             width_m = x_max - x_min
+             height_m = y_max - y_min
+             
+             # Use square extent covering max dimension
+             max_dim = max(width_m, height_m)
+             radius = (max_dim / 2.0) * 1.05 # Add 5% margin
+             
+             map_size_px = (256, 256)
+             resolution = (radius * 2) / 256.0
+             
+             logger.info(f"Radio Map Gen: Radius={radius:.1f}m, Res={resolution:.2f}m/px")
+             
              map_config = RadioMapConfig(
-                 resolution=1.0, # 1 meter/pixel logic, might need adjustment based on scene size
-                 map_size=(256, 256),
+                 resolution=resolution,
+                 map_size=map_size_px,
                  map_extent=(-radius, -radius, radius, radius),
-                 output_dir=Path("/tmp"), # Not used usually if we just want array
+                 output_dir=Path("/tmp"),
              )
              
              # Extract cell sites
@@ -960,7 +982,18 @@ class MultiLayerDataGenerator:
              # quick_test uses scene center at 0,0 locally? 
              # Yes, Sionna scene usually centered or we convert coords.
              
-             radius = 128.0 
+             # Calculate dynamic extent to match Radio Map
+             bbox = metadata.get('bbox', {})
+             x_min = bbox.get('x_min', -1000)
+             x_max = bbox.get('x_max', 1000)
+             y_min = bbox.get('y_min', -1000)
+             y_max = bbox.get('y_max', 1000)
+             
+             width_m = x_max - x_min
+             height_m = y_max - y_min
+             max_dim = max(width_m, height_m)
+             radius = (max_dim / 2.0) * 1.05 
+             
              map_size = (256, 256)
              map_extent = (-radius, -radius, radius, radius)
              
@@ -971,6 +1004,105 @@ class MultiLayerDataGenerator:
         except Exception as e:
              logger.error(f"Failed to generate OSM map: {e}")
              return default_map
+
+    def _save_map_visualizations(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
+        """
+        Save radio and OSM map visualizations as reference images.
+        
+        Args:
+            scene_id: Scene identifier for naming
+            radio_map: [C, H, W] radio map array
+            osm_map: [C, H, W] OSM map array
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            
+            # Create output directory inside the dataset output folder
+            viz_dir = self.config.output_dir / "map_visualizations"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Clean scene_id for filename (replace / with _)
+            safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
+            
+            # Helper: Percentile-based normalization
+            def normalize_map(data):
+                data = np.asarray(data, dtype=np.float32)
+                percentile_data = np.where(np.isinf(data), np.nan, data)
+                if not np.isfinite(percentile_data).any():
+                    return np.zeros_like(data, dtype=np.float32)
+                vmin = np.nanpercentile(percentile_data, 2)
+                vmax = np.nanpercentile(percentile_data, 98)
+                if vmax - vmin < 1e-6:
+                    return np.full(data.shape, 0.5, dtype=np.float32) if np.nanmedian(percentile_data) > 1e-6 else np.zeros_like(data)
+                safe_data = np.nan_to_num(data, nan=vmin, posinf=vmax, neginf=vmin)
+                return np.clip((safe_data - vmin) / (vmax - vmin), 0.0, 1.0)
+            
+            # Create figure with radio and OSM maps
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            
+            # Radio Map - Path Gain (first channel)
+            radio_img = normalize_map(radio_map[0])
+            im0 = axes[0].imshow(radio_img, cmap='inferno', origin='lower')
+            axes[0].set_title(f"Radio Map (Path Gain)\n{scene_id}")
+            axes[0].axis("off")
+            plt.colorbar(im0, ax=axes[0], shrink=0.8, label="Normalized Path Gain")
+            
+            # OSM Map - RGB visualization (R:Height, G:Footprint, B:Road+Terrain)
+            h, w = osm_map.shape[1], osm_map.shape[2]
+            osm_height = normalize_map(osm_map[0]) if osm_map.shape[0] > 0 else np.zeros((h, w))
+            osm_footprint = normalize_map(osm_map[2]) if osm_map.shape[0] > 2 else np.zeros((h, w))
+            osm_road = osm_map[3] if osm_map.shape[0] > 3 else np.zeros((h, w))
+            osm_terrain = osm_map[4] if osm_map.shape[0] > 4 else np.zeros((h, w))
+            osm_blue = normalize_map(np.maximum(osm_road, osm_terrain * 0.3))
+            osm_rgb = np.stack([osm_height, osm_footprint, osm_blue], axis=-1)
+            
+            axes[1].imshow(osm_rgb, origin='lower')
+            axes[1].set_title(f"OSM Map (R:Height G:Build B:Road/Terrain)\n{scene_id}")
+            axes[1].axis("off")
+            
+            plt.tight_layout()
+            
+            # Save combined figure
+            output_path = viz_dir / f"{safe_scene_id}_maps.png"
+            fig.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            
+            logger.info(f"Saved map visualization: {output_path}")
+            
+            # Also save individual channel visualizations for detailed inspection
+            fig2, axes2 = plt.subplots(2, 3, figsize=(15, 10))
+            
+            # Radio map channels
+            channel_names = ['Path Gain', 'Delay Spread', 'AoA', 'SNR', 'Coverage']
+            for i in range(min(3, radio_map.shape[0])):
+                img = normalize_map(radio_map[i])
+                axes2[0, i].imshow(img, cmap='viridis', origin='lower')
+                axes2[0, i].set_title(f"Radio Ch{i}: {channel_names[i] if i < len(channel_names) else f'Ch{i}'}")
+                axes2[0, i].axis("off")
+            
+            # OSM map channels
+            osm_names = ['Height', 'Material', 'Footprint', 'Road', 'Terrain']
+            for i in range(min(3, osm_map.shape[0])):
+                ax_idx = [0, 2, 4][i] if i < 3 else i  # Show Height, Footprint, Terrain
+                ch_idx = [0, 2, 4][i] if i < 3 else i
+                if ch_idx < osm_map.shape[0]:
+                    img = normalize_map(osm_map[ch_idx])
+                    axes2[1, i].imshow(img, cmap='gray', origin='lower')
+                    axes2[1, i].set_title(f"OSM Ch{ch_idx}: {osm_names[ch_idx]}")
+                axes2[1, i].axis("off")
+            
+            plt.tight_layout()
+            
+            detailed_path = viz_dir / f"{safe_scene_id}_maps_detailed.png"
+            fig2.savefig(detailed_path, dpi=100, bbox_inches='tight')
+            plt.close(fig2)
+            
+            logger.info(f"Saved detailed map visualization: {detailed_path}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save map visualization for {scene_id}: {e}")
 
 
 if __name__ == "__main__":

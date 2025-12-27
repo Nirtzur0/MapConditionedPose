@@ -133,7 +133,7 @@ class SceneGenerator:
             data_dir=str(scene_dir),
             hag_tiff_path=hag_tiff_path,
             osm_server_addr="https://overpass-api.de/api/interpreter",
-            lidar_calibration=False,
+            lidar_calibration=use_lidar,
             generate_building_map=True,
             ground_material_type=materials['ground'],
             rooftop_material_type=materials['rooftop'],

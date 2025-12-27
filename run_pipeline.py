@@ -421,6 +421,12 @@ Examples:
                        help='Enable Weights & Biases logging')
     parser.add_argument('--comet', action='store_true',
                        help='Enable Comet ML logging')
+    parser.add_argument('--comet-api-key', type=str, default='1lc3SG8vCkNzrn5p9ZmZs328K',
+                       help='Comet ML API key (or set COMET_API_KEY env var)')
+    parser.add_argument('--comet-workspace', type=str, default='nirtzur0',
+                       help='Comet ML workspace (or set COMET_WORKSPACE env var)')
+    parser.add_argument('--comet-project', type=str, default='ue-localization',
+                       help='Comet ML project name (or set COMET_PROJECT_NAME env var)')
     parser.add_argument('--run-name', type=str,
                        default=f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                        help='Run name for tracking')
@@ -472,9 +478,36 @@ Examples:
     return args
 
 
+def _setup_comet_environment(args):
+    """Set Comet ML environment variables from command-line arguments.
+    
+    Priority order:
+    1. Existing environment variables (from shell scripts like run_full_experiment.sh)
+    2. Command-line arguments / defaults
+    """
+    if args.comet:
+        # Only set from args if env var is not already set (shell script takes precedence)
+        if not os.environ.get('COMET_API_KEY') and args.comet_api_key:
+            os.environ['COMET_API_KEY'] = args.comet_api_key
+        if not os.environ.get('COMET_WORKSPACE') and args.comet_workspace:
+            os.environ['COMET_WORKSPACE'] = args.comet_workspace
+        if not os.environ.get('COMET_PROJECT_NAME') and args.comet_project:
+            os.environ['COMET_PROJECT_NAME'] = args.comet_project
+        
+        # Check if API key is available
+        if not os.environ.get('COMET_API_KEY'):
+            logger.warning("⚠️  --comet enabled but no API key found.")
+            logger.warning("   Set via --comet-api-key or COMET_API_KEY env var.")
+        else:
+            logger.info(f"✓ Comet ML enabled (workspace: {os.environ.get('COMET_WORKSPACE', 'default')})")
+
+
 def main():
     args = parse_args()
     setup_logging(name=args.run_name)
+    
+    # Setup Comet ML environment before running pipeline
+    _setup_comet_environment(args)
 
     orchestrator = PipelineOrchestrator(args)
     sys.exit(orchestrator.run())

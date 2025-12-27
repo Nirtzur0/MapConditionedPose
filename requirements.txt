@@ -40,6 +40,9 @@ triangle          # Delaunay triangulation
 pyvista>=0.43.0   # 3D visualization and mesh processing
 geopandas>=0.14.0 # Geospatial data processing
 tqdm>=4.65.0      # Progress bars
+laspy[lazrs]      # LiDAR file processing
+pdal              # Point data abstraction library
+plyfile           # PLY file processing
 requests>=2.31.0  # HTTP requests
 scipy>=1.11.0     # Scientific computing (for interpolation)
 importlib_resources>=6.0.0  # Resource file access

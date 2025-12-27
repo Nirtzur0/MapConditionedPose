@@ -9,7 +9,7 @@ import pytest
 
 from src.data_generation.features import RTFeatureExtractor
 import src.data_generation.features as features_module
-import src.physics_loss.radio_map_generator as radio_map_generator
+import src.data_generation.radio_map_generator as radio_map_generator
 
 
 class FakePaths:

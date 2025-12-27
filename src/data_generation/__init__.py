@@ -9,6 +9,7 @@ from .features import (
     MACRRCFeatureExtractor,
 )
 from .multi_layer_generator import MultiLayerDataGenerator
+from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 from .measurement_utils import (
     compute_rsrp,
     compute_rsrq,
@@ -26,6 +27,8 @@ try:
         "PHYFAPIFeatureExtractor",
         "MACRRCFeatureExtractor",
         "MultiLayerDataGenerator",
+        "RadioMapGenerator",
+        "RadioMapConfig",
         "ZarrDatasetWriter",
         # Measurement utils
         "compute_rsrp",

@@ -285,30 +285,32 @@ class OSMRasterizer:
         osm_map[1][non_zero] = mask[non_zero]
 
         # Height (Channel 0)
-        # This is harder with fillPoly as we want interpolated or max Z.
-        # Approximation: Fill with max Z of the object (flat roof assumption for simple buildings)
-        # Or average Z of triangle.
-        # For physics loss, max height is often good enough for occlusion checks.
-        
-        # Let's take average Z of vertices for the object or per triangle?
-        # Per triangle is better.
-        # This loop is slow in python if huge mesh.
-        # Optimization: Calculate max Z per triangle, group triangles by rounded Z?
-        # Faster: Use object max Z.
-        max_z = np.max(z_values)
-        if not is_ground: # Don't elevate ground excessively, though it has Z
-             mask = np.zeros((self.height, self.width), dtype=np.float32)
-             # We reuse points_list
-             # Draw with max_z
-             # Note: fillPoly expects int scalar for color, but we want float. 
-             # We can't use fillPoly for floats directly on float array easily without tricks?
-             # CV2 supports floating point images for some operations.
-             # Actually fillPoly takes color as double.
-             cv2.fillPoly(mask, points_list, float(max_z))
-             osm_map[0] = np.maximum(osm_map[0], mask)
+        # Use per-triangle max Z for better height variation
+        # Each triangle gets the max Z of its 3 vertices
+        if not is_ground:
+            # Calculate max Z per triangle for better detail
+            tri_z_max = z_values[faces].max(axis=1)  # (N,) - max Z per triangle
+            
+            # Group triangles by quantized height for efficiency
+            z_quantized = np.round(tri_z_max).astype(np.int32)
+            unique_heights = np.unique(z_quantized)
+            
+            # Rasterize triangles grouped by similar height
+            for height_val in unique_heights:
+                height_mask = z_quantized == height_val
+                height_tris = tris[height_mask]
+                if len(height_tris) == 0:
+                    continue
+                    
+                height_points = [t.reshape((-1, 1, 2)) for t in height_tris]
+                temp_mask = np.zeros((self.height, self.width), dtype=np.float32)
+                cv2.fillPoly(temp_mask, height_points, float(height_val))
+                
+                # Use max to handle overlapping triangles
+                osm_map[0] = np.maximum(osm_map[0], temp_mask)
         else:
-             # For ground, maybe 0 or actual Z.
-             pass
+            # For ground, use actual Z (usually 0 or close to it)
+            pass
 
     def _rasterize_skimage(self, osm_map, pixels, faces, z_values, mat_id, is_ground, is_road):
         # Fallback implementation

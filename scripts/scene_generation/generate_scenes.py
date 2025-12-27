@@ -117,6 +117,23 @@ def parse_args():
         help="Random seed for reproducibility",
     )
     
+    # Terrain / LiDAR
+    parser.add_argument(
+        "--use-lidar",
+        action="store_true",
+        help="Enable LiDAR point cloud usage for terrain/building heights",
+    )
+    parser.add_argument(
+        "--use-dem",
+        action="store_true",
+        help="Enable DEM terrain usage",
+    )
+    parser.add_argument(
+        "--hag-tiff",
+        type=Path,
+        help="Path to pre-calculated HAG GeoTIFF",
+    )
+    
     # Paths
     parser.add_argument(
         "--geo2sigmap-path",
@@ -260,6 +277,11 @@ def main():
             polygon_points=polygon_wgs84,
             scene_id=scene_id,
             site_config=site_config,
+            terrain_config={
+                'use_lidar': args.use_lidar,
+                'use_dem': args.use_dem,
+                'hag_tiff_path': str(args.hag_tiff) if args.hag_tiff else None,
+            },
         )
         
         logger.info(f"\n✓ Generated scene: {metadata['scene_id']}")

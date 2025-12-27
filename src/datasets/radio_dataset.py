@@ -69,8 +69,8 @@ class RadioLocalizationDataset(Dataset):
         self.norm_stats = self._load_normalization_stats()
         self._dataset_origin = self._infer_dataset_origin()
         
-        if self.augment:
-            logger.info(f"Augmentation enabled for training: {list(self.augmentation.keys())}")
+        if self.augmentor.enabled:
+            logger.info(f"Augmentation enabled for training: {list(self.augmentor.config.keys())}")
         
         logger.info(f"Loaded {len(self)} samples for {split} split from {zarr_path}")
     

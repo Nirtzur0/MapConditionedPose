@@ -25,7 +25,7 @@ try:
 except ImportError:
     SIONNA_AVAILABLE = False
 
-from src.physics_loss import RadioMapGenerator, RadioMapConfig
+from src.data_generation.radio_map_generator import RadioMapGenerator, RadioMapConfig
 
 
 logging.basicConfig(

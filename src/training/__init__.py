@@ -157,18 +157,20 @@ class UELocalizationLightning(pl.LightningModule):
         true_pos = sample['true_pos'].numpy()
         pred_pos = sample['pred_pos'].numpy()
 
-        # Use fixed dB normalization for radio map (Path Gain)
-        radio_img = self._normalize_db_map(radio_map[0], min_db=-160.0, max_db=-40.0)
+        # Use adaptive percentile-based normalization for radio map (handles variable dB ranges)
+        radio_img = self._normalize_map(radio_map[0])
 
         h, w = radio_img.shape
 
-        osm_channels = []
-        for idx in (0, 2, 3):
-            if idx < osm_map.shape[0]:
-                osm_channels.append(self._normalize_map(osm_map[idx]))
-            else:
-                osm_channels.append(np.zeros((h, w), dtype=np.float32))
-        osm_rgb = np.stack(osm_channels, axis=-1)
+        # OSM visualization: R=Height(0), G=Footprint(2), B=Road(3)+Terrain(4) combined
+        # This ensures road data shows when available in other datasets
+        osm_height = self._normalize_map(osm_map[0]) if osm_map.shape[0] > 0 else np.zeros((h, w), dtype=np.float32)
+        osm_footprint = self._normalize_map(osm_map[2]) if osm_map.shape[0] > 2 else np.zeros((h, w), dtype=np.float32)
+        # Combine road and terrain channels for blue (road takes precedence where it exists)
+        osm_road = osm_map[3] if osm_map.shape[0] > 3 else np.zeros((h, w), dtype=np.float32)
+        osm_terrain = osm_map[4] if osm_map.shape[0] > 4 else np.zeros((h, w), dtype=np.float32)
+        osm_blue = self._normalize_map(np.maximum(osm_road, osm_terrain * 0.3))  # Roads bright, terrain subtle
+        osm_rgb = np.stack([osm_height, osm_footprint, osm_blue], axis=-1)
 
         extent = float(self.config['dataset'].get('scene_extent', max(h, w)))
         true_px = (true_pos[0] / extent) * (w - 1)
@@ -181,7 +183,7 @@ class UELocalizationLightning(pl.LightningModule):
         axes[0].set_title("Radio Map (Path Gain)")
         axes[0].axis("off")
         axes[1].imshow(osm_rgb)
-        axes[1].set_title("OSM Map (Height/Footprint/Road)")
+        axes[1].set_title("OSM Map (R:Height G:Build B:Road/Terrain)")
         axes[1].axis("off")
         axes[2].imshow(osm_rgb)
         axes[2].scatter([true_px], [true_py], c="lime", s=40, label="True")
