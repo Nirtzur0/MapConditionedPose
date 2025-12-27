@@ -69,7 +69,7 @@ def objective(trial, args, base_config_path: Path):
 
     # Training params
     config['training']['learning_rate'] = trial.suggest_float('learning_rate', 5e-5, 1e-3, log=True)
-    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [16, 32, 64])
+    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [8, 16, 32])
     config['training']['weight_decay'] = trial.suggest_float('weight_decay', 1e-4, 0.05, log=True)
     config['training']['warmup_steps'] = trial.suggest_categorical('warmup_steps', [500, 1000, 2000])
 
