@@ -273,7 +273,8 @@ def main():
         tile_gen.aggregate_metadata(metadata_list, output_path)
         
     else:
-        logger.info("Single scene mode")
+        pass # Avoid logging "Single scene mode" which confuses users running multi-city jobs
+        logger.info(f"Generating single scene for area: {scene_id} (Full Bounding Box)")
         
         scene_gen = SceneGenerator(
             geo2sigmap_path=str(args.geo2sigmap_path),

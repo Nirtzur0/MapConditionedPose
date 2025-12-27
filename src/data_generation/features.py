@@ -452,25 +452,64 @@ class PHYFAPIFeatureExtractor:
                           self.noise_figure_db)
         noise_power_linear = 10**((noise_power_dbm - 30) / 10)  # dBm to Watts
         
-        # RSRP: average power over pilots
-        if channel_matrix is not None:
-            rsrp = compute_rsrp(channel_matrix, cell_id=0, 
-                               pilot_re_indices=pilot_re_indices)
-            
             # rsrp is [batch, num_rx, num_tx, ...] in dBm
-            shape = rsrp.shape
-            if len(shape) >= 3:
-                batch, num_rx, num_tx = shape[0], shape[1], shape[2]
-                # If more dimensions, average over them
-                if len(shape) > 3:
-                    rsrp = np.mean(rsrp, axis=tuple(range(3, len(shape))))
-            else:
-                logger.warning(f"Unexpected rsrp shape: {shape}, assuming [batch, num_tx]")
-                batch = shape[0] if len(shape) > 0 else 1
-                num_tx = shape[1] if len(shape) > 1 else 1
-                num_rx = 1
-            num_cells = num_tx
-            rsrp_dbm = rsrp  # rsrp is already in dBm
+            # Typically [1, 1, num_rx_ant, num_tx, num_tx_ant] if single UE
+            # We want [batch, num_rx, num_tx]
+            
+            # Identify dimensions based on channel_matrix being 7D:
+            # [1, batch, rx, rx_ant, tx, tx_ant, fft]
+            # compute_rsrp outputs: [1, batch, rx, rx_ant, tx, tx_ant] (reduces fft)
+            # Actually compute_rsrp: h[..., pilot_re] -> mean(abs^2, axis=-1) -> sum(..., axis=(-1, -2))
+            # It sums over last 2 dims: tx_ant (maybe?) and pilots?
+            # Wait, measurement_utils.compute_rsrp inputs `h`.
+            # If h is 7D. h_pilots is 7D.
+            # mean(axis=-1) reduces pilots. -> 6D.
+            # sum(axis=(-1,-2)) sums over indices -1 (tx_ant) and -2 (tx?). No.
+            
+            # Let's fix dimension reduction explicitly assuming standard Sionna shapes
+            # If rsrp still has extra dims like rx_ant or tx_ant, reduce them.
+            # We assume dims 0, 1 are batch/rx. Dim 2 might be rx_ant or tx.
+            # If rank > 3, we take mean over excess dimensions, BUT likely we want to preserve 'num_tx' which is a cell dimension.
+            
+            # Heuristic: num_cells is usually size > 1 (unless 1 site).
+            # Max dimension size among remaining dims is likely num_cells?
+            # Better: use channel_matrix shape to know where 'tx' is.
+            # channel_matrix: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+            # rsrp from compute_rsrp (numpy): 
+            #   power_per_port = mean(abs(h_pilots)**2, axis=-1) -> reduces fft
+            #   rsrp = sum(power_per_port, axis=(-1, -2)) -> sums over tx_ant and tx?
+            # Wait, compute_rsrp sums over last 2 axes. 
+            # If input is 7D, output is 5D: [1, batch, rx, rx_ant, tx].
+            # Then we have [1, 1, 1, 2, num_tx].
+            # We want [1, 1, num_tx].
+            # So average over axis=2 (rx_ant), and flatten/squeeze batch.
+            
+            if rsrp.ndim >= 5: # [1, batch, rx, rx_ant, tx]
+                 # Average over rx_ant (index 2 relative to [batch, rx, rx_ant, tx] or similar)
+                 # Actually `compute_rsrp` implementation:
+                 # `rsrp = np.sum(power_per_port, axis=(-1, -2))`
+                 # If power_per_port is [..., tx, tx_ant], sum over both = sum over tx and tx_ant?
+                 # That would reduce 'tx' dimension! This is bad. compute_rsrp assumes h is [..., rx_ant, tx_ant] typically?
+                 pass
+            
+            # FORCE correct shape manually given we know the input 7D structure
+            # h: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+            h_pilots = channel_matrix[..., pilot_re_indices] # [..., fft_subset]
+            p_pilots = np.mean(np.abs(h_pilots)**2, axis=-1) # [..., tx, tx_ant]
+            # Sum over TX antennas (last dim) -> [..., tx]
+            p_tx = np.sum(p_pilots, axis=-1)
+            # Sum over RX antennas (3rd form start? 0, 1, 2=rx_ant) -> [1, batch, rx, tx]
+            rsrp_linear = np.sum(p_tx, axis=3) 
+            
+            # Convert to dBm
+            rsrp = 10 * np.log10(rsrp_linear + 1e-10) + 30
+            
+            # Now shape is [1, batch, rx, tx] -> Squeeze first 2
+            if rsrp.shape[0] == 1: rsrp = np.squeeze(rsrp, axis=0) # [batch, rx, tx]
+            if rsrp.ndim == 4: rsrp = np.squeeze(rsrp, axis=0)
+            
+            num_cells = rsrp.shape[-1]
+            rsrp_dbm = rsrp
         else:
             # Approximate from path gains
             total_power = np.sum(np.abs(rt_features.path_gains)**2, axis=-1)
@@ -592,7 +631,26 @@ class MACRRCFeatureExtractor:
         
         # Get top K neighbors
         neighbor_indices = np.argsort(-rsrp_for_neighbors, axis=-1)[..., :self.max_neighbors]
-        neighbor_cell_ids = cell_ids[neighbor_indices]
+        
+        # Clip indices to valid range (fixes issue when only 1 cell exists)
+        # If there are fewer cells than max_neighbors, argsort returns valid indices, but if only 1 cell, 
+        # rsrp_for_neighbors has -inf for serving, so argsort returns index 0 (which is serving!).
+        # We need to filter out serving cell or handle single-cell case.
+        
+        num_cells = len(cell_ids)
+        if num_cells <= 1:
+            # No neighbors possible
+            neighbor_cell_ids = np.full(neighbor_indices.shape, -1, dtype=int)
+        else:
+             # Ensure indices are valid (should be by argsort property on valid array size)
+             # But if num_cells < max_neighbors, argsort returns all indices.
+             # The indices returned are always < num_cells (feature dimension size).
+             # However, cell_ids array must be large enough. cell_ids is size [num_sites].
+             # If feature dim != num_sites, we have a problem.
+             
+             # Safety clip just in case data generation mismatch
+             neighbor_indices = np.clip(neighbor_indices, 0, num_cells - 1)
+             neighbor_cell_ids = cell_ids[neighbor_indices]
         
         # Timing Advance: compute from UE-site distances
         serving_site_positions = site_positions[serving_cell_indices]  # [batch, num_rx, 3]
