@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import logging
 import yaml
 import json
+import traceback
 
 from .features import (
     RTFeatureExtractor, PHYFAPIFeatureExtractor, MACRRCFeatureExtractor,
@@ -38,6 +39,9 @@ try:
 except ImportError:
     SIONNA_AVAILABLE = False
     logger.warning("Sionna not available; MultiLayerDataGenerator will operate in mock mode.")
+
+MAX_CELLS = 16  # Fixed size for array padding
+
 
 
 @dataclass
@@ -714,6 +718,7 @@ class MultiLayerDataGenerator:
             self._sionna_fail += 1
             if self._sionna_fail <= 3:
                 logger.error(f"Sionna simulation failed: {e}")
+                logger.error(traceback.format_exc())
                 if self._sionna_fail == 3:
                     logger.warning("Suppressing further Sionna errors (see log for full details).")
             logger.warning("Falling back to mock simulation.")
@@ -791,13 +796,16 @@ class MultiLayerDataGenerator:
 
         for site_idx, pos in enumerate(site_positions):
             
-            
             # Get site-specific metadata
-            if isinstance(site_metadata, list) and site_idx < len(site_metadata):
-                meta = site_metadata[site_idx]
-                azimuth = meta.get('orientation', [0, 0, 0])[0] if 'orientation' in meta else 0.0
-                downtilt = meta.get('orientation', [0, 10, 0])[1] if 'orientation' in meta else 10.0
-            else:
+            azimuth = 0.0
+            downtilt = 10.0
+            
+            if isinstance(site_metadata, list):
+                if site_idx < len(site_metadata):
+                    meta = site_metadata[site_idx]
+                    azimuth = meta.get('orientation', [0, 0, 0])[0] if 'orientation' in meta else 0.0
+                    downtilt = meta.get('orientation', [0, 10, 0])[1] if 'orientation' in meta else 10.0
+            elif isinstance(site_metadata, dict):
                 azimuth = site_metadata.get(f'site_{site_idx}_azimuth', 0.0)
                 downtilt = site_metadata.get(f'site_{site_idx}_downtilt', 10.0)
             
@@ -807,9 +815,12 @@ class MultiLayerDataGenerator:
                 orientation=[azimuth, downtilt, 0.0]
             )
             
-            scene.add(tx)
-            transmitters.append(tx)
-            logger.debug(f"Added transmitter BS_{site_idx} at {pos}")
+            try:
+                scene.add(tx)
+                transmitters.append(tx)
+                logger.debug(f"Added transmitter BS_{site_idx} at {pos}")
+            except Exception as e:
+                logger.warning(f"Failed to add transmitter BS_{site_idx}: {e}")
         
         return transmitters
     
@@ -906,20 +917,52 @@ class MultiLayerDataGenerator:
                 stacked[key] = arrays_squeezed
                 logger.warning(f"Variable length array for {key}, storing as list")
         
-        # PHY/FAPI features
-        for key in all_data['phy_fapi'][0].keys():
-            arrays = [d[key] for d in all_data['phy_fapi']]
+        
+        # Helper to extract data from [batch, rx, ...] structure
+        def safe_extract_layers(a):
+            if a is None or a.size == 0: return a
+            if a.ndim >= 2:
+                # Remove batch and rx dimensions only (slice [0, 0])
+                return a[0, 0]
+            return np.squeeze(a)
             
-            # Use safe extraction from [batch, rx, ...] to avoid collapsing num_cells=1
-            def safe_extract_layers(a):
-                if a is None or a.size == 0: return a
-                if a.ndim >= 2:
-                    # Remove batch and rx dimensions only
-                    return a[0, 0]
-                return np.squeeze(a)
-                
+        # Helper to pad cell dimension (last dim)
+        def pad_cell_dim(a, target_size=MAX_CELLS, fill_value=0):
+            if a is None: return a
+            if a.shape[-1] >= target_size:
+                return a[..., :target_size]
+            
+            padding = [(0, 0)] * (a.ndim - 1) + [(0, target_size - a.shape[-1])]
+            # Use specific fill values based on context if needed, but 0/-inf is common
+            if fill_value == -np.inf:
+                # Pad with low value for power metrics
+                padded = np.full(a.shape[:-1] + (target_size,), -150.0, dtype=a.dtype)
+                padded[..., :a.shape[-1]] = a
+                return padded
+            else:
+                return np.pad(a, padding, mode='constant', constant_values=fill_value)
+
+        # PHY/FAPI features
+        phy_keys = all_data['phy_fapi'][0].keys() if all_data['phy_fapi'] else []
+        for key in phy_keys:
+            arrays = [d[key] for d in all_data['phy_fapi']]
             arrays_cleaned = [safe_extract_layers(a) for a in arrays]
             
+            # Apply padding for cell-dependent fields
+            if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
+                      'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
+                fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                arrays_cleaned = [pad_cell_dim(a, fill_value=fill_val) for a in arrays_cleaned]
+            elif key == 'phy_fapi/channel_matrix':
+                # Pad axis 1 (TX dimension)
+                def pad_channel(a, target=MAX_CELLS):
+                    if a is None: return a
+                    if a.shape[1] >= target: return a[:, :target]
+                    pad_width = [(0,0)] * a.ndim
+                    pad_width[1] = (0, target - a.shape[1])
+                    return np.pad(a, pad_width, mode='constant')
+                arrays_cleaned = [pad_channel(a) for a in arrays_cleaned]
+
             if arrays_cleaned[0] is not None:
                 try:
                     stacked[key] = np.stack(arrays_cleaned, axis=0)
@@ -927,9 +970,14 @@ class MultiLayerDataGenerator:
                     stacked[key] = arrays_cleaned
         
         # MAC/RRC features
-        for key in all_data['mac_rrc'][0].keys():
+        mac_keys = all_data['mac_rrc'][0].keys() if all_data['mac_rrc'] else []
+        for key in mac_keys:
             arrays = [d[key] for d in all_data['mac_rrc']]
             arrays_cleaned = [safe_extract_layers(a) for a in arrays]
+            
+            # Pad neighbor cells if needed (though usually fixed by max_neighbors)
+            # If throughput is weirdly shaped, we might need to fix it, but let's let Zarr mismatch handle strange non-cell dims for now
+            # unless we know it varies by cell count. 
             
             if arrays_cleaned[0] is not None:
                 try:
@@ -1082,7 +1130,9 @@ class MultiLayerDataGenerator:
              radius = (max_dim / 2.0) * 1.05 
              
              map_size = (256, 256)
-             map_extent = (-radius, -radius, radius, radius)
+             # Use actual UTM extent to match Radio Map and Scene content
+             map_extent = (x_min, y_min, x_max, y_max)
+             logger.info(f"OSM Map Gen: Extent={map_extent}")
              
              rasterizer = OSMRasterizer(map_size=map_size, map_extent=map_extent)
              osm_map = rasterizer.rasterize(scene)
