@@ -94,12 +94,14 @@ class CoarseHead(nn.Module):
         self,
         indices: torch.Tensor,
         cell_size: float,
+        origin: Tuple[float, float] = (0.0, 0.0),
     ) -> torch.Tensor:
         """Convert grid indices to (x, y) coordinates.
         
         Args:
             indices: [batch, k] cell indices
             cell_size: Size of each cell in meters
+            origin: (x_min, y_min) coordinate of the grid origin
         
         Returns:
             coords: [batch, k, 2] (x, y) cell centers in meters
@@ -112,7 +114,12 @@ class CoarseHead(nn.Module):
         y = (rows.float() + 0.5) * cell_size
         x = (cols.float() + 0.5) * cell_size
         
+        # Stack coordinates
         coords = torch.stack([x, y], dim=-1)  # [B, k, 2]
+        
+        # Apply origin offset
+        origin_tensor = torch.tensor(origin, device=indices.device, dtype=coords.dtype)
+        coords = coords + origin_tensor
         
         return coords
 
@@ -130,6 +137,8 @@ class FineHead(nn.Module):
         d_input: Input dimension from fusion module
         d_hidden: Hidden dimension for refinement network
         top_k: Number of candidate cells to refine
+        num_cells: Total number of cells in the grid (for embedding)
+        sigma_min: Minimum standard deviation (meters)
         dropout: Dropout rate
     """
     
@@ -138,15 +147,19 @@ class FineHead(nn.Module):
         d_input: int = 768,
         d_hidden: int = 256,
         top_k: int = 5,
+        num_cells: int = 1024,  # Default 32x32
+        sigma_min: float = 0.01,
         dropout: float = 0.1,
     ):
         super().__init__()
         
         self.top_k = top_k
+        self.sigma_min = sigma_min
         
         # Per-candidate refinement network
         # Input: fused representation + cell embedding
-        self.cell_embedding = nn.Parameter(torch.randn(1, d_hidden))
+        # Replaced single parameter with embedding table indexed by cell id
+        self.cell_embedding = nn.Embedding(num_cells, d_hidden)
         
         self.refiner = nn.Sequential(
             nn.Linear(d_input + d_hidden, d_hidden),
@@ -160,8 +173,9 @@ class FineHead(nn.Module):
         # Predict mean offset (Δx, Δy)
         self.mean_head = nn.Linear(d_hidden, 2)
         
-        # Predict log variance (for numerical stability)
-        self.logvar_head = nn.Linear(d_hidden, 2)
+        # Predict scale (std dev) 
+        # We predict raw values that will be passed through softplus
+        self.scale_head = nn.Linear(d_hidden, 2)
     
     def forward(
         self,
@@ -182,8 +196,8 @@ class FineHead(nn.Module):
         # Expand fused representation for each candidate
         fused_expanded = fused.unsqueeze(1).expand(-1, k, -1)  # [B, k, d_input]
         
-        # Add cell-specific embedding
-        cell_emb = self.cell_embedding.expand(batch_size, k, -1)  # [B, k, d_hidden]
+        # Get cell-specific embedding using indices
+        cell_emb = self.cell_embedding(top_k_indices)  # [B, k, d_hidden]
         
         # Concatenate
         combined = torch.cat([fused_expanded, cell_emb], dim=-1)  # [B, k, d_input+d_hidden]
@@ -194,51 +208,9 @@ class FineHead(nn.Module):
         # Predict offset (mean)
         offsets = self.mean_head(refined)  # [B, k, 2]
         
-        # Predict uncertainty (log variance -> std dev)
-        log_var = self.logvar_head(refined)  # [B, k, 2]
-        uncertainties = torch.exp(0.5 * log_var)  # [B, k, 2]
+        # Predict uncertainty (scale)
+        # Use softplus + epsilon to ensure positive and stable sigma
+        scale_raw = self.scale_head(refined)
+        uncertainties = F.softplus(scale_raw) + self.sigma_min  # [B, k, 2]
         
         return offsets, uncertainties
-    
-    def nll_loss(
-        self,
-        predicted_offsets: torch.Tensor,
-        predicted_uncert: torch.Tensor,
-        true_offsets: torch.Tensor,
-        top_k_probs: torch.Tensor,
-    ) -> torch.Tensor:
-        """Negative log-likelihood loss for Gaussian predictions.
-        
-        Args:
-            predicted_offsets: [batch, k, 2] predicted (Δx, Δy)
-            predicted_uncert: [batch, k, 2] predicted (σx, σy)
-            true_offsets: [batch, 2] ground truth offset from best cell
-            top_k_probs: [batch, k] probabilities of each candidate
-        
-        Returns:
-            loss: Scalar NLL loss
-        """
-        batch_size, k, _ = predicted_offsets.shape
-        
-        # Expand true offsets for each candidate
-        true_offsets_expanded = true_offsets.unsqueeze(1).expand(-1, k, -1)  # [B, k, 2]
-        
-        # Compute NLL for Gaussian: -log p(y|μ,σ) = 0.5*(log(2πσ²) + (y-μ)²/σ²)
-        residuals = true_offsets_expanded - predicted_offsets  # [B, k, 2]
-        
-        # Prevent division by zero
-        var = predicted_uncert ** 2 + 1e-6  # [B, k, 2]
-        
-        # NLL per dimension
-        nll = 0.5 * (torch.log(2 * torch.pi * var) + residuals ** 2 / var)  # [B, k, 2]
-        
-        # Sum over dimensions (x, y)
-        nll = nll.sum(dim=-1)  # [B, k]
-        
-        # Weight by candidate probabilities (focus on likely cells)
-        weighted_nll = nll * top_k_probs  # [B, k]
-        
-        # Average over candidates and batch
-        loss = weighted_nll.mean()
-        
-        return loss

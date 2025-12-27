@@ -374,12 +374,14 @@ class MultiLayerDataGenerator:
         site_positions = np.array([s['position'] for s in valid_sites], dtype=np.float32)
         cell_ids = np.array([s['cell_id'] for s in valid_sites], dtype=int)
         
-        # Calculate coordinate offsets (center of bbox)
+        # Calculate coordinate offsets
         bbox = scene_metadata.get('bbox', {})
         if 'x_min' in bbox and 'x_max' in bbox:
-            # Simulation Frame: Centered (for optimizing ray tracing precision)
-            sim_offset_x = (bbox['x_min'] + bbox['x_max']) / 2.0
-            sim_offset_y = (bbox['y_min'] + bbox['y_max']) / 2.0
+            # Simulation Frame: 
+            # We use UTM (Global) because M1 meshes contain UTM coordinates.
+            # Shifting here would move UEs/Sites away from the mesh!
+            sim_offset_x = 0.0 
+            sim_offset_y = 0.0
             
             # Storage Frame: Bottom-Left Logic (Standard Image Coords [0, W])
             store_offset_x = bbox['x_min']
@@ -393,18 +395,18 @@ class MultiLayerDataGenerator:
 
         if len(sites) == 0:
             logger.warning(f"No sites in metadata for {scene_id}, using mock")
-            # Place mock sites relative to Sim Center (so they end up at 0,0 and 500,0 after subtraction)
-            # Global Pos = Sim Pos + Offset
+            # If no sites, we place mock sites in the middle of the BBox (UTM)
+            cx = (bbox.get('x_min', 0) + bbox.get('x_max', 0)) / 2
+            cy = (bbox.get('y_min', 0) + bbox.get('y_max', 0)) / 2
             site_positions = np.array([
-                [sim_offset_x, sim_offset_y, 30.0], 
-                [sim_offset_x + 500.0, sim_offset_y, 30.0]
+                [cx, cy, 30.0], 
+                [cx + 500.0, cy, 30.0]
             ], dtype=np.float32)
             cell_ids = np.array([1, 2])
 
-        # Normalize site positions for Simulation
-        # (Assuming scene geometry is centered relative to global, which implies we must simulate in Centered Frame)
+        # Prepare site positions for Simulation
         site_positions_sim = site_positions.copy()
-        if len(site_positions_sim) > 0:
+        if len(site_positions_sim) > 0 and (sim_offset_x != 0 or sim_offset_y != 0):
             site_positions_sim[:, 0] -= sim_offset_x
             site_positions_sim[:, 1] -= sim_offset_y
         
@@ -968,57 +970,36 @@ class MultiLayerDataGenerator:
         logger.info("Radio Map Gen: Starting generation...")
 
         try:
-             # Configure Radio Map Generator
-             # Configure Radio Map Generator
-             # Calculate dynamic extent to cover the whole scene
+             # Configure Radio Map Generator using UTM coordinates
              bbox = scene_metadata.get('bbox', {})
              x_min = bbox.get('x_min', -1000)
              x_max = bbox.get('x_max', 1000)
              y_min = bbox.get('y_min', -1000)
              y_max = bbox.get('y_max', 1000)
              
-             # Calculate dimensions based on bbox centered at (0,0) after normalization
-             # Scene normalization offsets by center, so new extent is [-W/2, W/2]
-             width_m = x_max - x_min
-             height_m = y_max - y_min
-             
-             # Use square extent covering max dimension
-             max_dim = max(width_m, height_m)
-             radius = (max_dim / 2.0) * 1.05 # Add 5% margin
-             
-             map_size_px = (256, 256)
-             resolution = (radius * 2) / 256.0
-             
-             logger.info(f"Radio Map Gen: Radius={radius:.1f}m, Res={resolution:.2f}m/px")
+             map_extent = (x_min, y_min, x_max, y_max)
+             logger.info(f"Radio Map Gen: Extent={map_extent}")
              
              map_config = RadioMapConfig(
-                 resolution=resolution,
-                 map_size=map_size_px,
-                 map_extent=(-radius, -radius, radius, radius),
+                 resolution=1.0, # Will be adjusted by Generator if map_size fixed
+                 map_size=(256, 256),
+                 map_extent=map_extent,
                  output_dir=Path("/tmp"),
              )
              
-             # Extract cell sites
+             # Extract cell sites (use UTM positions)
              sites = scene_metadata.get('sites', [])
              valid_sites = [s for s in sites if s.get('cell_id') is not None]
              site_positions = [s['position'] for s in valid_sites]
              if not site_positions:
-                 # Minimal fallback
-                 site_positions = [[0,0,30]]
-             
-             # Re-construct simple cell site dicts for generator
-             # Normalize positions
-             bbox = scene_metadata.get('bbox', {})
-             if 'x_min' in bbox and 'x_max' in bbox:
-                 ox = (bbox['x_min'] + bbox['x_max']) / 2.0
-                 oy = (bbox['y_min'] + bbox['y_max']) / 2.0
-             else:
-                 ox, oy = 0.0, 0.0
+                 # UTM center fallback
+                 cx = (x_min + x_max) / 2
+                 cy = (y_min + y_max) / 2
+                 site_positions = [[cx, cy, 30.0]]
              
              cell_sites_for_gen = []
              for p in site_positions:
-                 p_norm = [p[0] - ox, p[1] - oy, p[2]]
-                 cell_sites_for_gen.append({'position': p_norm})
+                 cell_sites_for_gen.append({'position': p})
 
              generator = RadioMapGenerator(map_config)
              

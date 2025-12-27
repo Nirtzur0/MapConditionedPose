@@ -49,10 +49,12 @@ class UELocalizationModel(nn.Module):
             x_min, y_min, x_max, y_max = scene_extent
             self.scene_extent = x_max - x_min  # Assume square scenes
             self.map_extent = tuple(scene_extent)
+            self.origin = (x_min, y_min)
         else:
             # Scalar size (legacy format)
             self.scene_extent = scene_extent
             self.map_extent = (0.0, 0.0, scene_extent, scene_extent)
+            self.origin = (0.0, 0.0)
         
         self.cell_size = self.scene_extent / self.grid_size
         self.top_k = fine_cfg['top_k']
@@ -101,6 +103,7 @@ class UELocalizationModel(nn.Module):
             d_input=fusion_cfg['d_fusion'],
             d_hidden=fine_cfg['d_hidden'],
             top_k=fine_cfg['top_k'],
+            num_cells=self.grid_size ** 2,
             dropout=fine_cfg['dropout'],
         )
     
@@ -161,6 +164,7 @@ class UELocalizationModel(nn.Module):
         top_cell_coords = self.coarse_head.indices_to_coords(
             top_k_indices[:, 0:1],  # Take best cell
             self.cell_size,
+            origin=self.origin,
         )  # [B, 1, 2]
         
         predicted_position = top_cell_coords.squeeze(1) + fine_offsets[:, 0, :]  # [B, 2]
@@ -224,7 +228,7 @@ class UELocalizationModel(nn.Module):
             Dictionary with:
                 - loss: Total loss
                 - coarse_loss: Cross-entropy loss
-                - fine_loss: NLL loss for offset
+                - fine_loss: Mixture NLL loss
         """
         # Coarse loss: cross-entropy on grid cells
         coarse_loss = nn.functional.cross_entropy(
@@ -232,21 +236,44 @@ class UELocalizationModel(nn.Module):
             targets['cell_grid'],
         )
         
-        # Fine loss: NLL for offset prediction
-        # Compute true offset from best predicted cell
-        top_cell_coords = self.coarse_head.indices_to_coords(
-            outputs['top_k_indices'][:, 0:1],
+        # Fine loss: Mixture NLL
+        # 1. Compute centers for all top-K candidates
+        top_k_centers = self.coarse_head.indices_to_coords(
+            outputs['top_k_indices'],
             self.cell_size,
-        ).squeeze(1)  # [B, 2]
+            origin=self.origin,
+        )  # [B, K, 2]
         
-        true_offset = targets['position'] - top_cell_coords  # [B, 2]
+        # 2. Compute targets relative to each candidate center
+        # target_pos: [B, 1, 2], centers: [B, K, 2] -> offsets: [B, K, 2]
+        target_offsets = targets['position'].unsqueeze(1) - top_k_centers
         
-        fine_loss = self.fine_head.nll_loss(
-            outputs['fine_offsets'],
-            outputs['fine_uncertainties'],
-            true_offset,
-            outputs['top_k_probs'],
-        )
+        # 3. Compute log probability for each component k
+        # log_pi: weights from coarse head
+        # Renormalize top-k probabilities to sum to 1 across the K candidates
+        eps = 1e-6
+        top_k_probs = outputs['top_k_probs']
+        pi = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + eps)
+        log_pi = torch.log(pi + eps)
+        
+        # log_N: Gaussian density
+        # Model predicts offset (mu) and scale (sigma) from the cell center
+        mu = outputs['fine_offsets']           # [B, K, 2]
+        sigma = outputs['fine_uncertainties']  # [B, K, 2]
+        
+        # Residual between true offset and predicted offset
+        residuals = target_offsets - mu        # [B, K, 2]
+        var = sigma ** 2
+        
+        # Log likelihood per dimension: -0.5 * log(2πσ²) - 0.5 * (x-μ)²/σ²
+        log_prob_dim = -0.5 * torch.log(2 * torch.pi * var) - 0.5 * (residuals ** 2) / var
+        log_prob_xy = log_prob_dim.sum(dim=-1)  # [B, K] sum over x,y
+        
+        # 4. Total mixture probability: sum_k (pi_k * N_k)
+        # In log domain: logsumexp(log_pi + log_N)
+        log_mixture = torch.logsumexp(log_pi + log_prob_xy, dim=-1)  # [B]
+        
+        fine_loss = -log_mixture.mean()
         
         # Total loss
         total_loss = (
@@ -293,6 +320,7 @@ class UELocalizationModel(nn.Module):
         top_cell_coords = self.coarse_head.indices_to_coords(
             top_k_indices[:, 0:1],
             self.cell_size,
+            origin=self.origin,
         ).squeeze(1)
         predicted_position = top_cell_coords + fine_offsets[:, 0, :]
         

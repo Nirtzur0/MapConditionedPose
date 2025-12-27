@@ -15,19 +15,20 @@ from typing import Dict, Optional
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding for timestamps."""
+    """Sinusoidal positional encoding for timestamps.
     
-    def __init__(self, d_model: int, max_len: int = 5000):
+    Uses continuous encoding based on relative time from start of sequence.
+    """
+    
+    def __init__(self, d_model: int, max_len: int = 5000, time_scale: float = 1.0):
         super().__init__()
+        self.d_model = d_model
+        self.time_scale = time_scale
         
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        
-        pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        
-        self.register_buffer('pe', pe)
+        # Precompute division term for sinusoidal encoding
+        # exp(arange(0, d, 2) * (-log(10000)/d))
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        self.register_buffer('div_term', div_term)
     
     def forward(self, timestamps: torch.Tensor) -> torch.Tensor:
         """
@@ -36,13 +37,26 @@ class PositionalEncoding(nn.Module):
         Returns:
             Positional encodings [batch, seq_len, d_model]
         """
-        # Normalize timestamps to [0, 1] range
-        timestamps_norm = timestamps / (timestamps.max() + 1e-6)
+        # Compute relative time from start of sequence
+        # timestamps: [B, L]
+        if timestamps.size(1) > 0:
+            t_rel = timestamps - timestamps[:, :1]
+        else:
+            t_rel = timestamps
+            
+        # Scale time
+        t = t_rel / self.time_scale
         
-        # Scale to positional encoding range
-        indices = (timestamps_norm * (self.pe.shape[0] - 1)).long()
+        # Compute phase: [B, L, 1] * [d_model/2] -> [B, L, d_model/2]
+        phase = t.unsqueeze(-1) * self.div_term
         
-        return self.pe[indices]
+        # Compute sin/cos
+        batch_size, seq_len = timestamps.shape
+        pe = torch.zeros(batch_size, seq_len, self.d_model, device=timestamps.device)
+        pe[..., 0::2] = torch.sin(phase)
+        pe[..., 1::2] = torch.cos(phase)
+        
+        return pe
 
 
 class RadioEncoder(nn.Module):
@@ -79,6 +93,7 @@ class RadioEncoder(nn.Module):
         rt_features_dim: int = 8,
         phy_features_dim: int = 10,
         mac_features_dim: int = 6,
+        time_scale: float = 1.0,
     ):
         super().__init__()
         
@@ -89,7 +104,7 @@ class RadioEncoder(nn.Module):
         # Embeddings
         self.cell_embedding = nn.Embedding(num_cells, d_model // 4)
         self.beam_embedding = nn.Embedding(num_beams, d_model // 4)
-        self.pos_encoding = PositionalEncoding(d_model // 4, max_len=max_seq_len * 10)
+        self.pos_encoding = PositionalEncoding(d_model // 4, max_len=max_seq_len * 10, time_scale=time_scale)
         
         # Feature projections
         self.rt_projection = nn.Linear(rt_features_dim, d_model // 4)

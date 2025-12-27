@@ -379,20 +379,45 @@ class ZarrDatasetWriter:
             
             # Write to Zarr
             if key in self.store:
-                # Resize if needed
-                current_shape = self.store[key].shape
+                target_array = self.store[key]
+                
+                # Resize if needed (for total sample count)
+                current_shape = target_array.shape
                 required_shape = list(current_shape)
                 required_shape[0] = end_idx
                 
                 if current_shape[0] < end_idx:
-                    self.store[key].resize(required_shape)
+                    target_array.resize(required_shape)
                 
+                # Handle potential shape mismatches in other dimensions (e.g., number of cells)
+                if value.shape[1:] != target_array.shape[1:]:
+                    logger.warning(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape}. PADDING/TRUNCATING.")
+                    
+                    # Create a buffer of the correct shape and dtype
+                    # Use the same dtype as the Zarr array
+                    buffer = np.zeros((value.shape[0],) + target_array.shape[1:], dtype=target_array.dtype)
+                    
+                    # Fill buffer with default background values for radio features
+                    if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
+                        buffer.fill(-150.0) # Weak signal floor
+                    elif any(x in key for x in ['cqi', 'ri', 'throughput', 'bler']):
+                        buffer.fill(0)
+                    elif 'neighbor_cell_ids' in key:
+                        buffer.fill(-1)
+                        
+                    # Calculate copy slices (min of each dimension)
+                    slices = [slice(0, min(value.shape[i], buffer.shape[i])) for i in range(value.ndim)]
+                    buffer[tuple(slices)] = value[tuple(slices)]
+                    value_to_write = buffer
+                else:
+                    value_to_write = value
+
                 # Write data
                 try:
-                    self.store[key][start_idx:end_idx] = value
+                    target_array[start_idx:end_idx] = value_to_write
                 except Exception as e:
                     logger.error(f"Error writing {key}: {e}")
-                    logger.debug(f"  Shape: {value.shape}, Target: [{start_idx}:{end_idx}]")
+                    logger.debug(f"  Value Shape: {value_to_write.shape}, Target Shape: {target_array.shape}")
 
     def write_scene_maps(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
         """

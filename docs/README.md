@@ -10,6 +10,7 @@ Technical documentation for the UE Localization project.
 |----------|-------------|
 | [GETTING_STARTED.md](GETTING_STARTED.md) | Quick installation and first run |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Technical deep-dive with math |
+| [paper/paper.tex](paper/paper.tex) | **Research Paper (Physics-Informed Transformer)** |
 | [PIPELINE.md](PIPELINE.md) | CLI reference for `run_pipeline.py` |
 
 ---

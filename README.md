@@ -79,6 +79,7 @@ M5: Web UI for inspection and demos
 ## Documentation 📚
 
 - [QUICK_START.md](QUICK_START.md) - Short start guide
+- [docs/paper/paper.tex](docs/paper/paper.tex) - **Research Paper: Physics-Informed Transformer for UE Localization**
 - [docs/README.md](docs/README.md) - Documentation index
 - [docs/PIPELINE.md](docs/PIPELINE.md) - Pipeline usage and options
 - [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) - Design + milestones
