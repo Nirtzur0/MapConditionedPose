@@ -35,8 +35,6 @@ class RadioMapConfig:
     # Features to compute
     features: List[str] = field(default_factory=lambda: [
         'path_gain',   # dB
-        'toa',         # ns
-        'aoa',         # degrees
         'snr',         # dB
         'sinr',        # dB
         'throughput',  # Mbps

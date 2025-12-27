@@ -67,8 +67,8 @@ scene_generation:
   
   # Base Station (Site) Configuration
   sites:
-    placement_strategy: "grid"  # "grid", "random", "real_world"
-    num_sites_per_tile: 4
+    placement_strategy: "random"  # "grid", "random", "real_world"
+    num_sites_per_tile: 3
     grid_spacing_m: 250
     height_m: 25.0
     height_variation_m: 5.0  # Random variation

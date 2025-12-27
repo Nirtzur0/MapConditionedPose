@@ -235,8 +235,11 @@ class UELocalizationLightning(pl.LightningModule):
         # RT features: path_gain (0), toa (1), aoa_azimuth (2)
         rt_features = measurements['rt_features']  # (batch, seq_len, 8)
         path_gain = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        toa = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        aoa = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        
+        # Note: toa and aoa are currently not provided by RadioMapSolver
+        # We set them to zero to avoid duplicating path_gain
+        toa = torch.zeros_like(path_gain)
+        aoa = torch.zeros_like(path_gain)
         
         # PHY features: snr (2), sinr (3)
         phy_features = measurements['phy_features']  # (batch, seq_len, 10)

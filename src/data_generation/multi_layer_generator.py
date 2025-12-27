@@ -1075,11 +1075,13 @@ class MultiLayerDataGenerator:
             fig2, axes2 = plt.subplots(2, 3, figsize=(15, 10))
             
             # Radio map channels
-            channel_names = ['Path Gain', 'Delay Spread', 'AoA', 'SNR', 'Coverage']
+            channel_names = ['Path Gain', 'SNR', 'SINR', 'Throughput', 'BLER']
             for i in range(min(3, radio_map.shape[0])):
                 img = normalize_map(radio_map[i])
+                # Skip Ch2 (AoA) in individual plots if it's not provided
                 axes2[0, i].imshow(img, cmap='viridis', origin='lower')
-                axes2[0, i].set_title(f"Radio Ch{i}: {channel_names[i] if i < len(channel_names) else f'Ch{i}'}")
+                title = channel_names[i] if i < len(channel_names) else f'Ch{i}'
+                axes2[0, i].set_title(f"Radio Ch{i}: {title}")
                 axes2[0, i].axis("off")
             
             # OSM map channels
