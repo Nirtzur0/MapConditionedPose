@@ -207,18 +207,29 @@ class RadioLocalizationDataset(Dataset):
 
         position = torch.tensor([local_x, local_y], dtype=torch.float32)
         
+        # Determine sample-specific extent for grid calculation
+        if bbox_valid:
+            w = scene_bbox[2] - scene_bbox[0]
+            h = scene_bbox[3] - scene_bbox[1]
+            sample_extent = float(max(w, h))
+        else:
+            sample_extent = self.scene_extent
         
-        # Convert to grid cell for coarse supervision (grid_size: e.g., 32x32 for scene)
+        # Convert to grid cell for coarse supervision (grid_size: e.g., 32x32)
         grid_size = 32
-        cell_size = self.scene_extent / grid_size
-        # Clip positions to valid range [0, scene_extent]
-        clamped_x = max(0, min(position[0].item(), self.scene_extent - 1))
-        clamped_y = max(0, min(position[1].item(), self.scene_extent - 1))
+        cell_size = sample_extent / grid_size
+        
+        # Clip positions to valid range [0, sample_extent]
+        clamped_x = max(0, min(position[0].item(), sample_extent - 1e-3))
+        clamped_y = max(0, min(position[1].item(), sample_extent - 1e-3))
+        
         grid_x = int(clamped_x / cell_size)
         grid_y = int(clamped_y / cell_size)
+        
         # Ensure grid indices are within bounds
         grid_x = max(0, min(grid_x, grid_size - 1))
         grid_y = max(0, min(grid_y, grid_size - 1))
+        
         cell_grid = torch.tensor(
             grid_y * grid_size + grid_x,
             dtype=torch.long
@@ -252,12 +263,16 @@ class RadioLocalizationDataset(Dataset):
         # Apply augmentations (training only)
         measurements, radio_map, osm_map = self.augmentor(measurements, radio_map, osm_map)
         
+        # Prepare normalized position [0, 1]
+        norm_position = position / sample_extent
+        
         return {
             'measurements': measurements,
             'radio_map': radio_map,
             'osm_map': osm_map,
-            'position': position[:2],  # Only x, y (drop z if present)
+            'position': norm_position[:2],  # Normalized [0, 1]
             'cell_grid': cell_grid,
+            'sample_extent': torch.tensor(sample_extent, dtype=torch.float32),
         }
     
     
@@ -548,6 +563,7 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         padded_batch['osm_map'].append(sample['osm_map'])
         padded_batch['position'].append(sample['position'])
         padded_batch['cell_grid'].append(sample['cell_grid'])
+        padded_batch.setdefault('sample_extent', []).append(sample.get('sample_extent', torch.tensor(512.0)))
     
     # Stack all tensors
     return {
@@ -558,4 +574,5 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'osm_map': torch.stack(padded_batch['osm_map']),
         'position': torch.stack(padded_batch['position']),
         'cell_grid': torch.stack(padded_batch['cell_grid']),
+        'sample_extent': torch.stack(padded_batch['sample_extent']),
     }

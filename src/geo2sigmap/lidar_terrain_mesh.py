@@ -1,159 +1,162 @@
-import laspy
+"""
+LiDAR Terrain Mesh Generator
+
+This module handles the conversion of LiDAR point cloud data (.laz) into 3D terrain meshes (.ply).
+It filters ground points, transforms coordinates, and generates a triangulated mesh.
+"""
+
+import os
 import logging
+import laspy
 import numpy as np
 import pyvista as pv
-
-import pyvista as pv
-
 from pyproj import Transformer
-
-from plyfile import PlyData, PlyElement
 from scipy.spatial import cKDTree
+from plyfile import PlyData, PlyElement
 
 logger = logging.getLogger(__name__)
 
-def generate_terrain_mesh(lidar_laz_file_path, ply_save_path, src_crs="EPSG:3857", dest_crs="EPSG:32617", plot_figures=False, center_x = 0, center_y = 0):
-    logger.info("generate_terrain_mesh")
-    pv.global_theme.trame.server_proxy_enabled = True
-    logger.info(pv.global_theme.trame.server_proxy_enabled)
-    
-    
-    
-    # Load the LAZ file
-    las = laspy.read(lidar_laz_file_path)
-    # Check for VLRs
-    # for vlr in las.vlrs:
-    #     logger.debug(vlr.description)
-    #     logger.debug(vlr.record_id)
-    #     logger.debug(vlr)
-    # # Access the WKT (Well-Known Text) CRS if available
-    # if las.header.evlrs:
-    #     for evlr in las.header.evlrs:
-    #         if evlr.description == "WKT":
-    #             logger.debug("CRS WKT:", evlr.string)
+def generate_terrain_mesh(
+    lidar_laz_file_path: str,
+    ply_save_path: str,
+    src_crs: str = "EPSG:3857",
+    dest_crs: str = "EPSG:32617",
+    plot_figures: bool = False,
+    center_x: float = 0.0,
+    center_y: float = 0.0
+) -> pv.PolyData:
+    """
+    Generate a terrain mesh from a LiDAR .laz file.
 
+    Args:
+        lidar_laz_file_path (str): Path to input .laz file.
+        ply_save_path (str): Path to output .ply file.
+        src_crs (str): Source Coordinate Reference System (default: EPSG:3857).
+        dest_crs (str): Destination Coordinate Reference System.
+        plot_figures (bool): Whether to visualize the mesh after generation.
+        center_x (float): X-coordinate center offset.
+        center_y (float): Y-coordinate center offset.
+
+    Returns:
+        pv.PolyData: The generated terrain mesh.
+    """
+    logger.info(f"Generating terrain mesh from {lidar_laz_file_path}")
     
-    # Extract the classification field and filter out ground points (classification == 2)
+    # Configure PyVista backend for headless servers
+    pv.global_theme.trame.server_proxy_enabled = True
+
+    try:
+        # Load the LAZ file
+        las = laspy.read(lidar_laz_file_path)
+    except Exception as e:
+        logger.error(f"Failed to read LAZ file {lidar_laz_file_path}: {e}")
+        raise
+
+    # Extract the classification field and filter for ground points (classification == 2)
     ground_mask = las.classification == 2
-    
-    # Extract x, y, and z coordinates for ground points
+    if not np.any(ground_mask):
+        logger.warning("No ground points (class 2) found in LiDAR data. Using all points.")
+        ground_mask = np.ones(len(las.x), dtype=bool)
+
+    # Extract coordinates
     x_ground = las.x[ground_mask]
     y_ground = las.y[ground_mask]
     z_ground = las.z[ground_mask]
-    
-    # Create a PyVista point cloud
-    logger.debug(x_ground)
-    logger.debug(y_ground)
+
+    # Transform coordinates to destination CRS
     transformer = Transformer.from_crs(src_crs, dest_crs, always_xy=True)
     x_ground, y_ground = transformer.transform(x_ground, y_ground)
-    logger.debug(x_ground)
-    logger.debug(y_ground)
-    
-    
-    # Combine X and Y into a 2D array for KD-Tree search
+
+    # Calculate Z-offset relative to center point using KD-Tree
     points_2d = np.vstack((x_ground, y_ground)).T
     tree = cKDTree(points_2d)
     
-    # Query the nearest point to the target coordinates
-    distance, index = tree.query([center_x, center_y])
+    # Query the nearest point to the target center coordinates
+    # Note: center_x/y should already be in dest_crs or this query might be mismatched if mixed
+    _, index = tree.query([center_x, center_y])
     
-    # Get the Z-value of the nearest pointo
     nearest_z = z_ground[index]
-    
-    
-    # Normalize the Z-values by setting the minimum Z to 0
-    z_ground = z_ground - nearest_z
-    
-    
+    logger.info(f"Nearest Z value at center ({center_x}, {center_y}): {nearest_z}")
 
+    # Normalize Z-values
+    z_ground = z_ground - nearest_z
+
+    # Center XY coordinates
     x_ground = x_ground - center_x
     y_ground = y_ground - center_y
-    logger.info("centerx, y", center_x, center_y)
-    
+    logger.info(f"Centered coordinates. Bounds X: [{x_ground.min():.2f}, {x_ground.max():.2f}], Y: [{y_ground.min():.2f}, {y_ground.max():.2f}]")
 
-
-    #  # Normalize the Z-values by setting the minimum Z to 0
-    # z_ground = z_ground - np.min(z_ground)-10
-
+    # Create PyVista Point Cloud
     points = np.vstack((x_ground, y_ground, z_ground)).T
     point_cloud = pv.PolyData(points)
-    # point_cloud["Height"] = points[:, 2]
-    # plotter = pv.Plotter()
-    # plotter.add_points(point_cloud, scalars="Height", cmap="viridis", point_size=5)
-    
-    # # Show the plot
-    # plotter.show()
-    
-    
+
+    # Create Surface Mesh via Delaunay 2D Triangulation
     surface_mesh = point_cloud.delaunay_2d()
-    
-    logger.info("Ori # of faces: ", surface_mesh.n_faces)
+    logger.info(f"Original mesh faces: {surface_mesh.n_faces}")
 
+    # Decimate mesh to reduce complexity (90% reduction)
     pro_decimated = surface_mesh.decimate_pro(0.90, preserve_topology=True)
-    logger.info("pro_decimated # of faces: ", pro_decimated.n_faces)
-    surface_mesh = surface_mesh
-            # Extract vertices and faces from the PyVista surface mesh
-    vertices = surface_mesh.points
-    faces = surface_mesh.faces.reshape(-1, 4)[:, 1:4]  # Ignore the first element which is the number of vertices per face
+    logger.info(f"Decimated mesh faces: {pro_decimated.n_faces}")
+    
+    # Use the decimated mesh
+    final_mesh = pro_decimated
 
-    # Prepare data for the PLY file
-    vertex_data = [(vertex[0], vertex[1], vertex[2]) for vertex in vertices]
+    # Export to PLY
+    _write_ply(final_mesh, ply_save_path)
+    logger.info(f"Saved terrain mesh to {ply_save_path}")
+
+    # Visualization
+    if plot_figures:
+        _plot_mesh(final_mesh)
+
+    return final_mesh
+
+def _write_ply(mesh: pv.PolyData, path: str):
+    """Refactored helper to write PLY file manually using plyfile."""
+    vertices = mesh.points
+    # Faces shape is (N, 4) where col 0 is num_vertices (3 for triangles), col 1-3 are indices
+    faces = mesh.faces.reshape(-1, 4)[:, 1:4]
+
+    vertex_data = [(v[0], v[1], v[2]) for v in vertices]
     face_data = [(list(face),) for face in faces]
-    
-    # Define PlyElement for vertices and faces
-    vertex_element = PlyElement.describe(np.array(vertex_data, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')]), 'vertex')
-    face_element = PlyElement.describe(np.array(face_data, dtype=[('vertex_indices', 'i4', (3,))]), 'face')
-    
-    # Write the PLY file manually using plyfile
-    PlyData([vertex_element, face_element], text=False).write(ply_save_path)
 
-    
-    #surface_mesh.save(ply_save_path)
-    # Plot the triangulated terrain
-    if(plot_figures):
-        pv.set_jupyter_backend('client')
-        plotter = pv.Plotter()
-        plotter.add_mesh(surface_mesh, scalars=surface_mesh.points[:, 2], cmap="terrain")
-        plotter.show()
-    return surface_mesh
+    vertex_element = PlyElement.describe(
+        np.array(vertex_data, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')]), 'vertex'
+    )
+    face_element = PlyElement.describe(
+        np.array(face_data, dtype=[('vertex_indices', 'i4', (3,))]), 'face'
+    )
 
-def remove_obj_info_from_ply(input_ply_path, output_ply_path):
-    # Open the input PLY file in binary read mode
-    with open(input_ply_path, 'rb') as infile:
-        # Read the first few lines (assuming the header)
-        header_lines = []
-        for _ in range(5):
-            line = infile.readline()
-            header_lines.append(line)
-        
-        # Filter out lines that start with "obj_info" after decoding
-        cleaned_header = [
-            line for line in header_lines if not line.decode("utf-8", errors="ignore").startswith("obj_info")
-        ]
-        
-        # Read the remaining content of the file
-        remaining_data = infile.read()
-    
-    # Write the cleaned header and the rest of the binary content to the output file
-    with open(output_ply_path, 'wb') as outfile:
-        outfile.writelines(cleaned_header)
-        outfile.write(remaining_data)
+    PlyData([vertex_element, face_element], text=False).write(path)
 
-# # Example usage
-# remove_obj_info_from_ply("input.ply", "cleaned_output.ply")
-
-
-# Example usage
-
+def _plot_mesh(mesh: pv.PolyData):
+    pv.set_jupyter_backend('client')
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh, scalars=mesh.points[:, 2], cmap="terrain")
+    plotter.show()
 
 if __name__ == '__main__':
-    data_dir = "output"
-    mesh_data_dir = "output/mesh"
-    os.makedirs(mesh_data_dir, exist_ok=True)
-    center_x = -71.0602
-    center_y = 42.3512
-    projection_EPSG_code = "EPSG:32613"
-    generate_terrain_mesh(
-        os.path.join(data_dir, "test_hag.laz"),
-        os.path.join(mesh_data_dir, f"lidar_terrain.ply"), src_crs="EPSG:3857", dest_crs=projection_EPSG_code,
-        plot_figures=False, center_x=center_x, center_y=center_y)
+    # Configuration
+    DATA_DIR = "output"
+    MESH_DATA_DIR = os.path.join(DATA_DIR, "mesh")
+    os.makedirs(MESH_DATA_DIR, exist_ok=True)
+    
+    CENTER_X = -71.0602
+    CENTER_Y = 42.3512
+    PROJ_EPSG = "EPSG:32613" # UTM Zone 19N for Boston/NYC area approx?
+    
+    input_laz = os.path.join(DATA_DIR, "test_hag.laz")
+    output_ply = os.path.join(MESH_DATA_DIR, "lidar_terrain.ply")
+    
+    if os.path.exists(input_laz):
+        generate_terrain_mesh(
+            lidar_laz_file_path=input_laz,
+            ply_save_path=output_ply,
+            src_crs="EPSG:3857",
+            dest_crs=PROJ_EPSG,
+            plot_figures=False,
+            center_x=CENTER_X,
+            center_y=CENTER_Y
+        )
+    else:
+        logger.warning(f"Input file not found: {input_laz}")

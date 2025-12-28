@@ -29,8 +29,15 @@ def _resolve_data_output_path(config_path: Path, project_root: Path) -> Optional
 
 
 def _latest_dataset_in_dir(output_dir: Path) -> Optional[Path]:
+    if not output_dir.exists():
+        logger.warning(f"Directory not found during dataset lookup: {output_dir}")
+        return None
     zarr_files = sorted(output_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return zarr_files[0] if zarr_files else None
+    if not zarr_files:
+        logger.warning(f"No .zarr files found in {output_dir}")
+        return None
+    logger.info(f"Found latest dataset: {zarr_files[0].name} in {output_dir}")
+    return zarr_files[0]
 
 
 def _run_dataset_generation_for_config(config_path: Path, project_root: Path, run_command_func):
@@ -47,6 +54,7 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
     """
     if args.skip_dataset:
         logger.info("Skipping dataset generation (--skip-dataset)")
+        # Logic to reuse existing datasets
         if args.train_data_configs or args.train_datasets or args.eval_data_config:
             for config_path in args.train_data_configs or []:
                 dataset_path = _resolve_data_output_path(config_path, project_root)
@@ -164,6 +172,8 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
                 latest = _latest_dataset_in_dir(dataset_path)
                 if latest:
                     dataset_path = latest
+                else:
+                    raise RuntimeError(f"Data generation completed but no .zarr files found in {dataset_path}")
         else:
             output_dir = project_root / config.get('output_dir')
             dataset_path = _latest_dataset_in_dir(output_dir)

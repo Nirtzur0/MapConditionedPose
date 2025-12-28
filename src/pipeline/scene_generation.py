@@ -61,6 +61,15 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
                     city_cmd.extend(["--num-tx", str(sites_cfg.num_sites_per_tile)])
                     city_cmd.extend(["--site-strategy", sites_cfg.placement_strategy])
 
+                # Terrain Configuration
+                osm_cfg = config.get('osm')
+                if osm_cfg and osm_cfg.get('terrain'):
+                    terrain = osm_cfg.terrain
+                    if terrain.get('use_lidar', False) or terrain.get('source', '').lower() == 'lidar':
+                         city_cmd.append("--use-lidar")
+                    if terrain.get('use_dem', False) or terrain.get('source', '').lower() == 'dem':
+                         city_cmd.append("--use-dem")
+
                 if args.clean and scene_dir_city.exists():
                     logger.info(f"Cleaning existing scenes at {scene_dir_city}")
                     shutil.rmtree(scene_dir_city)
@@ -85,6 +94,15 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
         if config.sites:
             cmd.extend(["--num-tx", str(config.sites.num_sites_per_tile)])
             cmd.extend(["--site-strategy", config.sites.placement_strategy])
+
+        # Terrain Configuration
+        osm_cfg = config.get('osm')
+        if osm_cfg and osm_cfg.get('terrain'):
+            terrain = osm_cfg.terrain
+            if terrain.get('use_lidar', False) or terrain.get('source', '').lower() == 'lidar':
+                    cmd.append("--use-lidar")
+            if terrain.get('use_dem', False) or terrain.get('source', '').lower() == 'dem':
+                    cmd.append("--use-dem")
 
     else:
         logger.info(f"Using GIS bounding box: {args.bbox} for scene generation")

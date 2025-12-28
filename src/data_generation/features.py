@@ -452,48 +452,13 @@ class PHYFAPIFeatureExtractor:
                           self.noise_figure_db)
         noise_power_linear = 10**((noise_power_dbm - 30) / 10)  # dBm to Watts
         
-            # rsrp is [batch, num_rx, num_tx, ...] in dBm
-            # Typically [1, 1, num_rx_ant, num_tx, num_tx_ant] if single UE
-            # We want [batch, num_rx, num_tx]
-            
-            # Identify dimensions based on channel_matrix being 7D:
-            # [1, batch, rx, rx_ant, tx, tx_ant, fft]
-            # compute_rsrp outputs: [1, batch, rx, rx_ant, tx, tx_ant] (reduces fft)
-            # Actually compute_rsrp: h[..., pilot_re] -> mean(abs^2, axis=-1) -> sum(..., axis=(-1, -2))
-            # It sums over last 2 dims: tx_ant (maybe?) and pilots?
-            # Wait, measurement_utils.compute_rsrp inputs `h`.
-            # If h is 7D. h_pilots is 7D.
-            # mean(axis=-1) reduces pilots. -> 6D.
-            # sum(axis=(-1,-2)) sums over indices -1 (tx_ant) and -2 (tx?). No.
-            
-            # Let's fix dimension reduction explicitly assuming standard Sionna shapes
-            # If rsrp still has extra dims like rx_ant or tx_ant, reduce them.
-            # We assume dims 0, 1 are batch/rx. Dim 2 might be rx_ant or tx.
-            # If rank > 3, we take mean over excess dimensions, BUT likely we want to preserve 'num_tx' which is a cell dimension.
-            
-            # Heuristic: num_cells is usually size > 1 (unless 1 site).
-            # Max dimension size among remaining dims is likely num_cells?
-            # Better: use channel_matrix shape to know where 'tx' is.
-            # channel_matrix: [1, batch, rx, rx_ant, tx, tx_ant, fft]
-            # rsrp from compute_rsrp (numpy): 
-            #   power_per_port = mean(abs(h_pilots)**2, axis=-1) -> reduces fft
-            #   rsrp = sum(power_per_port, axis=(-1, -2)) -> sums over tx_ant and tx?
-            # Wait, compute_rsrp sums over last 2 axes. 
-            # If input is 7D, output is 5D: [1, batch, rx, rx_ant, tx].
-            # Then we have [1, 1, 1, 2, num_tx].
-            # We want [1, 1, num_tx].
-            # So average over axis=2 (rx_ant), and flatten/squeeze batch.
-            
-            if rsrp.ndim >= 5: # [1, batch, rx, rx_ant, tx]
-                 # Average over rx_ant (index 2 relative to [batch, rx, rx_ant, tx] or similar)
-                 # Actually `compute_rsrp` implementation:
-                 # `rsrp = np.sum(power_per_port, axis=(-1, -2))`
-                 # If power_per_port is [..., tx, tx_ant], sum over both = sum over tx and tx_ant?
-                 # That would reduce 'tx' dimension! This is bad. compute_rsrp assumes h is [..., rx_ant, tx_ant] typically?
-                 pass
-            
-            # FORCE correct shape manually given we know the input 7D structure
-            # h: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+        # rsrp is [batch, num_rx, num_tx, ...] in dBm
+        # Typically [1, 1, num_rx_ant, num_tx, num_tx_ant] if single UE
+        # We want [batch, num_rx, num_tx]
+        
+        # FORCE correct shape manually given we know the input 7D structure
+        # h: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+        if channel_matrix is not None:
             h_pilots = channel_matrix[..., pilot_re_indices] # [..., fft_subset]
             p_pilots = np.mean(np.abs(h_pilots)**2, axis=-1) # [..., tx, tx_ant]
             # Sum over TX antennas (last dim) -> [..., tx]
@@ -618,9 +583,14 @@ class MACRRCFeatureExtractor:
             MACRRCLayerFeatures with system-level measurements
         """
         batch_size, num_rx = phy_features.rsrp.shape[:2]
+        num_cells = len(cell_ids)
         
         # Serving cell: best RSRP
+        # Note: RSRP may be padded to MAX_CELLS, but cell_ids only has actual cells
         serving_cell_indices = np.argmax(phy_features.rsrp, axis=-1)  # [batch, num_rx]
+        
+        # Clip indices to valid range (RSRP is padded, but cell_ids is not)
+        serving_cell_indices = np.clip(serving_cell_indices, 0, num_cells - 1)
         serving_cell_id = cell_ids[serving_cell_indices]
         
         # Neighbor cells: top-K by RSRP (excluding serving)
@@ -633,22 +603,11 @@ class MACRRCFeatureExtractor:
         neighbor_indices = np.argsort(-rsrp_for_neighbors, axis=-1)[..., :self.max_neighbors]
         
         # Clip indices to valid range (fixes issue when only 1 cell exists)
-        # If there are fewer cells than max_neighbors, argsort returns valid indices, but if only 1 cell, 
-        # rsrp_for_neighbors has -inf for serving, so argsort returns index 0 (which is serving!).
-        # We need to filter out serving cell or handle single-cell case.
-        
-        num_cells = len(cell_ids)
         if num_cells <= 1:
             # No neighbors possible
             neighbor_cell_ids = np.full(neighbor_indices.shape, -1, dtype=int)
         else:
-             # Ensure indices are valid (should be by argsort property on valid array size)
-             # But if num_cells < max_neighbors, argsort returns all indices.
-             # The indices returned are always < num_cells (feature dimension size).
-             # However, cell_ids array must be large enough. cell_ids is size [num_sites].
-             # If feature dim != num_sites, we have a problem.
-             
-             # Safety clip just in case data generation mismatch
+             # Ensure indices are valid
              neighbor_indices = np.clip(neighbor_indices, 0, num_cells - 1)
              neighbor_cell_ids = cell_ids[neighbor_indices]
         

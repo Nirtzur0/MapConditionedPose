@@ -37,16 +37,25 @@ def setup_logging(level=logging.INFO, name: str = "pipeline"):
     file_handler = logging.FileHandler(log_path)
     file_handler.setLevel(level)
 
-    # Create a formatter and set it for both handlers
-    formatter = logging.Formatter(
+    # Create a formatter for FILE output only (keep it detailed)
+    file_formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(file_formatter)
+    
+    # NOTE: We do NOT set a formatter for console_handler, allowing Rich to use its modern, concise defaults.
 
     # Add the handlers to the root logger
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+    
+    # Silence noisy third-party libraries
+    noisy_loggers = [
+        "matplotlib", "PIL", "numba", "h5py", "absl", 
+        "fiona", "shapely", "rasterio"
+    ]
+    for lib in noisy_loggers:
+        logging.getLogger(lib).setLevel(logging.WARNING)
 
     logging.info(f"Logging initialized. Log file: {log_path}")
 

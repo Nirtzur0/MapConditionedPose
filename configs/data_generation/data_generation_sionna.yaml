@@ -16,7 +16,7 @@ data_generation:
   enable_diffraction: true
 
   # Sampling strategy
-  num_ue_per_tile: 200
+  num_ue_per_tile: 1000
   ue_height_range: [1.2, 2.0]
   ue_velocity_range: [0.0, 3.0]
 

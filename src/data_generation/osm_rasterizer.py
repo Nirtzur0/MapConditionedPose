@@ -105,6 +105,69 @@ class OSMRasterizer:
         # Channels: Height, Material, Footprint, Road, Terrain
         osm_map = np.zeros((5, self.height, self.width), dtype=np.float32)
         
+        # Channels: Height, Material, Footprint, Road, Terrain
+        osm_map = np.zeros((5, self.height, self.width), dtype=np.float32)
+        
+        # --- Auto-Detect Coordinate System ---
+        # Sample an object to check if vertices are Global (UTM) or Local (Centered)
+        # This fixes empty maps particularly when Metadata is UTM but Mesh is Local.
+        
+        sample_vertices = None
+        for name, obj in scene.objects.items():
+            if hasattr(obj, 'mi_mesh'):
+                try:
+                    # Try to get vertices
+                    if hasattr(obj.mi_mesh, 'vertex_positions_buffer'):
+                        # DrJit/Mitsuba 3
+                        # We need a way to peek without crashing logic later
+                        # For now, rely on logic inside loop or do a quick check?
+                        # Let's peek.
+                         import drjit as dr
+                         v_buf = obj.mi_mesh.vertex_positions_buffer()
+                         # Just take first vertex
+                         if len(v_buf) > 0:
+                             v_sample = np.array(v_buf[0:3]) # x, y, z
+                             sample_vertices = v_sample
+                             break
+                except:
+                    pass
+        
+        if sample_vertices is not None:
+             # Check magnitude
+             x_val = sample_vertices[0]
+             
+             # Metric: Distance to defined map origin (x_min)
+             dist_to_origin = abs(x_val - self.x_min)
+             dist_to_zero = abs(x_val)
+             
+             # If closer to 0 than to x_min (and x_min is large), it's likely Local.
+             is_local = False
+             if abs(self.x_min) > 10000: # If map is Global
+                 if dist_to_zero < 10000 and dist_to_origin > 10000:
+                     is_local = True
+             
+             if is_local:
+                 logger.info(f"OSM Rasterizer: Detected LOCAL coordinates (Item x={x_val:.1f}). adjusting offset.")
+                 # Local (0,0) corresponds to Map Center.
+                 # Map Center in Global: (x_min + x_max)/2
+                 # Map Origin is x_min.
+                 # Pixel X = (LocalX + CenterOffset) * Scale
+                 # GlobalX = x_min + Pixel/Scale
+                 # GlobalX = LocalX + CenterX
+                 # LocalX + CenterX - x_min -> Pixel/Scale
+                 # Pixel/Scale = LocalX + (x_max - x_min)/2
+                 # Offset = (x_max - x_min) / 2
+                 
+                 w_m = self.x_max - self.x_min
+                 h_m = self.y_max - self.y_min
+                 self.offset = np.array([w_m / 2.0, h_m / 2.0])
+             else:
+                 # Assume Global matching map_extent
+                 if abs(dist_to_origin) > 100000:
+                     logger.warning(f"OSM Rasterizer: Vertices seem far from map extent! x={x_val:.1f}, x_min={self.x_min:.1f}")
+                 # Keep default offset (-x_min, -y_min)
+                 pass
+
         # Iterating objects
         for name, obj in scene.objects.items():
             if not hasattr(obj, 'mi_mesh'):

@@ -172,11 +172,10 @@ class UELocalizationLightning(pl.LightningModule):
         osm_blue = self._normalize_map(np.maximum(osm_road, osm_terrain * 0.3))  # Roads bright, terrain subtle
         osm_rgb = np.stack([osm_height, osm_footprint, osm_blue], axis=-1)
 
-        extent = float(self.config['dataset'].get('scene_extent', max(h, w)))
-        true_px = (true_pos[0] / extent) * (w - 1)
-        true_py = (true_pos[1] / extent) * (h - 1)
-        pred_px = (pred_pos[0] / extent) * (w - 1)
-        pred_py = (pred_pos[1] / extent) * (h - 1)
+        true_px = true_pos[0] * (w - 1)
+        true_py = true_pos[1] * (h - 1)
+        pred_px = pred_pos[0] * (w - 1)
+        pred_py = pred_pos[1] * (h - 1)
 
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         axes[0].imshow(radio_img, cmap='inferno')
@@ -308,9 +307,13 @@ class UELocalizationLightning(pl.LightningModule):
             losses['loss'] = losses['loss'] + self.lambda_phys * physics_loss
         
         # Compute errors
+        # Compute errors in meters
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        errors = torch.norm(pred_pos - true_pos, dim=-1)
+        # Distance in normalized space [0,1] * extent [meters]
+        # sample_extent shape: [batch]
+        extent = batch.get('sample_extent', torch.tensor(512.0, device=pred_pos.device))
+        errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
 
         if batch_idx == 0 and self._last_val_sample is None:
             self._last_val_sample = {
@@ -383,9 +386,12 @@ class UELocalizationLightning(pl.LightningModule):
         outputs = self.forward(batch)
         
         # Compute errors
+        # Compute errors in meters
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        errors = torch.norm(pred_pos - true_pos, dim=-1)
+        # Distance in normalized space [0,1] * extent [meters]
+        extent = batch.get('sample_extent', torch.tensor(512.0, device=pred_pos.device))
+        errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
         
         # Store results
         self.test_step_outputs.append({
@@ -562,8 +568,12 @@ class UELocalizationLightning(pl.LightningModule):
 
         # Instantiate Dataset
         if paths:
+            valid_paths = [p for p in paths if p]
+            if not valid_paths:
+                raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
+            
             return CombinedRadioLocalizationDataset(
-                zarr_paths=paths,
+                zarr_paths=valid_paths,
                 split=target_split,
                 map_resolution=dataset_config['map_resolution'],
                 scene_extent=dataset_config['scene_extent'],

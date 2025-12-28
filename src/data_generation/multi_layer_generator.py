@@ -918,6 +918,9 @@ class MultiLayerDataGenerator:
                 logger.warning(f"Variable length array for {key}, storing as list")
         
         
+        MAX_CELLS = 16  # Fixed size for cell dimension (feature dim 3)
+        MAX_TX = 8      # Fixed size for TX dimension (feature dim 2)
+
         # Helper to extract data from [batch, rx, ...] structure
         def safe_extract_layers(a):
             if a is None or a.size == 0: return a
@@ -933,12 +936,39 @@ class MultiLayerDataGenerator:
                 return a[..., :target_size]
             
             padding = [(0, 0)] * (a.ndim - 1) + [(0, target_size - a.shape[-1])]
-            # Use specific fill values based on context if needed, but 0/-inf is common
             if fill_value == -np.inf:
-                # Pad with low value for power metrics
                 padded = np.full(a.shape[:-1] + (target_size,), -150.0, dtype=a.dtype)
                 padded[..., :a.shape[-1]] = a
                 return padded
+            else:
+                return np.pad(a, padding, mode='constant', constant_values=fill_value)
+
+        # Helper to pad TX dimension (dimension 2, usually just after [batch, rx])
+        # After safe_extract_layers, shape depends on whether RX was squeezed.
+        # Typically: [RX, TX] or [RX, TX, Cell].
+        # We need to pad the TX dimension.
+        def pad_tx_dim(a, target_size=MAX_TX, fill_value=0, axis=1):
+            if a is None: return a
+            
+            # If axis is out of bounds (e.g. if RX was squeezed and shape is [TX]), adjust?
+            # Safer to assume RX is always present as dimension 0 based on logs.
+            if axis >= a.ndim:
+                # Fallback: if axis=1 but ndim=1, assume it is [TX]
+                 if axis == 1 and a.ndim == 1:
+                     axis = 0
+            
+            if a.shape[axis] >= target_size:
+                # Truncate
+                slices = [slice(None)] * a.ndim
+                slices[axis] = slice(0, target_size)
+                return a[tuple(slices)]
+            
+            # Pad
+            padding = [(0, 0)] * a.ndim
+            padding[axis] = (0, target_size - a.shape[axis])
+            
+            if fill_value == -np.inf:
+                 return np.pad(a, padding, mode='constant', constant_values=-150.0)
             else:
                 return np.pad(a, padding, mode='constant', constant_values=fill_value)
 
@@ -948,20 +978,23 @@ class MultiLayerDataGenerator:
             arrays = [d[key] for d in all_data['phy_fapi']]
             arrays_cleaned = [safe_extract_layers(a) for a in arrays]
             
-            # Apply padding for cell-dependent fields
+            # Apply padding
             if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
                       'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
-                fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
-                arrays_cleaned = [pad_cell_dim(a, fill_value=fill_val) for a in arrays_cleaned]
+                
+                # These are typically [RX, TX, Cell] or [RX, TX]
+                # Pad TX dim (axis 1)
+                fill_val_tx = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, fill_value=fill_val_tx, axis=1) for a in arrays_cleaned]
+                
+                # Then pad Cell dim (last axis)
+                fill_val_cell = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                arrays_cleaned = [pad_cell_dim(a, target_size=MAX_CELLS, fill_value=fill_val_cell) for a in arrays_cleaned]
+
             elif key == 'phy_fapi/channel_matrix':
-                # Pad axis 1 (TX dimension)
-                def pad_channel(a, target=MAX_CELLS):
-                    if a is None: return a
-                    if a.shape[1] >= target: return a[:, :target]
-                    pad_width = [(0,0)] * a.ndim
-                    pad_width[1] = (0, target - a.shape[1])
-                    return np.pad(a, pad_width, mode='constant')
-                arrays_cleaned = [pad_channel(a) for a in arrays_cleaned]
+                # Channel Matrix: [RX, RX_Ant, TX, TX_Ant, FFT]
+                # TX is axis 2
+                arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, axis=2) for a in arrays_cleaned]
 
             if arrays_cleaned[0] is not None:
                 try:
@@ -975,15 +1008,18 @@ class MultiLayerDataGenerator:
             arrays = [d[key] for d in all_data['mac_rrc']]
             arrays_cleaned = [safe_extract_layers(a) for a in arrays]
             
-            # Pad neighbor cells if needed (though usually fixed by max_neighbors)
-            # If throughput is weirdly shaped, we might need to fix it, but let's let Zarr mismatch handle strange non-cell dims for now
-            # unless we know it varies by cell count. 
+            # Pad TX-dependent MAC features
+            # dl_throughput_mbps: [RX, TX]
+            if key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
+                 arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, fill_value=0, axis=1) for a in arrays_cleaned]
             
             if arrays_cleaned[0] is not None:
                 try:
                     stacked[key] = np.stack(arrays_cleaned, axis=0)
                 except (ValueError, TypeError):
                     stacked[key] = arrays_cleaned
+        
+        return stacked
         
         return stacked
     
@@ -1119,6 +1155,9 @@ class MultiLayerDataGenerator:
              
              # Calculate dynamic extent to match Radio Map
              bbox = metadata.get('bbox', {})
+             logger.info(f"DEBUG: Metadata BBox keys: {bbox.keys() if bbox else 'None'}")
+             logger.info(f"DEBUG: Metadata BBox content: {bbox}")
+             
              x_min = bbox.get('x_min', -1000)
              x_max = bbox.get('x_max', 1000)
              y_min = bbox.get('y_min', -1000)
