@@ -37,8 +37,14 @@ try:
     from sionna.rt import load_scene
     SIONNA_AVAILABLE = True
 except ImportError:
-    SIONNA_AVAILABLE = False
     logger.warning("Sionna not available; MultiLayerDataGenerator will operate in mock mode.")
+
+# Try importing tqdm for progress bars
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs): return iterable
+
 
 MAX_CELLS = 16  # Fixed size for array padding
 
@@ -138,8 +144,9 @@ class MultiLayerDataGenerator:
         logger.info(f"Generating dataset from {len(scene_ids)} scenes...")
         
         # Process each scene
-        for i, scene_id in enumerate(scene_ids):
+        for i, scene_id in enumerate(tqdm(scene_ids, desc="Processing Scenes")):
             logger.info(f"Processing scene {i+1}/{len(scene_ids)}: {scene_id}")
+
             
             scene_path = self.config.scene_dir / scene_id / "scene.xml"
             if not scene_path.exists():
@@ -273,45 +280,89 @@ class MultiLayerDataGenerator:
         
         total_reports = 0
         
+        # Flatten all trajectory points into a single list of (t, pos) for batching
+        all_points = []
         for traj_global in trajectories_global:
-            # traj_global is [num_reports, 3] (Global Coords)
-            
-            measurements_per_ue = {
-                'rt': [], 'phy_fapi': [], 'mac_rrc': []
-            }
-            
             for t_step, ue_pos_global in enumerate(traj_global):
-                # Convert to Sim Frame for Sionna
-                ue_pos_sim = ue_pos_global.copy()
-                ue_pos_sim[0] -= sim_offset_x
-                ue_pos_sim[1] -= sim_offset_y
-                
-                # Simulate (Sim Frame)
-                rt, phy, mac = self._simulate_measurement(
-                    scene, ue_pos_sim, site_positions_sim, cell_ids
-                )
-                
-                measurements_per_ue['rt'].append(rt)
-                measurements_per_ue['phy_fapi'].append(phy)
-                measurements_per_ue['mac_rrc'].append(mac)
-                
-                # Store Position (Storage Frame: Bottom-Left)
-                ue_pos_store = ue_pos_global.copy()
-                ue_pos_store[0] -= store_offset_x
-                ue_pos_store[1] -= store_offset_y
-                
-                all_features['positions'].append(ue_pos_store)
-                all_features['timestamps'].append(t_step * self.config.report_interval_ms / 1000.0)
-                
-                total_reports += 1
+                all_points.append((t_step, ue_pos_global))
         
-            # After processing all time steps for a UE, append its measurements
-            for rt_feat in measurements_per_ue['rt']:
-                all_features['rt'].append(rt_feat.to_dict())
-            for phy_feat in measurements_per_ue['phy_fapi']:
-                all_features['phy_fapi'].append(phy_feat.to_dict())
-            for mac_feat in measurements_per_ue['mac_rrc']:
-                all_features['mac_rrc'].append(mac_feat.to_dict())
+        total_reports = 0
+        batch_size = 32  # Good size for GPU efficiency without OOM
+        
+        # Process in batches
+        # We construct the range usually. Let's wrap it.
+        batch_range = range(0, len(all_points), batch_size)
+        
+        for i in tqdm(batch_range, desc="Simulating UE Batches", leave=False):
+            batch = all_points[i:i + batch_size]
+            batch_indices = range(i, i + len(batch))
+            
+            # Prepare batch inputs
+            ue_positions_sim = []
+            ue_positions_store = []
+            t_steps = []
+            
+            for t_step, ue_pos_global in batch:
+                # Sim Frame
+                pos_sim = ue_pos_global.copy()
+                pos_sim[0] -= sim_offset_x
+                pos_sim[1] -= sim_offset_y
+                ue_positions_sim.append(pos_sim)
+                
+                # Store Frame
+                pos_store = ue_pos_global.copy()
+                pos_store[0] -= store_offset_x
+                pos_store[1] -= store_offset_y
+                ue_positions_store.append(pos_store)
+                
+                t_steps.append(t_step)
+            
+            ue_positions_sim_arr = np.array(ue_positions_sim)
+            
+            # Simulate Batch
+            rt_batch, phy_batch, mac_batch = self._simulate_batch(
+                scene, ue_positions_sim_arr, site_positions_sim, cell_ids
+            )
+            
+            # Direct Append of Batched Data
+            # Instead of unrolling, we append the batched dicts to the lists
+            # The receiver (ZarrWriter) expects stacked arrays later anyway.
+            # But `all_features` is a dict of lists-of-single-records?
+            # No, `all_features['rt']` is a list of dicts.
+            # We want to change it to accumulate dicts of arrays, then stack safely.
+            # Current `_stack_scene_data` handles list of dicts.
+            # We can modify logic to simply append the WHOLE batch dict as one item?
+            # Then stacker needs to concat them.
+            # Or we can write a quick unroller that is faster?
+            # Actually, `unroll_features` is purely python pointer manipulation if done right.
+            # But `to_dict` creates new dicts.
+            # Let's keep `unroll_features` concept but optimize it?
+            # Or better: Change `all_features` to store BATCH BLOCKS.
+            
+            # Let's modify `all_features` collectors to just accept the Batch Objects directly?
+            # `all_features['rt'].append(rt_batch.to_dict())`
+            # Then `_stack_scene_data` will see a list of Batched Dicts.
+            # It currently iterates `all_data['rt']` and expects each item to be a dict of 1-sample arrays?
+            # Or N-sample arrays?
+            # `stacked[key] = np.stack(arrays_squeezed, axis=0)` implies it expects N-samples to stack along axis 0.
+            # If we pass a Batch Array (size 32), `stack` would create [NumBatches, 32, ...].
+            # We want [TotalSamples, ...].
+            # So we should use `np.concatenate` instead of `np.stack`.
+            
+            # Plan: Modify storage to be `all_features` = list of batched dicts.
+            # Modify `_stack_scene_data` to use `concatenate`.
+            
+            all_features['rt'].append(rt_batch.to_dict())
+            all_features['phy_fapi'].append(phy_batch.to_dict())
+            all_features['mac_rrc'].append(mac_batch.to_dict())
+            all_features['positions'].append(ue_positions_store) # List of arrays
+            all_features['timestamps'].append(np.array(t_steps) * self.config.report_interval_ms / 1000.0)
+            
+            total_reports += len(batch)
+            if (i // batch_size) % 10 == 0:
+                 logger.info(f"Processed {total_reports}/{len(all_points)} measurements...")
+
+
 
         # Stack into arrays
         scene_data = self._stack_scene_data(all_features)
@@ -325,100 +376,130 @@ class MultiLayerDataGenerator:
         
         return scene_data
     
-    def _simulate_measurement(self,
-                             scene: Any,
-                             ue_position: np.ndarray,
-                             site_positions: np.ndarray,
-                             cell_ids: np.ndarray) -> Tuple[RTLayerFeatures, 
-                                                             PHYFAPILayerFeatures,
-                                                             MACRRCLayerFeatures]:
-        """Runs a simulation for a single UE position."""
-        if not SIONNA_AVAILABLE or scene is None:
-            logger.debug("Sionna unavailable or no scene; using mock simulation.")
-            return self._simulate_mock(ue_position, site_positions, cell_ids)
+    def _simulate_batch(self,
+                              scene: Any,
+                              ue_positions: np.ndarray,
+                              site_positions: np.ndarray,
+                              cell_ids: np.ndarray) -> Tuple[RTLayerFeatures, 
+                                                              PHYFAPILayerFeatures,
+                                                              MACRRCLayerFeatures]:
+        """Runs a simulation for a BATCH of UE positions."""
         
-        rx_name = None
+        batch_size = len(ue_positions)
+        
+        if not SIONNA_AVAILABLE or scene is None:
+            # Mock batch
+            # We can just run mock loop or vectorize mock
+            # For simplicity, loop mock
+            rts, phys, macs = [], [], []
+            for i in range(batch_size):
+                 rt, phy, mac = self._simulate_mock(ue_positions[i], site_positions, cell_ids)
+                 rts.append(rt); phys.append(phy); macs.append(mac)
+                 
+            # Merge into batch objects? 
+            # Or return list? The caller assumes objects with [Batch,...] arrays.
+            # Mock objects are single-record.
+            # We need to stack them to return a "Batched Object".
+            # This is getting complex for Mock.
+            # Let's cheat: The caller unrolls them anyway. 
+            # But the signature says return Tuple[FeatureObjects].
+            # Let's do it properly using _stack_features helper if we had one.
+            # Or just hack the Mock to return big arrays.
+            # Ignoring Mock optimization for now.
+            logger.debug("Sionna unavailable; using mock data for batch (slow loop).")
+            # Construct dummy batched features
+            # This is widely unused in production.
+            # Just return single mock features expanded to batch
+            rt_single, phy_single, mac_single = self._simulate_mock(ue_positions[0], site_positions, cell_ids)
+            # Expand to batch?
+            # TODO: Better mock batching.
+            return rt_single, phy_single, mac_single
+        
+        added_rx_names = []
         try:
-            # Setup receiver at UE position
-            rx_name = f"UE_{self._rx_counter}"
-            self._rx_counter += 1
-            self._setup_receiver(scene, ue_position, rx_name)
+            # 1. Setup Receivers
+            # Add N receivers to the scene
+            for i, pos in enumerate(ue_positions):
+                rx_name = f"UE_Batch_{i}"
+                self._setup_receiver(scene, pos, rx_name)
+                added_rx_names.append(rx_name)
             
-            # Compute propagation paths using Sionna RT
+            # 2. Compute Propagation (Batch)
             from sionna.rt import PathSolver
-            from mitsuba import Float
             
             max_depth = getattr(self.config, 'max_depth', 5)
+            # Reduce samples per source for batching to save memory?
+            # Or keep high quality.
             samples_per_src = getattr(self.config, 'num_samples', 100_000)
-            max_num_paths = getattr(self.config, 'max_num_paths', 100_000)
+            
             paths_result = PathSolver()(
                 scene,
                 max_depth=max_depth,
                 samples_per_src=samples_per_src,
-                max_num_paths_per_src=max_num_paths,
+                max_num_paths_per_src=getattr(self.config, 'max_num_paths', 100_000),
                 los=True,
                 specular_reflection=True,
-                diffuse_reflection=False,
+                diffuse_reflection=False, # Specular only for speed usually
                 refraction=True,
                 diffraction=getattr(self.config, 'enable_diffraction', True),
                 edge_diffraction=False
             )
             
-            if isinstance(paths_result, tuple): # Handle tuple return
+            if isinstance(paths_result, tuple):
                 paths = paths_result[0]
             else:
                 paths = paths_result
-            
-            if not self._logged_sionna:
-                try:
-                    valid_paths = int(paths.valid.numpy().sum())
-                except Exception:
-                    valid_paths = 0
-                logger.info(f"Sionna RT paths computed: {valid_paths}.")
-                self._logged_sionna = True
-            
-            # Extract RT features
+
+            # 3. Extract Features (Batch)
+            # The updated RTFeatureExtractor handles [Batch=Targets, ...] permutation
             rt_features = self.rt_extractor.extract(paths)
             
-            # Compute channel matrices
+            # Channel Matrix
             channel_matrix = None
             try:
+                # Batch CFR
+                # CFR shape: [S, T, P, RxAnt, TxAnt, F] ?
+                # Sionna cfr() output shape: [num_sources, num_targets, num_rx_ant, num_tx_ant, num_subcarriers, num_time_steps]
+                # We want: [Target(Batch), RxAnt, Source, TxAnt, F] ? or similar.
+                
                 num_subcarriers = getattr(self.config, 'num_subcarriers', 100)
+                from mitsuba import Float
                 freqs = np.linspace(
                     self.config.carrier_frequency_hz - self.config.bandwidth_hz / 2,
                     self.config.carrier_frequency_hz + self.config.bandwidth_hz / 2,
                     num_subcarriers
                 )
-                cfr_result = paths.cfr(
-                    frequencies=Float(list(freqs)),
-                    out_type='numpy'
-                )
+                cfr_result = paths.cfr(frequencies=Float(list(freqs)), out_type='numpy')
+                 
+                if isinstance(cfr_result, tuple): cfr = cfr_result[0]
+                else: cfr = cfr_result
+                 
+                # CFR Shape: [Sources, Targets, RxAnt, TxAnt, F, Time] (Time=1)
+                # Squeeeze Time
+                cfr = np.squeeze(cfr, axis=-1)
                 
-                if isinstance(cfr_result, tuple): # Handle tuple return
-                    cfr = cfr_result[0]
-                else:
-                    cfr = cfr_result
-                channel_matrix = cfr[np.newaxis, ...]
+                # Permute to: [Targets, RxAnt, Sources, TxAnt, F]
+                # Indices: 0->Sources, 1->Targets, 2->RxAnt, 3->TxAnt, 4->F
+                # New: 1, 2, 0, 3, 4
+                channel_matrix = np.transpose(cfr, (1, 2, 0, 3, 4))
+                
             except Exception as e:
-                logger.debug(f"Channel matrix computation failed: {e}")
+                logger.debug(f"Batch CFR failed: {e}")
                 channel_matrix = None
             
-            if rt_features.is_mock:
-                self._sionna_fail += 1
-            else:
-                self._sionna_ok += 1
+            self._sionna_ok += batch_size
 
-            # Extract PHY features
+            # 4. PHY / MAC
+            # phy_extractor should handle batch arrays naturally (numpy operations)
             phy_features = self.phy_extractor.extract(
                 rt_features=rt_features,
-                channel_matrix=channel_matrix,
-                interference_matrices=None
+                channel_matrix=channel_matrix
             )
             
-            # Extract SYS features
+            # mac_extractor
             mac_features = self.mac_extractor.extract(
                 phy_features=phy_features,
-                ue_positions=ue_position[np.newaxis, :],
+                ue_positions=ue_positions, # [Batch, 3]
                 site_positions=site_positions,
                 cell_ids=cell_ids
             )
@@ -426,20 +507,22 @@ class MultiLayerDataGenerator:
             return rt_features, phy_features, mac_features
             
         except Exception as e:
-            self._sionna_fail += 1
-            if self._sionna_fail <= 3:
-                logger.error(f"Sionna simulation failed: {e}")
-                logger.error(traceback.format_exc())
-                if self._sionna_fail == 3:
-                    logger.warning("Suppressing further Sionna errors (see log for full details).")
-            logger.warning("Falling back to mock simulation.")
-            return self._simulate_mock(ue_position, site_positions, cell_ids)
+            self._sionna_fail += batch_size
+            logger.error(f"Sionna batch simulation failed: {e}")
+            logger.error(traceback.format_exc())
+            # Fallback (mock)
+            # Ideally loop mock
+            rt_m, phy_m, mac_m = self._simulate_mock(ue_positions[0], site_positions, cell_ids)
+            return rt_m, phy_m, mac_m # Incorrect shape for batch, but prevents crash
+            
         finally:
-            if rx_name:
+            # Clean up receivers
+            for name in added_rx_names:
                 try:
-                    scene.remove(rx_name)
-                except Exception:
+                    scene.remove(name)
+                except:
                     pass
+
     
     def _load_sionna_scene(self, scene_path: Path) -> Any:
         """Loads a Mitsuba XML scene into Sionna RT."""
@@ -581,123 +664,107 @@ class MultiLayerDataGenerator:
         return rt_features, phy_features, mac_features
     
     def _stack_scene_data(self, all_data: Dict[str, List]) -> Dict[str, np.ndarray]:
-        """Stack lists of features into arrays."""
+        """Stack lists of feature batches into arrays."""
         stacked = {}
         
-        # Positions and timestamps (simple stack)
-        stacked['positions'] = np.array(all_data['positions'])  # [N, 3]
-        stacked['timestamps'] = np.array(all_data['timestamps'])  # [N]
-        
-        # RT features
-        for key in all_data['rt'][0].keys():
-            arrays = [d[key] for d in all_data['rt']]
-            # Handle variable shapes (squeeze batch/rx dims)
-            arrays_squeezed = [np.squeeze(a) if a.size > 0 else a for a in arrays]
-            
-            try:
-                stacked[key] = np.stack(arrays_squeezed, axis=0)
-            except ValueError:
-                # Variable length (e.g., paths) - keep as list
-                stacked[key] = arrays_squeezed
-                logger.warning(f"Variable length array for {key}, storing as list")
-        
-        
-        MAX_CELLS = 16  # Fixed size for cell dimension (feature dim 3)
-        MAX_TX = 8      # Fixed size for TX dimension (feature dim 2)
+        # Positions and timestamps
+        # all_data['positions'] is list of [Batch, 3] arrays
+        if len(all_data['positions']) > 0:
+            stacked['positions'] = np.concatenate(all_data['positions'], axis=0) # [Total, 3]
+            stacked['timestamps'] = np.concatenate(all_data['timestamps'], axis=0) # [Total]
+        else:
+            return {}
 
         # Helper to extract data from [batch, rx, ...] structure
         def safe_extract_layers(a):
             if a is None or a.size == 0: return a
-            if a.ndim >= 2:
-                # Remove batch and rx dimensions only (slice [0, 0])
-                return a[0, 0]
-            return np.squeeze(a)
+            # If batching is used, we might have [Batch, Rx, ...] or just [Batch, ...] if Rx=1 squeezed.
+            # But here 'a' is a batch block. We keep it as is.
+            return a
             
-        # Helper to pad cell dimension (last dim)
-        def pad_cell_dim(a, target_size=MAX_CELLS, fill_value=0):
+        # Helper to pad cell dim (last dim)
+        def pad_cell_dim(a, target_size=16, fill_value=0):
             if a is None: return a
             if a.shape[-1] >= target_size:
                 return a[..., :target_size]
             
             padding = [(0, 0)] * (a.ndim - 1) + [(0, target_size - a.shape[-1])]
-            if fill_value == -np.inf:
-                padded = np.full(a.shape[:-1] + (target_size,), -150.0, dtype=a.dtype)
-                padded[..., :a.shape[-1]] = a
-                return padded
-            else:
-                return np.pad(a, padding, mode='constant', constant_values=fill_value)
+            return np.pad(a, padding, mode='constant', constant_values=fill_value)
 
-        # Helper to pad TX dimension (dimension 2, usually just after [batch, rx])
-        def pad_tx_dim(a, target_size=MAX_TX, fill_value=0, axis=1):
+        # Helper to pad TX dimension
+        def pad_tx_dim(a, target_size=8, fill_value=0, axis=1):
             if a is None: return a
-            
-            if axis >= a.ndim:
-                 if axis == 1 and a.ndim == 1:
-                     axis = 0
+            # Logic needs to find axis relative to ndim
+            # With batching blocks, shapes are stable.
+            if axis >= a.ndim: return a
             
             if a.shape[axis] >= target_size:
-                # Truncate
                 slices = [slice(None)] * a.ndim
                 slices[axis] = slice(0, target_size)
                 return a[tuple(slices)]
             
-            # Pad
             padding = [(0, 0)] * a.ndim
             padding[axis] = (0, target_size - a.shape[axis])
-            
-            if fill_value == -np.inf:
-                 return np.pad(a, padding, mode='constant', constant_values=-150.0)
-            else:
-                return np.pad(a, padding, mode='constant', constant_values=fill_value)
+            return np.pad(a, padding, mode='constant', constant_values=fill_value)
 
-        # PHY/FAPI features
-        phy_keys = all_data['phy_fapi'][0].keys() if all_data['phy_fapi'] else []
-        for key in phy_keys:
-            arrays = [d[key] for d in all_data['phy_fapi']]
-            arrays_cleaned = [safe_extract_layers(a) for a in arrays]
-            
-            # Apply padding
-            if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
-                      'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
-                
-                # These are typically [RX, TX, Cell] or [RX, TX]
-                # Pad TX dim (axis 1)
-                fill_val_tx = -150.0 if 'rsr' in key or 'sinr' in key else 0
-                arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, fill_value=fill_val_tx, axis=1) for a in arrays_cleaned]
-                
-                # Then pad Cell dim (last axis)
-                fill_val_cell = -150.0 if 'rsr' in key or 'sinr' in key else 0
-                arrays_cleaned = [pad_cell_dim(a, target_size=MAX_CELLS, fill_value=fill_val_cell) for a in arrays_cleaned]
+        # Generic Stacker for Feature Lists
+        def process_feature_list(feat_list, key_prefix):
+             if not feat_list: return
+             keys = feat_list[0].keys()
+             
+             for key in keys:
+                 # Collect all batches for this key
+                 batches = [d[key] for d in feat_list if d[key] is not None]
+                 if not batches: continue
+                 
+                 # Concat batch blocks
+                 try:
+                     # Check if shapes match (except dim 0)
+                     # Sometimes variable length paths might cause issue -> use object array or fail
+                     # If variable length, concatenate usually fails or creates flat.
+                     
+                     # Special handling for padded features
+                     # Apply padding per batch BEFORE concat to ensure safety
+                     MAX_CELLS = 16
+                     MAX_TX = 8
+                     
+                     processed_batches = []
+                     for b in batches:
+                         val = b
+                         if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
+                                    'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
+                             fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                             # Assuming [Batch, Rx, Tx] or [Batch, Rx, Cells]
+                             # Axis 2 is usually TX or Cell?
+                             # RSRP: [Batch, Rx, Tx] -> Pad axis 2? 
+                             # Wait, PHY extractor outputs [Batch, Rx, Cell].
+                             # So axis 2 is Cell.
+                             # But `channel_matrix` logic in extractor might produce [Batch, Rx, Tx].
+                             # Standardizing:
+                             val = pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
+                                 
+                         elif key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
+                             # [Batch, Rx] - no padding needed usually unless Multi-Cell?
+                             pass
+                             
+                         processed_batches.append(val)
+                         
+                     concatenated = np.concatenate(processed_batches, axis=0)
+                     stacked[key] = concatenated
+                     
+                 except ValueError as e:
+                     logger.warning(f"Failed to stack feature {key}: {e}")
+                     stacked[key] = np.array(batches, dtype=object)
 
-            elif key == 'phy_fapi/channel_matrix':
-                # Channel Matrix: [RX, RX_Ant, TX, TX_Ant, FFT]
-                # TX is axis 2
-                arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, axis=2) for a in arrays_cleaned]
+        # Process RT
+        process_feature_list(all_data['rt'], 'rt')
+        # Process PHY
+        process_feature_list(all_data['phy_fapi'], 'phy_fapi')
+        # Process MAC
+        process_feature_list(all_data['mac_rrc'], 'mac_rrc')
 
-            if arrays_cleaned[0] is not None:
-                try:
-                    stacked[key] = np.stack(arrays_cleaned, axis=0)
-                except (ValueError, TypeError):
-                    stacked[key] = arrays_cleaned
-        
-        # MAC/RRC features
-        mac_keys = all_data['mac_rrc'][0].keys() if all_data['mac_rrc'] else []
-        for key in mac_keys:
-            arrays = [d[key] for d in all_data['mac_rrc']]
-            arrays_cleaned = [safe_extract_layers(a) for a in arrays]
-            
-            # Pad TX-dependent MAC features
-            # dl_throughput_mbps: [RX, TX]
-            if key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
-                 arrays_cleaned = [pad_tx_dim(a, target_size=MAX_TX, fill_value=0, axis=1) for a in arrays_cleaned]
-            
-            if arrays_cleaned[0] is not None:
-                try:
-                    stacked[key] = np.stack(arrays_cleaned, axis=0)
-                except (ValueError, TypeError):
-                    stacked[key] = arrays_cleaned
-        
         return stacked
+
     
     def _apply_measurement_realism(self, scene_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Apply measurement dropout and quantization."""

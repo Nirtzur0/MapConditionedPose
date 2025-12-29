@@ -234,86 +234,201 @@ class RTFeatureExtractor:
                     logger.warning(f"Failed to convert value to numpy: {e}, returning None")
                     return None
 
-            def _reduce_ant_time(arr):
-                if arr.ndim == 6:  # [rx, rx_ant, tx, tx_ant, paths, time]
-                    return np.mean(arr, axis=(1, 3, 5))
-                if arr.ndim == 5:  # [rx, rx_ant, tx, tx_ant, paths]
-                    return np.mean(arr, axis=(1, 3))
-                if arr.ndim == 4:  # [rx, tx, paths, time]
-                    return np.mean(arr, axis=3)
-                return arr
-
+            # Helpers
             def _ensure_batch(arr):
-                if arr.ndim == 3:  # [rx, tx, paths]
-                    return arr[np.newaxis, ...]
+                # We expect [T, S, P] at minimum.
+                if arr.ndim == 2: return arr[np.newaxis, ...]
                 return arr
+            
+            # --- GPU Acceleration: Perform Reduction on Tensors ---
+            # processing raw paths on CPU involves huge data transfer [S, T, P, RxAnt, TxAnt]
+            # We reduce to [T, S, P] on GPU first.
 
-            # Complex path gains
-            path_gains_complex = _to_complex(paths.a)
+            import tensorflow as tf
+            is_tensor = tf.is_tensor(paths.a)
             
-            # Path delays
-            path_delays = _to_numpy(paths.tau)
-            
-            # Angles (in radians)
-            path_aoa_azimuth = _to_numpy(paths.phi_r)
-            path_aoa_elevation = _to_numpy(paths.theta_r)
-            path_aod_azimuth = _to_numpy(paths.phi_t)
-            path_aod_elevation = _to_numpy(paths.theta_t)
-            
-            # Doppler (if available)
-            if hasattr(paths, 'doppler'):
-                path_doppler = _to_numpy(paths.doppler)
+            p_gains_mag = None
+            p_delays = None
+            p_angles = {}
+            p_doppler_val = None
+
+            if is_tensor:
+                # TF Path
+                
+                # 1. Complex Gain -> Magnitude -> Average Antennas
+                # Shape: [Sources, Targets, Paths, RxAnt, TxAnt, (Time?)]
+                # paths.a usually [S, T, P, 1, 1, 1, 2] pair? or complex?
+                # Sionna paths.a is complex64 tensor [S, T, P, RxAnt, TxAnt, 1, 1] usually?
+                # Actually paths.a is [num_sources, num_targets, max_num_paths, num_rx_ant, num_tx_ant, 1, 1]?
+                # Let's inspect shapes safely.
+                
+                raw_a = paths.a
+                raw_tau = paths.tau
+                
+                # Squeeze extra dims if any (Sionna often keeps last dims 1)
+                # target shape: [S, T, P, RxAnt, TxAnt]
+                # TF Squeeze is tricky if dims are 1 that we want to keep?
+                # But RxAnt/TxAnt shouldn't be 1 if arrays are used.
+                
+                # Permute to [Targets, Sources, Paths, RxAnt, TxAnt, ...]
+                # TF Transpose: [1, 0, 2, 3, 4]
+                # Assuming 5D+
+                
+                # Magnitude
+                mag_a = tf.abs(raw_a)
+                
+                # Reduce over antennas (Axes 3, 4)
+                # Check rank
+                rank = len(mag_a.shape)
+                if rank >= 5:
+                    mag_a_red = tf.reduce_mean(mag_a, axis=[3, 4]) # Result: [S, T, P, ...]
+                else:
+                    mag_a_red = mag_a
+                    
+                # Reduce delays (Axes 3, 4 if broadcasted? usually delays are [S, T, P])
+                # paths.tau is [S, T, P].
+                tau_red = raw_tau
+                
+                # Permute [S, T] -> [T, S]
+                # Assuming rank 3 [S, T, P] or rank 4 [S, T, P, ?]
+                perm_order_3 = [1, 0, 2] # T, S, P
+                
+                if len(mag_a_red.shape) >= 3:
+                     # If generic extra dims exist, we might need dynamic perm?
+                     # Standard Sionna: [S, T, P]
+                     mag_a_fin = tf.transpose(mag_a_red, perm=[1, 0] + list(range(2, len(mag_a_red.shape))))
+                else:
+                     mag_a_fin = mag_a_red
+
+                if len(tau_red.shape) >= 2:
+                     tau_fin = tf.transpose(tau_red, perm=[1, 0] + list(range(2, len(tau_red.shape))))
+                else:
+                     tau_fin = tau_red
+                     
+                # Angles
+                # [S, T, P]
+                def ft(x):
+                    if len(x.shape) >= 2:
+                        return tf.transpose(x, perm=[1, 0] + list(range(2, len(x.shape))))
+                    return x
+                
+                ang_r_az = ft(paths.phi_r)
+                ang_r_el = ft(paths.theta_r)
+                ang_t_az = ft(paths.phi_t)
+                ang_t_el = ft(paths.theta_t)
+                
+                # Doppler
+                dop = None
+                if hasattr(paths, 'doppler') and paths.doppler is not None:
+                     dop = ft(paths.doppler)
+                
+                # Transfer final reduced tensors to CPU
+                path_gains_magnitude = mag_a_fin.numpy()
+                path_delays = tau_fin.numpy()
+                path_aoa_azimuth = ang_r_az.numpy()
+                path_aoa_elevation = ang_r_el.numpy()
+                path_aod_azimuth = ang_t_az.numpy()
+                path_aod_elevation = ang_t_el.numpy()
+                if dop is not None:
+                    path_doppler = dop.numpy()
+                else:
+                     path_doppler = np.zeros_like(path_delays)
+                     
             else:
-                path_doppler = np.zeros_like(path_delays)
+                # CPU Fallback (Original Logic)
+                # Complex path gains
+                # Sionna Shape: [num_sources, num_targets, num_paths, num_rx_ant, num_tx_ant]
+                path_gains_complex = _to_complex(paths.a)
+                
+                # Path delays
+                # Sionna Shape: [num_sources, num_targets, num_paths]
+                path_delays = _to_numpy(paths.tau)
+                
+                # Angles (in radians)
+                # Shape: [num_sources, num_targets, num_paths]
+                path_aoa_azimuth = _to_numpy(paths.phi_r)
+                path_aoa_elevation = _to_numpy(paths.theta_r)
+                path_aod_azimuth = _to_numpy(paths.phi_t)
+                path_aod_elevation = _to_numpy(paths.theta_t)
+                
+                # Doppler (if available)
+                if hasattr(paths, 'doppler'):
+                    path_doppler = _to_numpy(paths.doppler)
+                else:
+                    path_doppler = np.zeros_like(path_delays)
+                
+                # --- Dimensionality Handling for Batching ---
+                # We want output: [batch_size (targets), num_rx (sources), num_paths]
+                # Input standard: [sources, targets, paths, ...]
+                
+                # Helper to permute [S, T, ...] -> [T, S, ...]
+                def _permute_batch(arr):
+                    if arr is None: return None
+                    if arr.ndim >= 2:
+                        # Swap axis 0 (Sources) and axis 1 (Targets) to make Targets primary batch dim
+                        return np.swapaxes(arr, 0, 1)
+                    return arr[np.newaxis, ...] # Backup
+                
+                # 1. Permute to [Targets, Sources, Paths, ...]
+                path_gains_complex = _permute_batch(path_gains_complex) # [T, S, P, RxAnt, TxAnt]
+                path_delays = _permute_batch(path_delays)             # [T, S, P]
+                path_aoa_azimuth = _permute_batch(path_aoa_azimuth)
+                path_aoa_elevation = _permute_batch(path_aoa_elevation)
+                path_aod_azimuth = _permute_batch(path_aod_azimuth)
+                path_aod_elevation = _permute_batch(path_aod_elevation)
+                path_doppler = _permute_batch(path_doppler)
+                
+                # 2. Reduce Antennas (Magnitude for gains)
+                # Shape is now [T, S, P, RxAnt, TxAnt]
+                if path_gains_complex.ndim == 5:
+                    # Average magnitude over antennas (axes 3, 4)
+                    # Note: This is an approximation. Ideally we beamform.
+                    # But for RT features usually we want per-path scalar gain.
+                    path_gains_magnitude = np.mean(np.abs(path_gains_complex), axis=(3, 4))
+                else:
+                    path_gains_magnitude = np.abs(path_gains_complex)
+                
+            # Now all are [T, S, P] -> [batch, num_rx, num_paths]
+            # This matches RTLayerFeatures expected structure.
             
-            # Average over antennas/time to get per-path gains
-            path_gains_magnitude = np.abs(path_gains_complex)
-            path_gains_avg = _reduce_ant_time(path_gains_magnitude)
+            # Squeeze time dim if it leaked through
+            # paths.a can be [S, T, P, Rx, Tx, 1, 1]
+            # after reduce [S, T, P, 1, 1] -> transpose [T, S, P, 1, 1]
+            # we want [T, S, P]
+            if path_gains_magnitude.ndim > 3:
+                 path_gains_magnitude = np.squeeze(path_gains_magnitude)
+            if path_delays.ndim > 3:
+                 path_delays = np.squeeze(path_delays)
+            # Ensure 3D [Batch, Rx, Paths]
+            path_gains_magnitude = _ensure_batch(path_gains_magnitude)
+            path_delays = _ensure_batch(path_delays)
             
-            path_delays_avg = _reduce_ant_time(path_delays)
-            path_aoa_az_avg = _reduce_ant_time(path_aoa_azimuth)
-            path_aoa_el_avg = _reduce_ant_time(path_aoa_elevation)
-            path_aod_az_avg = _reduce_ant_time(path_aod_azimuth)
-            path_aod_el_avg = _reduce_ant_time(path_aod_elevation)
-            path_doppler_avg = _reduce_ant_time(path_doppler)
-
-            path_gains_avg = _ensure_batch(path_gains_avg)
-            path_delays_avg = _ensure_batch(path_delays_avg)
-            path_aoa_az_avg = _ensure_batch(path_aoa_az_avg)
-            path_aoa_el_avg = _ensure_batch(path_aoa_el_avg)
-            path_aod_az_avg = _ensure_batch(path_aod_az_avg)
-            path_aod_el_avg = _ensure_batch(path_aod_el_avg)
-            path_doppler_avg = _ensure_batch(path_doppler_avg)
-            
-            # Ensure we have the right final shape: [batch, num_rx, num_paths]
-            # Sometimes need to average over num_tx dimension
-            if len(path_gains_avg.shape) > 3:
-                path_gains_avg = np.mean(path_gains_avg, axis=2)
-                path_delays_avg = np.mean(path_delays_avg, axis=2)
-                path_aoa_az_avg = np.mean(path_aoa_az_avg, axis=2)
-                path_aoa_el_avg = np.mean(path_aoa_el_avg, axis=2)
-                path_aod_az_avg = np.mean(path_aod_az_avg, axis=2)
-                path_aod_el_avg = np.mean(path_aod_el_avg, axis=2)
-                path_doppler_avg = np.mean(path_doppler_avg, axis=2)
+            # Angles likely [Batch, Rx, Paths] already
+            path_aoa_azimuth = _ensure_batch(path_aoa_azimuth)
+            path_aoa_elevation = _ensure_batch(path_aoa_elevation)
+            path_aod_azimuth = _ensure_batch(path_aod_azimuth)
+            path_aod_elevation = _ensure_batch(path_aod_elevation)
+            path_doppler = _ensure_batch(path_doppler)
             
             # Compute aggregate statistics
-            rms_delay_spread = self._compute_rms_ds(path_gains_avg, path_delays_avg)
+            rms_delay_spread = self._compute_rms_ds(path_gains_magnitude, path_delays)
+
             
             k_factor = None
             if self.compute_k_factor:
-                k_factor = self._compute_k_factor(path_gains_avg)
+                k_factor = self._compute_k_factor(path_gains_magnitude)
             
             # Count valid paths (non-zero gain)
-            num_paths = np.sum(np.abs(path_gains_avg) > 1e-10, axis=-1)
+            num_paths = np.sum(path_gains_magnitude > 1e-13, axis=-1)
             
             return RTLayerFeatures(
-                path_gains=path_gains_avg,
-                path_delays=path_delays_avg,
-                path_aoa_azimuth=path_aoa_az_avg,
-                path_aoa_elevation=path_aoa_el_avg,
-                path_aod_azimuth=path_aod_az_avg,
-                path_aod_elevation=path_aod_el_avg,
-                path_doppler=path_doppler_avg,
+                path_gains=path_gains_magnitude,
+                path_delays=path_delays,
+                path_aoa_azimuth=path_aoa_azimuth,
+                path_aoa_elevation=path_aoa_elevation,
+                path_aod_azimuth=path_aod_azimuth,
+                path_aod_elevation=path_aod_elevation,
+                path_doppler=path_doppler,
                 rms_delay_spread=rms_delay_spread,
                 k_factor=k_factor,
                 num_paths=num_paths,

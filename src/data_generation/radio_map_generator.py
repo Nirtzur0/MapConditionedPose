@@ -209,9 +209,11 @@ class RadioMapGenerator:
                 cell_size=cell_size, 
                 orientation=orientation,
                 diffraction=True,  # Enable diffraction
+                max_depth=self.config.max_depth,
+                num_samples=self.config.num_samples,
                 # scattering=True, # Not supported in RadioMapSolver __call__ apparently
-                # num_samples=self.config.num_samples # Not supported in RadioMapSolver __call__
             )
+
             
             # Debug available attributes
             self.logger.info(f"Solver output attributes: {[a for a in dir(rm) if not a.startswith('_')]}")
