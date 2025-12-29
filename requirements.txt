@@ -77,5 +77,14 @@ reportlab>=4.0.0  # PDF export
 # =============================================================================
 # Optional: Sionna Ray Tracing (Large ~500MB, requires CUDA)
 # =============================================================================
-sionna>=0.15.0
-tensorflow>=2.13.0  # Required by Sionna
+sionna>=0.16.0
+tensorflow>=2.15.0  # Required by Sionna
+
+# =============================================================================
+# Geometric Deep Learning (escnn for rotation equivariance)
+# =============================================================================
+# Note: lie-learn must be installed from git first:
+#   pip install git+https://github.com/AMLab-Amsterdam/lie_learn.git
+# Then: LDFLAGS="-L/opt/homebrew/opt/libomp/lib" CPPFLAGS="-I/opt/homebrew/opt/libomp/include" pip install escnn
+escnn>=1.0.0
+

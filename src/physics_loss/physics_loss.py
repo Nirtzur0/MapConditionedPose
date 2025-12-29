@@ -35,6 +35,12 @@ class PhysicsLossConfig:
     # Padding mode for out-of-bounds positions
     padding_mode: str = 'border'
     
+    # Ordered list of channel names in the radio map
+    channel_names: Tuple[str, ...] = (
+        'rsrp', 'rsrq', 'sinr', 'cqi', 'throughput', 
+        'path_gain', 'snr', 'rms_ds', 'mean_delay', 'k_factor'
+    )
+    
     def __post_init__(self):
         if self.feature_weights is None:
             # Default weights from IMPLEMENTATION_GUIDE.md
@@ -67,10 +73,15 @@ class PhysicsLoss(nn.Module):
         self.config = config
         
         # Convert feature weights to tensor for efficient computation
-        # Assume feature order: [path_gain, snr, sinr, throughput, bler]
-        feature_names = ['path_gain', 'snr', 'sinr', 'throughput', 'bler']
+        # Align with configured channel names
+        feature_names = list(config.channel_names)
         weights = [config.feature_weights.get(name, 1.0) for name in feature_names]
+        
+        # Legacy support: if we have map-specific weights not in channel_names (unlikely if config is correct)
+        # We just rely on channel_names defining the map structure.
+             
         self.register_buffer('feature_weights', torch.tensor(weights))
+        self.feature_names = feature_names
         
     def forward(
         self,
@@ -179,8 +190,7 @@ class PhysicsLoss(nn.Module):
         mean_losses = feature_losses.mean(dim=0)  # (C,)
         
         # Map to feature names
-        feature_names = ['path_gain', 'snr', 'sinr', 'throughput', 'bler']
-        loss_dict = {name: mean_losses[i] for i, name in enumerate(feature_names)}
+        loss_dict = {name: mean_losses[i] for i, name in enumerate(self.feature_names)}
         
         return loss_dict
 

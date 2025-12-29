@@ -120,7 +120,9 @@ class TestPhysicsLoss:
     
     def test_physics_loss_init(self):
         """Test PhysicsLoss initialization."""
-        config = PhysicsLossConfig()
+        channel_names = ('path_gain', 'toa', 'aoa', 'snr', 'sinr', 'throughput', 'bler')
+        weights = {'path_gain': 1.0, 'toa': 0.5}
+        config = PhysicsLossConfig(channel_names=channel_names, feature_weights=weights)
         loss_fn = PhysicsLoss(config)
         
         assert loss_fn.feature_weights.shape == (7,)
@@ -129,7 +131,8 @@ class TestPhysicsLoss:
     
     def test_physics_loss_forward(self):
         """Test physics loss computation."""
-        config = PhysicsLossConfig(normalize_features=False)
+        channel_names = tuple(f'feat_{i}' for i in range(7))
+        config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)
         loss_fn = PhysicsLoss(config)
         
         batch_size = 8
@@ -147,7 +150,8 @@ class TestPhysicsLoss:
     
     def test_physics_loss_perfect_match(self):
         """Test that loss is zero when prediction matches observation."""
-        config = PhysicsLossConfig(normalize_features=False)
+        channel_names = tuple(f'feat_{i}' for i in range(7))
+        config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)
         loss_fn = PhysicsLoss(config)
         
         # Create uniform radio map
@@ -166,7 +170,8 @@ class TestPhysicsLoss:
     
     def test_gradient_flow_through_loss(self):
         """Test gradient flow through physics loss."""
-        config = PhysicsLossConfig(normalize_features=False)  # Disable normalization for single sample
+        channel_names = tuple(f'feat_{i}' for i in range(7))
+        config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)  # Disable normalization for single sample
         loss_fn = PhysicsLoss(config)
         
         predicted_xy = torch.tensor([[100.0, 200.0]], requires_grad=True)
@@ -181,7 +186,8 @@ class TestPhysicsLoss:
     
     def test_per_feature_loss(self):
         """Test per-feature loss computation."""
-        config = PhysicsLossConfig(normalize_features=False)
+        channel_names = ('path_gain', 'toa', 'aoa', 'snr', 'sinr', 'throughput', 'bler')
+        config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)
         loss_fn = PhysicsLoss(config)
         
         predicted_xy = torch.rand(4, 2) * 512.0
@@ -332,9 +338,11 @@ class TestIntegration:
         initial_xy = torch.clamp(initial_xy, 0.0, 128.0)
         
         # Compute initial loss
+        channel_names = tuple(f'feat_{i}' for i in range(7))
         config = PhysicsLossConfig(
             map_extent=(0.0, 0.0, 128.0, 128.0),
-            normalize_features=False  # Disable for stability in test
+            normalize_features=False,  # Disable for stability in test
+            channel_names=channel_names
         )
         loss_fn = PhysicsLoss(config)
         initial_loss = loss_fn(initial_xy, observed_features, radio_maps)

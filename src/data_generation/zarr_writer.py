@@ -124,6 +124,7 @@ class ZarrDatasetWriter:
             scene_metadata: Optional metadata for the scene (e.g., bbox)
             scene_idx: Optional explicit index for this scene (if linking to maps)
         """
+
         # Determine number of samples in this scene
         positions = scene_data.get('positions')
         if positions is None or len(positions) == 0:
@@ -289,7 +290,13 @@ class ZarrDatasetWriter:
                     continue
 
                 item = group[key]
-                if isinstance(item, zarr.core.Array):
+                # Zarr v3 Array class check (safe for v2/v3)
+                is_array = isinstance(item, zarr.Array)
+                if not is_array and hasattr(zarr, 'core') and hasattr(zarr.core, 'Array'):
+                     # Fallback for some v2 versions
+                     is_array = isinstance(item, zarr.core.Array)
+                
+                if is_array:
                     # Resize first dimension
                     current_shape = list(item.shape)
                     if current_shape[0] < new_size:
@@ -346,16 +353,34 @@ class ZarrDatasetWriter:
         else:
             maxshape = tuple([None] + list(shape[1:]))
         
-        arr = self.store.create_dataset(
-            name,
-            shape=shape,
-            maxshape=maxshape,
-            chunks=chunks,
-            dtype=dtype,
-            fill_value=fill_value if fill_value is not None else 0,
-            compressor=compressor,
-            overwrite=True,
-        )
+        # Zarr v3 compatibility: handle overwrite manually and use create_array if available
+        if name in self.store and hasattr(self.store, 'create_array'):
+            del self.store[name]
+        
+        # Simplify config to avoid v3 errors
+        # 'compressor' kwarg is deprecated/removed in v3 for create_array?
+        # Use simple creation without compression configuration for now if v3
+        
+        kwargs = {
+            'shape': shape,
+            'chunks': chunks,
+            'dtype': dtype,
+            'fill_value': fill_value if fill_value is not None else 0,
+        }
+        
+        if hasattr(self.store, 'create_array'):
+             # Zarr v3
+             # Do not pass 'compressor' or 'compressors' to be safe
+             arr = self.store.create_array(name, **kwargs)
+        else:
+             # Zarr v2
+             kwargs['compressor'] = compressor
+             arr = self.store.create_dataset(
+                name,
+                maxshape=maxshape,
+                overwrite=True,
+                **kwargs
+            )
         
         logger.debug(f"Created array {name}: shape={shape}, dtype={dtype}, chunks={chunks}")
         
@@ -451,8 +476,8 @@ class ZarrDatasetWriter:
         current_size = self.store['radio_maps'].shape[0]
         if idx >= current_size:
             new_size = idx + 1
-            self.store['radio_maps'].resize(new_size, *self.store['radio_maps'].shape[1:])
-            self.store['osm_maps'].resize(new_size, *self.store['osm_maps'].shape[1:])
+            self.store['radio_maps'].resize((new_size, *self.store['radio_maps'].shape[1:]))
+            self.store['osm_maps'].resize((new_size, *self.store['osm_maps'].shape[1:]))
         
         # Write
         self.store['radio_maps'][idx] = radio_map

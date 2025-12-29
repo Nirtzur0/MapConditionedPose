@@ -35,8 +35,8 @@ def batch_measurements():
     seq_len = 10
     
     return {
-        'rt_features': torch.randn(batch_size, seq_len, 8),
-        'phy_features': torch.randn(batch_size, seq_len, 10),
+        'rt_features': torch.randn(batch_size, seq_len, 10),
+        'phy_features': torch.randn(batch_size, seq_len, 8),
         'mac_features': torch.randn(batch_size, seq_len, 6),
         'cell_ids': torch.randint(0, 512, (batch_size, seq_len)),
         'beam_ids': torch.randint(0, 64, (batch_size, seq_len)),
@@ -49,11 +49,11 @@ def batch_measurements():
 def batch_maps():
     """Create dummy map batch."""
     batch_size = 4
-    H = W = 512
+    H = W = 256
     
     return {
         'radio_map': torch.randn(batch_size, 5, H, W),
-        'osm_map': torch.randn(batch_size, 4, H, W),
+        'osm_map': torch.randn(batch_size, 5, H, W),
     }
 
 
@@ -74,7 +74,8 @@ class TestRadioEncoder:
         assert encoder.d_model == cfg['d_model']
         assert encoder.num_cells == cfg['num_cells']
     
-    def test_forward_pass(self, config, batch_measurements):
+    @pytest.mark.parametrize('batch_size', [1, 4, 16])
+    def test_forward_pass(self, config, batch_measurements, batch_size):
         """Test forward pass."""
         cfg = config['model']['radio_encoder']
         encoder = RadioEncoder(
@@ -83,18 +84,33 @@ class TestRadioEncoder:
             d_model=cfg['d_model'],
             nhead=cfg['nhead'],
             num_layers=cfg['num_layers'],
-            rt_features_dim=8,
-            phy_features_dim=10,
+            rt_features_dim=10,
+            phy_features_dim=8,
             mac_features_dim=6,
         )
         
-        output = encoder(batch_measurements)
+        # Adjust batch size of measurements
+        current_bs = batch_measurements['cell_ids'].shape[0]
+        if batch_size > current_bs:
+            # Repeat/Tile to match size
+            repeats = (batch_size + current_bs - 1) // current_bs
+            measurements = {
+                k: v.repeat(repeats, *([1]*(v.ndim-1)))[:batch_size] 
+                if isinstance(v, torch.Tensor) 
+                else v # Handle non-tensors (mask is tensor)
+                for k, v in batch_measurements.items()
+            }
+        else:
+            measurements = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch_measurements.items()}
+        
+        output = encoder(measurements)
         
         # Check output shape
-        batch_size = batch_measurements['cell_ids'].shape[0]
         assert output.shape == (batch_size, cfg['d_model'])
     
-    def test_masked_sequence(self, config, batch_measurements):
+    @pytest.mark.parametrize('mask_ratio', [0.0, 0.5, 0.9])
+    def test_masked_sequence(self, config, batch_measurements, mask_ratio):
         """Test with masked (padded) sequences."""
         cfg = config['model']['radio_encoder']
         encoder = RadioEncoder(
@@ -103,13 +119,18 @@ class TestRadioEncoder:
             d_model=cfg['d_model'],
             nhead=cfg['nhead'],
             num_layers=2,  # Fewer layers for speed
-            rt_features_dim=8,
-            phy_features_dim=10,
+            rt_features_dim=10,
+            phy_features_dim=8,
             mac_features_dim=6,
         )
         
-        # Mask second half of sequence
-        batch_measurements['mask'][:, 5:] = False
+        # Create mask
+        seq_len = batch_measurements['mask'].shape[1]
+        valid_len = int(seq_len * (1 - mask_ratio))
+        valid_len = max(1, valid_len)  # At least one valid
+        
+        batch_measurements['mask'][:] = True
+        batch_measurements['mask'][:, valid_len:] = False
         
         output = encoder(batch_measurements)
         
@@ -413,6 +434,7 @@ class TestUELocalizationModel:
     def test_attention_visualization(self, config, batch_measurements, batch_maps):
         """Test attention weights extraction for visualization."""
         model = UELocalizationModel(config)
+        model.eval()
         
         outputs, attention_weights = model.forward_with_attention(
             batch_measurements,

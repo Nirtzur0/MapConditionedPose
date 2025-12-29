@@ -214,3 +214,56 @@ class FineHead(nn.Module):
         uncertainties = F.softplus(scale_raw) + self.sigma_min  # [B, k, 2]
         
         return offsets, uncertainties
+
+    def nll_loss(
+        self,
+        pred_offsets: torch.Tensor,
+        pred_uncert: torch.Tensor,
+        true_position: torch.Tensor,
+        mixture_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute Negative Log Likelihood (NLL) for a Gaussian Mixture Model (GMM).
+        
+        Args:
+            pred_offsets: [batch, k, 2] Predicted means (mu)
+            pred_uncert: [batch, k, 2] Predicted standard deviations (sigma)
+            true_position: [batch, 2] True target position (absolute or relative?)
+                           Usually this function receives 'true_offsets' relative to cell centers
+                           if pred_offsets are relative.
+                           Assuming true_position matches pred_offsets domain.
+            mixture_weights: [batch, k] Mixing coefficients (pi) - should sum to 1
+        
+        Returns:
+            nll: scalar NLL loss
+        """
+        # Expand true position to match k candidates
+        # true_position: [B, 2] -> [B, 1, 2] -> [B, k, 2]
+        target = true_position.unsqueeze(1).expand(-1, self.top_k, -1)
+        
+        # Gaussian Log Likelihood for each component k
+        # log N(y; mu, sigma) = -0.5 * log(2*pi) - log(sigma) - 0.5 * ((y-mu)/sigma)^2
+        # We sum over spatial dimensions (2) assuming diagonal covariance (independent x,y)
+        
+        # term 1: -log(sigma)
+        log_sigma = torch.log(pred_uncert + 1e-10) # [B, k, 2]
+        
+        # term 2: -0.5 * ((y-mu)/sigma)^2
+        diff = target - pred_offsets
+        squared_err = (diff / (pred_uncert + 1e-10)) ** 2 # [B, k, 2]
+        
+        log_prob_component = -log_sigma - 0.5 * squared_err - 0.5 * torch.log(torch.tensor(2 * torch.pi))
+        
+        # Sum over x, y dimensions to get log prob vector for each k
+        log_prob_k = torch.sum(log_prob_component, dim=-1) # [B, k]
+        
+        # Mixture Log Likelihood
+        # log P(y) = log sum_k (pi_k * exp(log_prob_k))
+        #          = log sum_k exp(log_pi_k + log_prob_k)
+        #          = LogSumExp(log_pi_k + log_prob_k)
+        
+        log_weights = torch.log(mixture_weights + 1e-10) # [B, k]
+        
+        log_likelihood = torch.logsumexp(log_weights + log_prob_k, dim=-1) # [B]
+        
+        return -torch.mean(log_likelihood)

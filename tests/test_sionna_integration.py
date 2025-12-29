@@ -31,8 +31,11 @@ def test_sionna_config_loading():
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    assert 'scene_dir' in config
-    assert 'carrier_frequency_hz' in config
-    assert 'bandwidth_hz' in config
-    assert 'num_samples' in config
-    assert 'output_dir' in config
+        if 'data_generation' in config:
+            config = config['data_generation']
+        
+        assert 'scenes' in config
+        assert 'carrier_frequency_hz' in config
+        assert 'bandwidth_hz' in config
+        assert 'num_samples' in config
+        assert 'output' in config

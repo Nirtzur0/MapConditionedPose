@@ -307,6 +307,19 @@ class RadioLocalizationDataset(Dataset):
             if 'num_paths' in rt_group:
                 num_paths_val = rt_group['num_paths'][zarr_idx]
                 rt_features.append(float(np.mean(num_paths_val)) if hasattr(num_paths_val, '__len__') else float(num_paths_val))
+
+            # New Positioning KPIs
+            if 'toa' in rt_group:
+                val = rt_group['toa'][zarr_idx]
+                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
+                
+            if 'is_nlos' in rt_group:
+                val = rt_group['is_nlos'][zarr_idx]
+                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
+
+            if 'rms_angular_spread' in rt_group:
+                val = rt_group['rms_angular_spread'][zarr_idx]
+                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
             
             if rt_features:
                 rt_data['features'] = torch.tensor(
@@ -327,6 +340,15 @@ class RadioLocalizationDataset(Dataset):
             if 'cqi' in phy_group: phy_features.append(np.mean(phy_group['cqi'][zarr_idx]) if phy_group['cqi'][zarr_idx].size > 0 else 7.0)
             if 'ri' in phy_group: phy_features.append(np.mean(phy_group['ri'][zarr_idx]) if phy_group['ri'][zarr_idx].size > 0 else 1.0)
             if 'pmi' in phy_group: phy_features.append(np.mean(phy_group['pmi'][zarr_idx]) if phy_group['pmi'][zarr_idx].size > 0 else 0.0)
+            
+            # New PHY KPIs
+            if 'capacity_mbps' in phy_group: 
+                val = phy_group['capacity_mbps'][zarr_idx]
+                phy_features.append(np.mean(val) if val.size > 0 else 0.0)
+            
+            if 'condition_number' in phy_group:
+                val = phy_group['condition_number'][zarr_idx]
+                phy_features.append(np.mean(val) if val.size > 0 else 1.0)
             
             if phy_features:
                 phy_data['features'] = torch.tensor(
@@ -394,9 +416,11 @@ class RadioLocalizationDataset(Dataset):
             mac_data = self._normalize_features(mac_data, 'mac')
         
         # Pad/truncate features to model's expected dimensions
-        rt_features = rt_data.get('features', torch.zeros(seq_len, 10))
-        if rt_features.shape[-1] < 10: rt_features = torch.cat([rt_features, torch.zeros(rt_features.shape[0], 10 - rt_features.shape[-1])], dim=-1)
-        elif rt_features.shape[-1] > 10: rt_features = rt_features[..., :10]
+        # RT: Increased from 10 to 16 to accommodate ToA, NLoS, AS etc.
+        rt_target_dim = 16
+        rt_features = rt_data.get('features', torch.zeros(seq_len, rt_target_dim))
+        if rt_features.shape[-1] < rt_target_dim: rt_features = torch.cat([rt_features, torch.zeros(rt_features.shape[0], rt_target_dim - rt_features.shape[-1])], dim=-1)
+        elif rt_features.shape[-1] > rt_target_dim: rt_features = rt_features[..., :rt_target_dim]
             
         phy_features = phy_data.get('features', torch.zeros(8))
         if len(phy_features) < 8: phy_features = torch.cat([phy_features, torch.zeros(8 - len(phy_features))], dim=0)
@@ -424,9 +448,10 @@ class RadioLocalizationDataset(Dataset):
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
         
         if 'radio_maps' not in self.store:
-            # Return dummy map if not available, padded to 5 channels
+            # Return dummy map if not available, padded to 10 channels
+            # Channels: rsrp, rsrq, sinr, cqi, throughput, path_gain, snr, rms_ds, mean_delay, k_factor
             H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(5, H, W, dtype=torch.float32)
+            return torch.zeros(10, H, W, dtype=torch.float32)
         
         # Load radio map for the specific scene
         # Handle shape [NumScenes, C, H, W] or [NumScenes, H, W, C]
@@ -438,7 +463,13 @@ class RadioLocalizationDataset(Dataset):
              if radio_map.shape[-1] < radio_map.shape[0]: 
                  radio_map = radio_map.permute(2, 0, 1)
         
-        return radio_map[:5]
+        # Pad or slice to ensure 10 channels
+        current_channels = radio_map.shape[0]
+        if current_channels < 10:
+            padding = torch.zeros(10 - current_channels, radio_map.shape[1], radio_map.shape[2], dtype=radio_map.dtype)
+            radio_map = torch.cat([radio_map, padding], dim=0)
+        
+        return radio_map[:10]
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
         """Load and process an OSM building/geometry map."""

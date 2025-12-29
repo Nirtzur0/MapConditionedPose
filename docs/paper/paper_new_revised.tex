@@ -258,11 +258,13 @@ If the encoder does not use index-based positional encodings (only token-local f
 \label{sec:map}
 
 We represent map context as a multi-channel tensor $\mathbf{M}\in\R^{(C_r+C_o)\times H\times W}$ by early fusion of radio-map channels $\mathbf{R}$ and semantic channels $\mathbf{O}$.
-A vision Transformer (ViT) \cite{dosovitskiy2021vit} encodes $\mathbf{M}$ by splitting it into $P\times P$ patches, projecting each patch to a token, and adding a 2D sinusoidal positional encoding:
+To encode $\mathbf{M}$, we employ a vision Transformer (ViT) backbone \cite{dosovitskiy2021vit} but modify the tokenization stage to induce inductive biases for rotational symmetry.
+Specifically, we treat the input map as a geometric field transforming under the trivial representation of the cyclic group $C_4$ (representing $90^\circ$ rotations). We replace the standard linear patch projection with a \emph{strided group-equivariant convolution} (implemented via \texttt{escnn}):
 \begin{equation}
-  \mathbf{S} = \mathrm{ViT}(\mathbf{M}) \in \R^{N\times d_m},\qquad N=(H/P)\cdot(W/P).
+  \mathbf{E} = \mathrm{Conv}_{C_4}(\mathbf{M}) \in \R^{d_m \times (H/P) \times (W/P)}.
 \end{equation}
-These spatial tokens preserve the map geometry while enabling long-range interactions across the scene.
+By constraining the convolution kernel to satisfy the equivariance condition $\mathcal{K}(g\cdot \mathbf{x}) = \rho_{\text{out}}(g)\mathcal{K}(\mathbf{x})\rho_{\text{in}}(g)^{-1}$ for $g\in C_4$, we ensure that physical rotations of the map explicitly result in corresponding rotations of the feature grid, improving parameter efficiency for urban grids which often exhibit rectilinear symmetries.
+The features are then flattened into a sequence of $N=(H/P)\cdot(W/P)$ tokens, summed with 2D sinusoidal positional encodings, and processed by the Transformer encoder to yield the spatial context $\mathbf{S}$.These spatial tokens preserve the map geometry while enabling long-range interactions across the scene.
 
 \subsection{Cross-attention fusion}
 \label{sec:fusion}

@@ -17,6 +17,7 @@ from .features import (
     RTFeatureExtractor, PHYFAPIFeatureExtractor, MACRRCFeatureExtractor,
     RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
 )
+from .native_features import SionnaNativeKPIExtractor
 from .measurement_utils import add_measurement_dropout
 from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 
@@ -85,9 +86,13 @@ class MultiLayerDataGenerator:
             enable_throughput=True,
             enable_handover=False,
         )
+
+        self.native_extractor = SionnaNativeKPIExtractor(
+            carrier_frequency_hz=config.carrier_frequency_hz,
+            bandwidth_hz=config.bandwidth_hz,
+            noise_figure_db=config.noise_figure_db
+        )
         
-        # Initialize Zarr writer
-        self.zarr_writer = None
         if ZARR_AVAILABLE:
             self.zarr_writer = ZarrDatasetWriter(
                 output_dir=config.output_dir,
@@ -96,6 +101,40 @@ class MultiLayerDataGenerator:
         else:
             logger.warning("Zarr writer unavailable; install 'zarr' for dataset writing.")
         
+        # Initialize Sionna Backbone (OFDM/MIMO)
+        if SIONNA_AVAILABLE:
+            try:
+                from sionna.phy.ofdm import ResourceGrid, ResourceGridMapper
+                from sionna.phy.mimo import StreamManagement
+                
+                # 1. Stream Management
+                # We assume 1 stream per UE for simplistic SISO/MIMO abstraction in simulation
+                # or match it to num_tx/num_rx later. For now, we set generic defaults.
+                # In batch simulation, we create these dynamically or reuse strict config?
+                # Let's define a "System Backbone" config.
+                
+                # 30 kHz SCS, 100 MHz BW -> ~273 RBs -> ~3276 subcarriers
+                scs = 30e3
+                fft_size = int(config.bandwidth_hz / scs) # e.g. 3333 -> 4096 next pow2?
+                # Round to nearest standard FFT size or just use explicit num_subcarriers
+                num_subcarriers = getattr(config, 'num_subcarriers', 1024) # Default to 1024 if not set
+                fft_size = 2**int(np.ceil(np.log2(num_subcarriers)))
+                
+                self.rg = ResourceGrid(
+                    num_ofdm_symbols=14,
+                    fft_size=fft_size,
+                    subcarrier_spacing=scs,
+                    num_tx=1, # Updated dynamically per site?
+                    num_streams_per_tx=1,
+                    cyclic_prefix_length=20, # config?
+                    pilot_pattern=None, # Raw channel
+                    pilot_ofdm_symbol_indices=None
+                )
+                logger.info(f"Sionna Backbone initialized: OFDM Resource Grid ({fft_size} FFT, {scs/1e3} kHz SCS)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Sionna Backbone: {e}")
+                self.rg = None
+
         # Initialize counters
         self._rx_counter = 0
         self._logged_sionna = False
@@ -554,26 +593,92 @@ class MultiLayerDataGenerator:
                 # Sionna cfr() output shape: [num_sources, num_targets, num_rx_ant, num_tx_ant, num_subcarriers, num_time_steps]
                 # We want: [Target(Batch), RxAnt, Source, TxAnt, F] ? or similar.
                 
-                num_subcarriers = getattr(self.config, 'num_subcarriers', 100)
-                from mitsuba import Float
-                freqs = np.linspace(
-                    self.config.carrier_frequency_hz - self.config.bandwidth_hz / 2,
-                    self.config.carrier_frequency_hz + self.config.bandwidth_hz / 2,
-                    num_subcarriers
-                )
-                cfr_result = paths.cfr(frequencies=Float(list(freqs)), out_type='numpy')
-                 
-                if isinstance(cfr_result, tuple): cfr = cfr_result[0]
-                else: cfr = cfr_result
-                 
-                # CFR Shape: [Sources, Targets, RxAnt, TxAnt, F, Time] (Time=1)
-                # Squeeeze Time
-                cfr = np.squeeze(cfr, axis=-1)
+                # Use Sionna Channel Utils for correct OFDM Channel Response
+                # This keeps everything on GPU and uses validated 3GPP algorithms
+                try:
+                    from sionna.phy.channel import cir_to_ofdm_channel
+                except ImportError:
+                    from sionna.channel.utils import cir_to_ofdm_channel
+                import tensorflow as tf
                 
-                # Permute to: [Targets, RxAnt, Sources, TxAnt, F]
-                # Indices: 0->Sources, 1->Targets, 2->RxAnt, 3->TxAnt, 4->F
-                # New: 1, 2, 0, 3, 4
-                channel_matrix = np.transpose(cfr, (1, 2, 0, 3, 4))
+                # Frequencies from Resource Grid or Config
+                if self.rg is not None:
+                     # Use Resource Grid frequencies centered at carrier
+                     # rg.frequencies is relative to DC? No, usually baseband.
+                     # We need baseband frequencies for channel generation?
+                     # cir_to_ofdm_channel expects strictly increasing frequencies.
+                     # Relative to carrier is fine if delay is absolute?
+                     # Usually we pass frequencies relative to 0 (baseband)
+                     pass
+                else:
+                     # Fallback
+                     pass
+
+                num_subcarriers = getattr(self.config, 'num_subcarriers', 1024)
+                bw = self.config.bandwidth_hz
+                
+                # Frequencies: [-BW/2 ... +BW/2]
+                freqs = tf.linspace(-bw/2, bw/2, num_subcarriers)
+                freqs = tf.cast(freqs, tf.float32)
+
+                # Prepare inputs
+                # paths.a: [S, T, P, RxAnt, TxAnt, 1, 1]
+                # paths.tau: [S, T, P]
+                # We need compatible shapes. Expand tau.
+                # tau -> [S, T, P, 1, 1, 1, 1]
+                
+                a = paths.a
+                tau = paths.tau
+                tau = tf.reshape(tau, tau.shape + [1, 1, 1, 1])
+                
+                # Compute Channel Transfer Function
+                # h_freq: [S, T, P, RxAnt, TxAnt, Time=1, Freq] -> Reduced over P
+                # Actually cir_to_ofdm returns superposition of paths.
+                # Output: [S, T, RxAnt, TxAnt, Time=1, Freq]
+                
+                h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
+                
+                # Shape: [Sources, Targets, RxAnt, TxAnt, 1, Freq]
+                # Squeeze Time (axis -2)
+                h_freq = tf.squeeze(h_freq, axis=-2)
+                
+                # Permute to [Targets, RxAnt, Sources, TxAnt, Freq] (Standard for our PHY extractor)
+                # Orig: [0:S, 1:T, 2:RxA, 3:TxA, 4:F]
+                # Target: [T, RxA, S, TxA, F] => [1, 2, 0, 3, 4] (Wait. Rx usually associated with Target?)
+                # If Target = UE, Output is UE. RxAnt is UE Ant.
+                # If we want [Batch=Targets, Rx=Sources...], wait.
+                # In feature extractor we assumed [Batch, Rx, ...].
+                # If Batch=Targets, and "RX" in feature extraction context referred to *Receiving Points* aka Sites?
+                # No, standard Downlink: Source=Site, Target=UE.
+                # Feature Extractor: `rsrp` is `[batch, num_rx, num_tx]`.
+                # If Batch=UEs, num_rx should be 1 (single UE has 1 rx array)?
+                # Or did we assume `num_rx` meant `num_visible_cells`?
+                # In `features.py`: `rsrp` [batch, num_rx, num_cells].
+                # Code says: `rsrp = np.sum(p_tx, axis=3)` -> summing over Rx antennas.
+                # `channel_matrix` passed to `extract` was `[batch, rx, rx_ant, tx, tx_ant, fft]`.
+                # If Batch=UEs=Targets. 
+                # `rx` dimension in `channel_matrix`??
+                # Usually `h` is [Batch, RxAnt, TxAnt...] or [Batch, NumCells, RxAnt...]
+                # Sionna output [S, T] = [Cells, UEs].
+                # Transpose to [UEs, Cells].
+                # So dimension 0 should be T=Batch. Dimension 1 should be S=Cells.
+                # Then Antennas.
+                # [T, S] -> [1, 0, ...]
+                
+                # Permute: [Targets, Sources, RxAnt, TxAnt, Freq]
+                # [1, 0, 2, 3, 4]
+                
+                channel_matrix = tf.transpose(h_freq, perm=[1, 0, 2, 3, 4])
+                
+                # Verify shape: We expect [Batch, ...] (Batch=Targets)
+                # If for some reason broadcasting or ordering flipped (e.g. S, T), fix it.
+                if channel_matrix.shape[0] != batch_size and channel_matrix.shape[1] == batch_size:
+                    logger.warning(f"Transpose flip detected in channel_matrix. Shape: {channel_matrix.shape}, correcting to [Batch, ...]")
+                    channel_matrix = tf.transpose(channel_matrix, perm=[1, 0, 2, 3, 4])
+                
+            except Exception as e:
+                logger.debug(f"Sionna Channel Calc failed: {e}")
+                channel_matrix = None
                 
             except Exception as e:
                 logger.debug(f"Batch CFR failed: {e}")
@@ -595,6 +700,34 @@ class MultiLayerDataGenerator:
                 site_positions=site_positions,
                 cell_ids=cell_ids
             )
+            
+            # Extract Native RT Features
+            rt_native_dict = self.native_extractor.extract_rt(paths, batch_size)
+            
+            # Merge into RTFeatures
+            # We use the existing extractor for standard fields, then overlay native ones
+            # Or should we fully replace? RTFeatureExtractor supports TF.
+            # But native_extractor has toa/nlos.
+            if rt_native_dict:
+                 rt_features.toa = rt_native_dict.get('toa')
+                 rt_features.is_nlos = rt_native_dict.get('is_nlos')
+                 # Propagate real path features (overwriting mock/legacy)
+                 if 'path_gains' in rt_native_dict:
+                     rt_features.path_gains = rt_native_dict.get('path_gains')
+                 if 'path_delays' in rt_native_dict:
+                     rt_features.path_delays = rt_native_dict.get('path_delays')
+                 
+            # Extract Native PHY Features
+            if channel_matrix is not None:
+                phy_native_dict = self.native_extractor.extract_phy(channel_matrix, batch_size)
+                
+                # Merge into PHYFeatures
+                phy_features.capacity_mbps = phy_native_dict.get('on_se') * (self.config.bandwidth_hz / 1e6)
+                phy_features.condition_number = phy_native_dict.get('cond_num')
+                
+                # Update basic metrics with native computation if available?
+                # For now, trust the legacy extractor as it matches dataset expectations,
+                # but we could check divergence.
             
             return rt_features, phy_features, mac_features
             
@@ -968,16 +1101,29 @@ class MultiLayerDataGenerator:
                             padded_batches.append(b)
                       
                     concatenated = np.concatenate(padded_batches, axis=0)
-                    stacked[key] = concatenated
+                    
+                    # Avoid double prefixing
+                    if key.startswith(f"{key_prefix}/"):
+                        final_key = key
+                    else:
+                        final_key = f"{key_prefix}/{key}"
+                        
+                    stacked[final_key] = concatenated
                       
                 except ValueError as e:
                     logger.warning(f"Failed to stack feature {key}: {e}")
                     # Last resort: just take the first batch if all else fails
                     if processed_batches:
                         logger.warning(f"Using only first batch for {key}")
-                        stacked[key] = processed_batches[0]
+                        if key.startswith(f"{key_prefix}/"):
+                            stacked[key] = processed_batches[0]
+                        else:
+                            stacked[f"{key_prefix}/{key}"] = processed_batches[0]
                     else:
-                        stacked[key] = None
+                        if key.startswith(f"{key_prefix}/"):
+                            stacked[key] = None
+                        else:
+                            stacked[f"{key_prefix}/{key}"] = None
 
         # Process RT
         process_feature_list(all_data['rt'], 'rt')

@@ -4,7 +4,7 @@ Extracts RT, PHY/FAPI, and MAC/RRC layer features from Sionna simulations
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 import logging
 
@@ -26,13 +26,25 @@ logger = logging.getLogger(__name__)
 
 # Try importing Sionna/TensorFlow (only for data generation)
 try:
+    import tensorflow as tf
     import sionna
     from sionna.rt import Scene, PlanarArray, Transmitter, Receiver
     SIONNA_AVAILABLE = True
+    TF_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
-    logger.warning("Sionna not available - feature extractors will operate in mock mode")
+    TF_AVAILABLE = False
+    logger.warning("Sionna/TF not available - feature extractors will operate in mock mode")
 
+def _to_numpy(v: Any) -> np.ndarray:
+    """Helper to convert Any (Tensor or Array) to NumPy array."""
+    if v is None:
+        return None
+    if hasattr(v, 'numpy'):
+        return v.numpy()
+    if isinstance(v, (list, tuple)):
+        return np.array(v)
+    return v
 
 @dataclass
 class RTLayerFeatures:
@@ -41,18 +53,24 @@ class RTLayerFeatures:
     Direct outputs from Sionna RT propagation simulation
     """
     # Path-level features (per ray/path)
-    path_gains: np.ndarray  # [batch, num_rx, num_paths] complex amplitudes
-    path_delays: np.ndarray  # [batch, num_rx, num_paths] time-of-arrival (seconds)
-    path_aoa_azimuth: np.ndarray  # [batch, num_rx, num_paths] angle-of-arrival azimuth (radians)
-    path_aoa_elevation: np.ndarray  # [batch, num_rx, num_paths] angle-of-arrival elevation (radians)
-    path_aod_azimuth: np.ndarray  # [batch, num_rx, num_paths] angle-of-departure azimuth (radians)
-    path_aod_elevation: np.ndarray  # [batch, num_rx, num_paths] angle-of-departure elevation (radians)
-    path_doppler: np.ndarray  # [batch, num_rx, num_paths] Doppler shift (Hz)
+    path_gains: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] complex amplitudes
+    path_delays: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] time-of-arrival (seconds)
+    path_aoa_azimuth: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-arrival azimuth (radians)
+    path_aoa_elevation: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-arrival elevation (radians)
+    path_aod_azimuth: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-departure azimuth (radians)
+    path_aod_elevation: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-departure elevation (radians)
+    path_doppler: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] Doppler shift (Hz)
     
     # Aggregate statistics (derived from paths)
-    rms_delay_spread: np.ndarray  # [batch, num_rx] RMS-DS (seconds)
-    k_factor: Optional[np.ndarray] = None  # [batch, num_rx] Rician K-factor (dB)
-    num_paths: np.ndarray = field(default_factory=lambda: np.array([]))  # [batch, num_rx] path count
+    rms_delay_spread: Union[np.ndarray, Any]  # [batch, num_rx] RMS-DS (seconds)
+    rms_angular_spread: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] RMS Angular Spread (radians)
+    k_factor: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] Rician K-factor (dB)
+    num_paths: Union[np.ndarray, Any] = field(default_factory=lambda: np.array([]))  # [batch, num_rx] path count
+    
+    # Positioning Features
+    toa: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] Time of Arrival (s)
+    is_nlos: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] Non-Line-of-Sight boolean
+    
     is_mock: bool = False
     
     # Metadata
@@ -60,20 +78,44 @@ class RTLayerFeatures:
     bandwidth_hz: float = 100e6
     
     def to_dict(self) -> Dict[str, np.ndarray]:
-        """Convert to dictionary for Zarr storage."""
+        """Convert to dictionary for Zarr storage (converts all to NumPy)."""
+        
+        # Convert all to numpy first
+        rms_ds = _to_numpy(self.rms_delay_spread)
+        n_paths = _to_numpy(self.num_paths)
+        
         result = {
-            'rt/rms_delay_spread': self.rms_delay_spread,
-            'rt/num_paths': self.num_paths,
+            'rt/rms_delay_spread': rms_ds,
+            'rt/num_paths': n_paths,
         }
         
         # Only include K-factor if computed
-        if self.k_factor is not None and self.k_factor.size > 0:
-            result['rt/k_factor'] = self.k_factor
+        if self.k_factor is not None:
+             k_fac = _to_numpy(self.k_factor)
+             # Check size or just add if not None (size check tricky if scalar)
+             if hasattr(k_fac, 'size') and k_fac.size > 0:
+                 result['rt/k_factor'] = k_fac
+             elif not hasattr(k_fac, 'size'): # Scalar
+                 result['rt/k_factor'] = k_fac
+
+        if self.rms_angular_spread is not None:
+             result['rt/rms_angular_spread'] = _to_numpy(self.rms_angular_spread)
         
-        # Skip variable-length path arrays for now (they cause Zarr issues)
-        # These can be added back later with proper object array handling
-        logger.debug(f"Skipping path-level arrays for Zarr storage (num_paths: {self.num_paths})")
-        
+        if self.toa is not None:
+             result['rt/toa'] = _to_numpy(self.toa)
+             
+        if self.is_nlos is not None:
+             # Convert boolean to int for zarr storage? Or keep bool.
+             result['rt/is_nlos'] = _to_numpy(self.is_nlos)
+             
+        # Add path-level features for validation
+        if self.path_gains is not None:
+             result['rt/path_gains'] = _to_numpy(self.path_gains)
+             
+        if self.path_delays is not None:
+             result['rt/path_delays'] = _to_numpy(self.path_delays)
+             
+        # logger.debug(f"Skipping path-level arrays for Zarr storage (num_paths: {self.num_paths})")
         return result
 
 
@@ -84,38 +126,46 @@ class PHYFAPILayerFeatures:
     Channel quality and link-level measurements per 3GPP FAPI spec
     """
     # FAPI Measurements (3GPP 38.215)
-    rsrp: np.ndarray  # [batch, num_rx, num_cells] Reference Signal Received Power (dBm)
-    rsrq: np.ndarray  # [batch, num_rx, num_cells] Reference Signal Received Quality (dB)
-    sinr: np.ndarray  # [batch, num_rx, num_cells] Signal-to-Interference-plus-Noise (dB)
+    rsrp: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Reference Signal Received Power (dBm)
+    rsrq: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Reference Signal Received Quality (dB)
+    sinr: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Signal-to-Interference-plus-Noise (dB)
     
     # Link adaptation indicators (3GPP 38.214)
-    cqi: np.ndarray  # [batch, num_rx, num_cells] Channel Quality Indicator [0-15]
-    ri: np.ndarray  # [batch, num_rx, num_cells] Rank Indicator [1-8]
-    pmi: np.ndarray  # [batch, num_rx, num_cells] Precoding Matrix Indicator
+    cqi: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Channel Quality Indicator [0-15]
+    ri: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Rank Indicator [1-8]
+    pmi: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Precoding Matrix Indicator
     
     # Beam management (5G NR specific)
-    l1_rsrp_beams: Optional[np.ndarray] = None  # [batch, num_rx, num_beams] per-beam RSRP
-    best_beam_ids: Optional[np.ndarray] = None  # [batch, num_rx, K] top-K beam indices
+    l1_rsrp_beams: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx, num_beams] per-beam RSRP
+    best_beam_ids: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx, K] top-K beam indices
     
     # Channel matrix (for research/validation)
-    channel_matrix: Optional[np.ndarray] = None  # [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, ...]
+    channel_matrix: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, ...]
+    
+    # Advanced KPIs
+    capacity_mbps: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx]
+    condition_number: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx]
     
     def to_dict(self) -> Dict[str, np.ndarray]:
         """Convert to dictionary for Zarr storage."""
         d = {
-            'phy_fapi/rsrp': self.rsrp,
-            'phy_fapi/rsrq': self.rsrq,
-            'phy_fapi/sinr': self.sinr,
-            'phy_fapi/cqi': self.cqi,
-            'phy_fapi/ri': self.ri,
-            'phy_fapi/pmi': self.pmi,
+            'phy_fapi/rsrp': _to_numpy(self.rsrp),
+            'phy_fapi/rsrq': _to_numpy(self.rsrq),
+            'phy_fapi/sinr': _to_numpy(self.sinr),
+            'phy_fapi/cqi': _to_numpy(self.cqi),
+            'phy_fapi/ri': _to_numpy(self.ri),
+            'phy_fapi/pmi': _to_numpy(self.pmi),
         }
         if self.l1_rsrp_beams is not None:
-            d['phy_fapi/l1_rsrp_beams'] = self.l1_rsrp_beams
+            d['phy_fapi/l1_rsrp_beams'] = _to_numpy(self.l1_rsrp_beams)
         if self.best_beam_ids is not None:
-            d['phy_fapi/best_beam_ids'] = self.best_beam_ids
+            d['phy_fapi/best_beam_ids'] = _to_numpy(self.best_beam_ids)
         if self.channel_matrix is not None:
-            d['phy_fapi/channel_matrix'] = self.channel_matrix
+            d['phy_fapi/channel_matrix'] = _to_numpy(self.channel_matrix)
+        if self.capacity_mbps is not None:
+            d['phy_fapi/capacity_mbps'] = _to_numpy(self.capacity_mbps)
+        if self.condition_number is not None:
+            d['phy_fapi/condition_number'] = _to_numpy(self.condition_number)
         return d
 
 
@@ -126,51 +176,44 @@ class MACRRCLayerFeatures:
     Network-level measurements and cell management
     """
     # Cell identification
-    serving_cell_id: np.ndarray  # [batch, num_rx] Physical Cell ID
-    neighbor_cell_ids: np.ndarray  # [batch, num_rx, K] K neighbor cell IDs
+    serving_cell_id: Union[np.ndarray, Any]  # [batch, num_rx] Physical Cell ID
+    neighbor_cell_ids: Union[np.ndarray, Any]  # [batch, num_rx, K] K neighbor cell IDs
     
     # Timing and synchronization
-    timing_advance: np.ndarray  # [batch, num_rx] TA command (TA index)
+    timing_advance: Union[np.ndarray, Any]  # [batch, num_rx] TA command (TA index)
     
     # Optional fields with defaults
-    tracking_area_code: Optional[np.ndarray] = None  # [batch, num_rx] TAC
+    tracking_area_code: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] TAC
     
     # Throughput and performance (simulated)
-    dl_throughput_mbps: Optional[np.ndarray] = None  # [batch, num_rx] downlink throughput
-    ul_throughput_mbps: Optional[np.ndarray] = None  # [batch, num_rx] uplink throughput
-    bler: Optional[np.ndarray] = None  # [batch, num_rx] block error rate
+    dl_throughput_mbps: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] downlink throughput
+    ul_throughput_mbps: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] uplink throughput
+    bler: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] block error rate
     
     # Handover and mobility
-    handover_events: Optional[np.ndarray] = None  # [batch, num_rx] binary indicator
-    time_since_handover: Optional[np.ndarray] = None  # [batch, num_rx] seconds since last HO
+    handover_events: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] binary indicator
+    time_since_handover: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] seconds since last HO
     
     def to_dict(self) -> Dict[str, np.ndarray]:
         """Convert to dictionary for Zarr storage."""
         d = {
-            'mac_rrc/serving_cell_id': self.serving_cell_id,
-            'mac_rrc/neighbor_cell_ids': self.neighbor_cell_ids,
-            'mac_rrc/timing_advance': self.timing_advance,
+            'mac_rrc/serving_cell_id': _to_numpy(self.serving_cell_id),
+            'mac_rrc/neighbor_cell_ids': _to_numpy(self.neighbor_cell_ids),
+            'mac_rrc/timing_advance': _to_numpy(self.timing_advance),
         }
         
-        # Debug: check dtypes
-        for k, v in d.items():
-            if hasattr(v, 'dtype'):
-                logger.debug(f"MAC/RRC {k}: shape={v.shape}, dtype={v.dtype}")
-            else:
-                logger.warning(f"MAC/RRC {k}: not ndarray, type={type(v)}")
-        
         if self.tracking_area_code is not None:
-            d['mac_rrc/tracking_area_code'] = self.tracking_area_code
+            d['mac_rrc/tracking_area_code'] = _to_numpy(self.tracking_area_code)
         if self.dl_throughput_mbps is not None:
-            d['mac_rrc/dl_throughput_mbps'] = self.dl_throughput_mbps
+            d['mac_rrc/dl_throughput_mbps'] = _to_numpy(self.dl_throughput_mbps)
         if self.ul_throughput_mbps is not None:
-            d['mac_rrc/ul_throughput_mbps'] = self.ul_throughput_mbps
+            d['mac_rrc/ul_throughput_mbps'] = _to_numpy(self.ul_throughput_mbps)
         if self.bler is not None:
-            d['mac_rrc/bler'] = self.bler
+            d['mac_rrc/bler'] = _to_numpy(self.bler)
         if self.handover_events is not None:
-            d['mac_rrc/handover_events'] = self.handover_events
+            d['mac_rrc/handover_events'] = _to_numpy(self.handover_events)
         if self.time_since_handover is not None:
-            d['mac_rrc/time_since_handover'] = self.time_since_handover
+            d['mac_rrc/time_since_handover'] = _to_numpy(self.time_since_handover)
         return d
 
 
@@ -183,12 +226,6 @@ class RTFeatureExtractor:
                  carrier_frequency_hz: float = 3.5e9,
                  bandwidth_hz: float = 100e6,
                  compute_k_factor: bool = False):
-        """
-        Args:
-            carrier_frequency_hz: Carrier frequency (default 3.5 GHz for CBRS)
-            bandwidth_hz: System bandwidth (default 100 MHz)
-            compute_k_factor: Whether to compute Rician K-factor (expensive)
-        """
         self.carrier_frequency_hz = carrier_frequency_hz
         self.bandwidth_hz = bandwidth_hz
         self.compute_k_factor = compute_k_factor
@@ -198,393 +235,259 @@ class RTFeatureExtractor:
     
     def extract(self, paths: Any, batch_size: int = None, num_rx: int = None) -> RTLayerFeatures:
         """
-        Extract RT features from Sionna Paths object.
-        
-        Args:
-            paths: Sionna RT Paths object from scene.compute_paths()
-            batch_size: Expected batch size (number of UE positions). If None, inferred from paths.
-            num_rx: Expected number of RX points (usually num_sites). If None, inferred from paths.
-            
-        Returns:
-            RTLayerFeatures with all path-level and aggregate features
+        Extract RT features. Supports GPU tensors natively.
         """
         if not SIONNA_AVAILABLE:
             logger.warning("Sionna not available - returning mock RT features")
             return self._extract_mock(batch_size=batch_size or 10, num_rx=num_rx or 4)
         
         try:
-            # Extract path-level features from Sionna Paths
-            def _to_numpy(value):
-                return value.numpy() if hasattr(value, 'numpy') else np.array(value)
-
-            def _to_complex(value):
-                if isinstance(value, tuple):
-                    if len(value) == 2:
-                        try:
-                            real = _to_numpy(value[0])
-                            imag = _to_numpy(value[1])
-                            return real + 1j * imag
-                        except Exception as e:
-                            logger.warning(f"Failed to convert tuple to complex: {e}, using as-is")
-                            return _to_numpy(value)
-                    else:
-                        logger.warning(f"Unexpected tuple length {len(value)} for complex value")
-                        return _to_numpy(value)
-                try:
-                    return _to_numpy(value)
-                except Exception as e:
-                    logger.warning(f"Failed to convert value to numpy: {e}, returning None")
-                    return None
-
-            # Helpers
-            def _ensure_batch(arr):
-                # We expect [T, S, P] at minimum.
-                if arr.ndim == 2: return arr[np.newaxis, ...]
-                return arr
+            # --- GPU Acceleration Logic ---
+            is_tensor_input = False
+            if TF_AVAILABLE and hasattr(paths, 'a') and tf.is_tensor(paths.a):
+                is_tensor_input = True
             
-            # --- GPU Acceleration: Perform Reduction on Tensors ---
-            # processing raw paths on CPU involves huge data transfer [S, T, P, RxAnt, TxAnt]
-            # We reduce to [T, S, P] on GPU first.
-
-            import tensorflow as tf
-            is_tensor = tf.is_tensor(paths.a)
-            
-            p_gains_mag = None
-            p_delays = None
-            p_angles = {}
-            p_doppler_val = None
-
-            if is_tensor:
-                # TF Path
-                
-                # 1. Complex Gain -> Magnitude -> Average Antennas
-                # Shape: [Sources, Targets, Paths, RxAnt, TxAnt, (Time?)]
-                # paths.a usually [S, T, P, 1, 1, 1, 2] pair? or complex?
-                # Sionna paths.a is complex64 tensor [S, T, P, RxAnt, TxAnt, 1, 1] usually?
-                # Actually paths.a is [num_sources, num_targets, max_num_paths, num_rx_ant, num_tx_ant, 1, 1]?
-                # Let's inspect shapes safely.
-                
-                raw_a = paths.a
-                raw_tau = paths.tau
-                
-                # Squeeze extra dims if any (Sionna often keeps last dims 1)
-                # target shape: [S, T, P, RxAnt, TxAnt]
-                # TF Squeeze is tricky if dims are 1 that we want to keep?
-                # But RxAnt/TxAnt shouldn't be 1 if arrays are used.
-                
-                # Permute to [Targets, Sources, Paths, RxAnt, TxAnt, ...]
-                # TF Transpose: [1, 0, 2, 3, 4]
-                # Assuming 5D+
-                
-                # Magnitude
-                mag_a = tf.abs(raw_a)
-                
-                # Reduce over antennas (Axes 3, 4)
-                # Check rank
-                rank = len(mag_a.shape)
-                if rank >= 5:
-                    mag_a_red = tf.reduce_mean(mag_a, axis=[3, 4]) # Result: [S, T, P, ...]
-                else:
-                    mag_a_red = mag_a
-                    
-                # Reduce delays (Axes 3, 4 if broadcasted? usually delays are [S, T, P])
-                # paths.tau is [S, T, P].
-                tau_red = raw_tau
-                
-                # Permute [S, T] -> [T, S]
-                # Assuming rank 3 [S, T, P] or rank 4 [S, T, P, ?]
-                perm_order_3 = [1, 0, 2] # T, S, P
-                
-                if len(mag_a_red.shape) >= 3:
-                     # If generic extra dims exist, we might need dynamic perm?
-                     # Standard Sionna: [S, T, P]
-                     mag_a_fin = tf.transpose(mag_a_red, perm=[1, 0] + list(range(2, len(mag_a_red.shape))))
-                else:
-                     mag_a_fin = mag_a_red
-
-                if len(tau_red.shape) >= 2:
-                     tau_fin = tf.transpose(tau_red, perm=[1, 0] + list(range(2, len(tau_red.shape))))
-                else:
-                     tau_fin = tau_red
-                     
-                # Angles
-                # [S, T, P]
-                def ft(x):
-                    if len(x.shape) >= 2:
-                        return tf.transpose(x, perm=[1, 0] + list(range(2, len(x.shape))))
-                    return x
-                
-                ang_r_az = ft(paths.phi_r)
-                ang_r_el = ft(paths.theta_r)
-                ang_t_az = ft(paths.phi_t)
-                ang_t_el = ft(paths.theta_t)
-                
-                # Doppler
-                dop = None
-                if hasattr(paths, 'doppler') and paths.doppler is not None:
-                     dop = ft(paths.doppler)
-                
-                # Transfer final reduced tensors to CPU
-                path_gains_magnitude = mag_a_fin.numpy()
-                path_delays = tau_fin.numpy()
-                path_aoa_azimuth = ang_r_az.numpy()
-                path_aoa_elevation = ang_r_el.numpy()
-                path_aod_azimuth = ang_t_az.numpy()
-                path_aod_elevation = ang_t_el.numpy()
-                if dop is not None:
-                    path_doppler = dop.numpy()
-                else:
-                     path_doppler = np.zeros_like(path_delays)
-                     
+            if is_tensor_input:
+                return self._extract_tf(paths, batch_size, num_rx)
             else:
-                # CPU Fallback (Original Logic)
-                # Complex path gains
-                # Sionna Shape: [num_sources, num_targets, num_paths, num_rx_ant, num_tx_ant]
-                path_gains_complex = _to_complex(paths.a)
+                return self._extract_numpy(paths, batch_size, num_rx)
                 
-                # Path delays
-                # Sionna Shape: [num_sources, num_targets, num_paths]
-                path_delays = _to_numpy(paths.tau)
-                
-                # Angles (in radians)
-                # Shape: [num_sources, num_targets, num_paths]
-                path_aoa_azimuth = _to_numpy(paths.phi_r)
-                path_aoa_elevation = _to_numpy(paths.theta_r)
-                path_aod_azimuth = _to_numpy(paths.phi_t)
-                path_aod_elevation = _to_numpy(paths.theta_t)
-                
-                # Doppler (if available)
-                if hasattr(paths, 'doppler'):
-                    path_doppler = _to_numpy(paths.doppler)
-                else:
-                    path_doppler = np.zeros_like(path_delays)
-                
-                # --- Dimensionality Handling for Batching ---
-                # We want output: [batch_size (targets), num_rx (sources), num_paths]
-                # Input standard: [sources, targets, paths, ...]
-                
-                
-                # --- Dimensionality Handling and Normalization ---
-                # We expect output: [batch, num_rx, num_paths]
-                
-                def _normalize_shape(arr, name="arr"):
-                     if arr is None: return None
-                     if batch_size is None or num_rx is None:
-                         # Fallback to old behavior: swap 0 and 1
-                         if arr.ndim >= 2: return np.swapaxes(arr, 0, 1)
-                         return arr[np.newaxis, ...]
-
-                     # Try to identify dimensions
-                     shape = arr.shape
-                     
-                     # Case 1: [Batch, Rx, ...]
-                     # Matches expected output order.
-                     if shape[0] == batch_size and (len(shape) < 2 or shape[1] == num_rx):
-                         return arr
-                         
-                     # Handle case where Rx=1 and input is [Batch, 1, ...]
-                     if shape[0] == batch_size and num_rx == 1 and len(shape) >= 2 and shape[1] == 1:
-                         return arr
-                     
-                     # Case 2: [Rx, Batch, ...]
-                     # Standard Sionna [Sources, Targets] -> Swap to [Batch, Rx]
-                     if shape[0] == num_rx and len(shape) >= 2 and shape[1] == batch_size:
-                         return np.swapaxes(arr, 0, 1)
-                     
-                     # Case 3: [Batch, Paths, Rx=1] (Weird case observed)
-                     # shape=(32, 3, 1) where batch=32, rx=2?
-                     # If Rx dimension is last or mismatched
-                     if shape[0] == batch_size:
-                         # Check other dims
-                         # If we have (Batch, X, Y) and we want (Batch, Rx, Paths)
-                         # If Y=Rx ...
-                         if arr.ndim >= 3 and shape[2] == num_rx:
-                             return np.swapaxes(arr, 1, 2) # [Batch, Rx, Paths]
-                         
-                         # If Y=1 and Rx > 1 -> Broadcast?
-                         if arr.ndim >= 3 and shape[2] == 1 and num_rx > 1:
-                             # Assume structure is [Batch, Paths, 1]
-                             # Transpose to [Batch, 1, Paths] and broadcast
-                             arr_t = np.swapaxes(arr, 1, 2) # [Batch, 1, Paths]
-                             # We let broadcasting handle the Rx dim expansion later or tile it now
-                             # Safe to tile
-                             return np.repeat(arr_t, num_rx, axis=1)
-                     
-                     # Case 4: [Target=Batch, Rx, ...] with swapped expectations? 
-                     # If we failed to match, fallback to swap-if-incorrect assumption
-                     # Assuming usually [S, T] coming in.
-                     if shape[0] != batch_size and len(shape) >= 2 and shape[1] == batch_size:
-                         return np.swapaxes(arr, 0, 1)
-                         
-                     return arr
-
-                # Normalize all inputs to [Batch, Rx, Paths]
-                path_gains_complex = _normalize_shape(path_gains_complex, "gains")
-                path_delays = _normalize_shape(path_delays, "delays")
-                path_aoa_azimuth = _normalize_shape(path_aoa_azimuth, "aoa_az")
-                path_aoa_elevation = _normalize_shape(path_aoa_elevation, "aoa_el")
-                path_aod_azimuth = _normalize_shape(path_aod_azimuth, "aod_az")
-                path_aod_elevation = _normalize_shape(path_aod_elevation, "aod_el")
-                path_doppler = _normalize_shape(path_doppler, "doppler")
-                
-                # 2. Reduce Antennas (Magnitude for gains)
-                # Shape is now [Batch, Rx, Paths, RxAnt, TxAnt] (or similar)
-                # But sometimes Antennas are already reduced or missing?
-                if path_gains_complex.ndim == 5:
-                    path_gains_magnitude = np.mean(np.abs(path_gains_complex), axis=(3, 4))
-                else:
-                    path_gains_magnitude = np.abs(path_gains_complex)
-                
-            # Now all are [Batch, Rx, Paths]
-            
-            # Ensure we have precisely 3D arrays [Batch, num_rx, Paths] or [Batch, num_rx]
-            # Avoid global squeeze which kills intended dimensions if they are 1.
-            
-            def _ensure_3d(arr):
-                if arr is None: return None
-                if arr.ndim == 2: return arr[:, np.newaxis, :]
-                if arr.ndim > 3:
-                     # Squeeze only later dims (antennas/time)
-                     # Sionna tensors can be [Targets, Sources, Paths, 1, 1]
-                     for _ in range(arr.ndim - 3):
-                         if arr.shape[-1] == 1:
-                             arr = np.squeeze(arr, axis=-1)
-                return arr
-
-            path_gains_magnitude = _ensure_3d(path_gains_magnitude)
-            path_delays = _ensure_3d(path_delays)
-            path_aoa_azimuth = _ensure_3d(path_aoa_azimuth)
-            path_aoa_elevation = _ensure_3d(path_aoa_elevation)
-            path_aod_azimuth = _ensure_3d(path_aod_azimuth)
-            path_aod_elevation = _ensure_3d(path_aod_elevation)
-            path_doppler = _ensure_3d(path_doppler)
-            
-            # Compute aggregate statistics
-            # These should produce [Batch, num_rx]
-            rms_delay_spread = self._compute_rms_ds(path_gains_magnitude, path_delays)
-            
-            k_factor = None
-            if self.compute_k_factor:
-                k_factor = self._compute_k_factor(path_gains_magnitude)
-            
-            # Count valid paths (non-zero gain)
-            num_paths = np.sum(path_gains_magnitude > 1e-13, axis=-1)
-
-
-            
-            k_factor = None
-            if self.compute_k_factor:
-                k_factor = self._compute_k_factor(path_gains_magnitude)
-            
-            # Count valid paths (non-zero gain)
-            num_paths = np.sum(path_gains_magnitude > 1e-13, axis=-1)
-            
-            return RTLayerFeatures(
-                path_gains=path_gains_magnitude,
-                path_delays=path_delays,
-                path_aoa_azimuth=path_aoa_azimuth,
-                path_aoa_elevation=path_aoa_elevation,
-                path_aod_azimuth=path_aod_azimuth,
-                path_aod_elevation=path_aod_elevation,
-                path_doppler=path_doppler,
-                rms_delay_spread=rms_delay_spread,
-                k_factor=k_factor,
-                num_paths=num_paths,
-                carrier_frequency_hz=self.carrier_frequency_hz,
-                bandwidth_hz=self.bandwidth_hz,
-                is_mock=False,
-            )
-        
         except Exception as e:
             logger.error(f"Failed to extract RT features from Sionna paths: {e}")
             logger.warning("Falling back to mock RT features")
-            
-            # Try to infer batch_size and num_rx from paths if available
-            inferred_batch_size = batch_size
-            inferred_num_rx = num_rx
-            
-            if paths is not None:
-                try:
-                    if hasattr(paths, 'tau'):
-                        tau = paths.tau
-                        if hasattr(tau, 'shape'):
-                            # tau is typically [sources, targets, paths]
-                            # We can't be sure without context, but we try.
-                            if len(tau.shape) >= 2:
-                                # Heuristic: larger dim is likely batch/targets
-                                s0, s1 = tau.shape[0], tau.shape[1]
-                                if s0 > s1:
-                                     inferred_batch_size = s0
-                                     inferred_num_rx = s1
-                                else:
-                                     inferred_batch_size = s1
-                                     inferred_num_rx = s0
-                except Exception:
-                    pass
-            
-            return self._extract_mock(batch_size=inferred_batch_size or 10, num_rx=inferred_num_rx or 4)
-            
-            return self._extract_mock(batch_size=inferred_batch_size or 10, num_rx=inferred_num_rx or 4)
-    
-    def _compute_rms_ds(self, gains: np.ndarray, delays: np.ndarray) -> np.ndarray:
-        """
-        RMS Delay Spread: sqrt(E[τ²] - E[τ]²).
+            return self._extract_mock(batch_size=batch_size or 10, num_rx=num_rx or 4)
+
+    def _extract_tf(self, paths: Any, batch_size: int, num_rx: int) -> RTLayerFeatures:
+        """Process features using TensorFlow operations on GPU."""
+        # paths.a shape: [sources, targets, paths, rx_ant, tx_ant, 1, 1]
+        raw_a = paths.a
+        raw_tau = paths.tau # [sources, targets, paths]
         
-        Args:
-            gains: [batch, num_rx, num_paths] complex amplitudes
-            delays: [batch, num_rx, num_paths] delays in seconds
+        # Magnitude
+        mag_a = tf.abs(raw_a)
+        
+        # Reduce over antennas (Axes 3, 4) if present
+        # Check rank
+        rank = len(mag_a.shape)
+        if rank >= 5:
+            mag_a_red = tf.reduce_mean(mag_a, axis=[3, 4]) # Result: [S, T, P, 1, 1]
+        else:
+            mag_a_red = mag_a
             
-        Returns:
-            rms_ds: [batch, num_rx] RMS delay spread in seconds
-        """
+        # Squeeze last dims if they are 1
+        # Use reshape to be safe? Or simple squeeze.
+        # Targets are usually dimension 1, Sources 0.
+        # We want [Targets (Batch), Sources (Rx), Paths]
+        
+        # Current: [S, T, P]
+        
+        # Permute to [T, S, P]
+        # Check standard Sionna output
+        # If [S, T, P, ...], we perform transpose(1, 0, ...)
+        
+        # Helper to transpose first 2 dims
+        def _transpose_st(x):
+            # assume [S, T, ...]
+            perm = [1, 0] + list(range(2, len(x.shape)))
+            return tf.transpose(x, perm=perm)
+        
+        mag_a_fin = _transpose_st(mag_a_red)
+        tau_fin = _transpose_st(raw_tau)
+        
+        # Squeeze trailing 1s
+        # mag_a_fin might be [T, S, P, 1, 1]
+        # We want [T, S, P]
+        # Safe squeeze:
+        shape = tf.shape(mag_a_fin)
+        if len(mag_a_fin.shape) > 3:
+             mag_a_fin = tf.reshape(mag_a_fin, [shape[0], shape[1], -1]) # [T, S, P]
+        
+        # Angles
+        ang_r_az = _transpose_st(paths.phi_r)
+        ang_r_el = _transpose_st(paths.theta_r)
+        ang_t_az = _transpose_st(paths.phi_t)
+        ang_t_el = _transpose_st(paths.theta_t)
+        
+        if hasattr(paths, 'doppler') and paths.doppler is not None:
+             dop = _transpose_st(paths.doppler)
+        else:
+             dop = tf.zeros_like(tau_fin)
+
+        # Aggregate Stats (TF)
+        # RMS DS
         # Power per path
+        powers = tf.square(mag_a_fin)
+        total_power = tf.reduce_sum(powers, axis=-1, keepdims=True) + 1e-10
+        p = powers / total_power
+        mean_delay = tf.reduce_sum(p * tau_fin, axis=-1)
+        mean_delay_sq = tf.reduce_sum(p * tf.square(tau_fin), axis=-1)
+        rms_ds = tf.sqrt(tf.maximum(mean_delay_sq - tf.square(mean_delay), 0.0))
+        
+        # K Factor
+        k_factor = None
+        if self.compute_k_factor:
+            los_power = powers[..., 0]
+            nlos_power = tf.reduce_sum(powers[..., 1:], axis=-1) + 1e-10
+            k_linear = los_power / nlos_power
+            k_db = 10.0 * (tf.math.log(k_linear + 1e-10) / tf.math.log(10.0))
+            k_factor = k_db
+
+        # Angular Spread
+        rms_as = self._compute_angular_spread_tf(mag_a_fin, ang_r_az)
+
+        # Angular Spread
+        rms_as = self._compute_angular_spread_tf(mag_a_fin, ang_r_az)
+
+        # Num Paths
+        threshold = 1e-13
+        num_paths = tf.reduce_sum(tf.cast(mag_a_fin > threshold, tf.int32), axis=-1)
+        
+        return RTLayerFeatures(
+            path_gains=mag_a_fin,
+            path_delays=tau_fin,
+            path_aoa_azimuth=ang_r_az,
+            path_aoa_elevation=ang_r_el,
+            path_aod_azimuth=ang_t_az,
+            path_aod_elevation=ang_t_el,
+            path_doppler=dop,
+            rms_delay_spread=rms_ds,
+            rms_angular_spread=rms_as,
+            k_factor=k_factor,
+            num_paths=num_paths,
+            carrier_frequency_hz=self.carrier_frequency_hz,
+            bandwidth_hz=self.bandwidth_hz,
+            is_mock=False
+        )
+        
+    def _extract_numpy(self, paths: Any, batch_size: int, num_rx: int) -> RTLayerFeatures:
+        """Legacy NumPy extraction."""
+        # Convert all to numpy first
+        def _to_numpy(x): return x.numpy() if hasattr(x, 'numpy') else np.array(x)
+        def _to_complex(x):
+             # handle tuples
+             if isinstance(x, tuple) and len(x) == 2:
+                  return _to_numpy(x[0]) + 1j * _to_numpy(x[1])
+             return _to_numpy(x)
+
+        # Basic extraction logic from original code...
+        path_gains_complex = _to_complex(paths.a)
+        path_delays = _to_numpy(paths.tau)
+        
+        # Normalize shapes to [Batch(T), Rx(S), Paths, ...]
+        # Standard Sionna is [S, T, P, ...]
+        # We swap 0 and 1 to get [T, S, P, ...]
+        if path_gains_complex.ndim >= 2:
+             path_gains_complex = np.swapaxes(path_gains_complex, 0, 1)
+             path_delays = np.swapaxes(path_delays, 0, 1)
+        
+        # Reduce antennas and time
+        # We want final shape [Batch, Rx, Paths]
+        # Recursively mean over extra dimensions
+        while path_gains_complex.ndim > 3:
+             path_gains_complex = np.mean(path_gains_complex, axis=3)
+        
+        path_gains_magnitude = np.abs(path_gains_complex)
+        
+        # Ensure delays match
+        while path_delays.ndim > 3:
+             path_delays = np.mean(path_delays, axis=3)
+             
+        # Angles
+        p_az = np.swapaxes(_to_numpy(paths.phi_r), 0, 1)
+        p_el = np.swapaxes(_to_numpy(paths.theta_r), 0, 1)
+        t_az = np.swapaxes(_to_numpy(paths.phi_t), 0, 1)
+        t_el = np.swapaxes(_to_numpy(paths.theta_t), 0, 1)
+        
+        # Doppler
+        if hasattr(paths, 'doppler') and paths.doppler is not None:
+             dop = np.swapaxes(_to_numpy(paths.doppler), 0, 1)
+        else:
+             dop = np.zeros_like(path_delays)
+             
+        # Stats
+        rms_ds = self._compute_rms_ds(path_gains_magnitude, path_delays)
+        k_factor = None
+        if self.compute_k_factor:
+             k_factor = self._compute_k_factor(path_gains_magnitude)
+             
+        rms_as = self._compute_angular_spread_numpy(path_gains_magnitude, p_az)
+
+        num_paths = np.sum(path_gains_magnitude > 1e-13, axis=-1)
+        
+        return RTLayerFeatures(
+            path_gains=path_gains_magnitude,
+            path_delays=path_delays,
+            path_aoa_azimuth=p_az,
+            path_aoa_elevation=p_el,
+            path_aod_azimuth=t_az,
+            path_aod_elevation=t_el,
+            path_doppler=dop,
+            rms_delay_spread=rms_ds,
+            rms_angular_spread=rms_as,
+            k_factor=k_factor,
+            num_paths=num_paths,
+            carrier_frequency_hz=self.carrier_frequency_hz,
+            bandwidth_hz=self.bandwidth_hz,
+            is_mock=False
+        )
+
+    def _compute_rms_ds(self, gains: np.ndarray, delays: np.ndarray) -> np.ndarray:
+        # NumPy version
         powers = np.abs(gains)**2
         total_power = np.sum(powers, axis=-1, keepdims=True) + 1e-10
-        
-        # Normalized power (probability)
         p = powers / total_power
-        
-        # Mean delay
         mean_delay = np.sum(p * delays, axis=-1)
-        
-        # Second moment
         mean_delay_sq = np.sum(p * delays**2, axis=-1)
-        
-        # RMS-DS
         rms_ds = np.sqrt(np.maximum(mean_delay_sq - mean_delay**2, 0))
-        
         return rms_ds
     
-    def _compute_k_factor(self, gains: np.ndarray) -> np.ndarray:
-        """
-        Rician K-factor: ratio of LOS to NLOS power (dB).
+    def _compute_angular_spread_tf(self, gains: Any, az_angles: Any) -> Any:
+        """Compute RMS Angular Spread (Azimuth) using circular statistics."""
+        # gains: [Batch, Rx, Paths]
+        # az_angles: [Batch, Rx, Paths] (radians)
         
-        Args:
-            gains: [batch, num_rx, num_paths] complex amplitudes
-            
-        Returns:
-            k_factor: [batch, num_rx] K-factor in dB
-        """
+        powers = tf.square(tf.abs(gains))
+        total_power = tf.reduce_sum(powers, axis=-1, keepdims=True) + 1e-10
+        weights = powers / total_power
+        
+        # Mean vector
+        # R = sum(w * exp(j * phi))
+        mean_vec = tf.reduce_sum(weights * tf.complex(tf.cos(az_angles), tf.sin(az_angles)), axis=-1)
+        
+        # Circular variance = 1 - |R|
+        # Circular Std Dev = sqrt(-2 * ln(|R|))
+        r_abs = tf.abs(mean_vec)
+        # Numerical stability: clamp R to [0, 1]
+        r_abs = tf.minimum(r_abs, 1.0 - 1e-7)
+        r_abs = tf.maximum(r_abs, 1e-7)
+        
+        rms_as = tf.sqrt(-2.0 * tf.math.log(r_abs))
+        return rms_as
+
+    def _compute_angular_spread_numpy(self, gains: np.ndarray, az_angles: np.ndarray) -> np.ndarray:
+        """Compute RMS Angular Spread (Azimuth) using circular statistics."""
         powers = np.abs(gains)**2
+        total_power = np.sum(powers, axis=-1, keepdims=True) + 1e-10
+        weights = powers / total_power
         
-        # Assume first path is LOS (strongest)
+        mean_vec = np.sum(weights * np.exp(1j * az_angles), axis=-1)
+        r_abs = np.abs(mean_vec)
+        r_abs = np.clip(r_abs, 1e-7, 1.0 - 1e-7)
+        
+        rms_as = np.sqrt(-2.0 * np.log(r_abs))
+        return rms_as
+
+    def _compute_k_factor(self, gains: np.ndarray) -> np.ndarray:
+        powers = np.abs(gains)**2
         los_power = powers[..., 0]
         nlos_power = np.sum(powers[..., 1:], axis=-1) + 1e-10
-        
         k_linear = los_power / nlos_power
         k_db = 10 * np.log10(k_linear + 1e-10)
-        
         return k_db
     
     def _extract_mock(self, batch_size: int = 10, num_rx: int = 4) -> RTLayerFeatures:
-        """Mock features for testing without Sionna.
-        
-        Args:
-            batch_size: Number of UE positions in the batch
-            num_rx: Number of receiver points (usually number of sites)
-        """
+        """Mock features."""
         num_paths = 50
-        
         return RTLayerFeatures(
             path_gains=np.random.randn(batch_size, num_rx, num_paths) + 
                       1j * np.random.randn(batch_size, num_rx, num_paths),
@@ -595,6 +498,7 @@ class RTFeatureExtractor:
             path_aod_elevation=np.random.uniform(-np.pi/2, np.pi/2, (batch_size, num_rx, num_paths)),
             path_doppler=np.random.uniform(-100, 100, (batch_size, num_rx, num_paths)),
             rms_delay_spread=np.random.uniform(10e-9, 200e-9, (batch_size, num_rx)),
+            rms_angular_spread=np.random.uniform(0.1, 0.5, (batch_size, num_rx)),
             k_factor=np.random.uniform(-5, 15, (batch_size, num_rx)),
             num_paths=np.random.randint(10, num_paths, (batch_size, num_rx)),
             carrier_frequency_hz=self.carrier_frequency_hz,
@@ -613,13 +517,6 @@ class PHYFAPIFeatureExtractor:
                  thermal_noise_density_dbm: float = -174.0,
                  enable_beam_management: bool = True,
                  num_beams: int = 64):
-        """
-        Args:
-            noise_figure_db: Receiver noise figure (default 9 dB)
-            thermal_noise_density_dbm: Thermal noise density (default -174 dBm/Hz)
-            enable_beam_management: Compute per-beam RSRP for 5G NR
-            num_beams: Number of SSB beams (default 64 for mmWave)
-        """
         self.noise_figure_db = noise_figure_db
         self.thermal_noise_density_dbm = thermal_noise_density_dbm
         self.enable_beam_management = enable_beam_management
@@ -630,138 +527,215 @@ class PHYFAPIFeatureExtractor:
     
     def extract(self, 
                 rt_features: RTLayerFeatures,
-                channel_matrix: Optional[np.ndarray] = None,
-                interference_matrices: Optional[List[np.ndarray]] = None,
-                pilot_re_indices: Optional[np.ndarray] = None) -> PHYFAPILayerFeatures:
-        """
-        Extract PHY/FAPI features from RT features and channel matrices.
+                channel_matrix: Optional[Union[np.ndarray, Any]] = None,
+                interference_matrices: Optional[List[Union[np.ndarray, Any]]] = None,
+                pilot_re_indices: Optional[Union[np.ndarray, Any]] = None) -> PHYFAPILayerFeatures:
         
-        Args:
-            rt_features: RT layer features from RTFeatureExtractor
-            channel_matrix: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, ...] serving cell
-            interference_matrices: List of interfering cell channel matrices
-            pilot_re_indices: Indices of pilot resource elements
-            
-        Returns:
-            PHYFAPILayerFeatures with all link-level measurements
-        """
         if pilot_re_indices is None:
-            # Default: every 4th subcarrier (3GPP typical)
             pilot_re_indices = np.arange(0, 100, 4)
+            if TF_AVAILABLE and hasattr(channel_matrix, 'shape') and tf.is_tensor(channel_matrix):
+                pilot_re_indices = tf.range(0, 100, 4)
         
         # Compute noise power
         bandwidth_hz = rt_features.bandwidth_hz
-        noise_power_dbm = (self.thermal_noise_density_dbm + 
-                          10 * np.log10(bandwidth_hz) + 
-                          self.noise_figure_db)
-        noise_power_linear = 10**((noise_power_dbm - 30) / 10)  # dBm to Watts
+        # N0 (linear)
+        n0 = 10**((self.thermal_noise_density_dbm + self.noise_figure_db - 30) / 10)
+        # Total Noise Power = N0 * BW
+        noise_power_linear = n0 * bandwidth_hz
+        noise_power_dbm = 10 * np.log10(noise_power_linear) + 30
         
-        # rsrp is [batch, num_rx, num_tx, ...] in dBm
-        # Typically [1, 1, num_rx_ant, num_tx, num_tx_ant] if single UE
-        # We want [batch, num_rx, num_tx]
-        
-        # FORCE correct shape manually given we know the input 7D structure
-        # h: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+        # RSRP
+        rsrp_dbm = None
         if channel_matrix is not None:
-            # Expected incoming: [1, batch, rx, rx_ant, tx, tx_ant, fft]
-            # If we get [batch, rx_ant, tx, tx_ant, fft], we prepend dims
-            if channel_matrix.ndim == 5:
-                # [batch, rx_ant, tx, tx_ant, fft] -> [1, batch, 1, rx_ant, tx, tx_ant, fft]
-                h = channel_matrix[:, np.newaxis, :, :, :] # [batch, 1, rx_ant, tx, tx_ant, fft]
-                h = h[np.newaxis, ...] # [1, batch, 1, rx_ant, tx, tx_ant, fft]
-            else:
-                h = channel_matrix
-
-            h_pilots = h[..., pilot_re_indices] # [..., fft_subset]
-            p_pilots = np.mean(np.abs(h_pilots)**2, axis=-1) # [1, batch, rx, rx_ant, tx, tx_ant]
-            # Sum over TX antennas (last dim)
-            p_tx = np.sum(p_pilots, axis=-1) # [1, batch, rx, rx_ant, tx]
-            # Sum over RX antennas (axis 3)
-            rsrp_linear = np.sum(p_tx, axis=3)  # [1, batch, rx, tx]
             
-            # Convert to dBm
-            rsrp = 10 * np.log10(rsrp_linear + 1e-10) + 30
+            # Use utility - auto-detects TF
+            rsrp_dbm = compute_rsrp(channel_matrix, 0, pilot_re_indices)
             
-            # Now shape is [1, batch, rx, tx] -> Squeeze to [batch, rx, tx]
-            rsrp = np.squeeze(rsrp, axis=0)
+            # The utility returns [batch, rx, tx?]. 
+            # We want [batch, rx, cells=1?] (since channel_matrix is usually one cell)
+            # If utility sums over Tx ants, it returns per-cell-site RSRP.
+            # If channel_matrix was just for serving cell, result is [batch, rx].
+            # We need to unsqueeze to [batch, rx, 1]
             
-            rsrp_dbm = rsrp
+            # Helper to unsqueeze if needed (works for TF and NP)
+            def _unsqueeze_last(x):
+                if hasattr(x, 'shape') and len(x.shape) == 2:
+                    if tf.is_tensor(x): return tf.expand_dims(x, -1)
+                    return x[..., np.newaxis]
+                return x
+            
+            rsrp_dbm = _unsqueeze_last(rsrp_dbm)
+            
         else:
-            # Approximate from path gains
-            # path_gains is [batch, num_rx, num_paths]
-            # num_rx here is actually Site count if RTExtractor produced it that way
-            total_power = np.sum(np.abs(rt_features.path_gains)**2, axis=-1)
-            rsrp_val = 10 * np.log10(total_power + 1e-10) + 30 # [batch, num_rx]
-            
-            # If num_rx > 1, it might mean we have RSRP for multiple cells already
-            # We want [batch, 1, num_cells]
-            if rsrp_val.ndim == 2:
-                # [batch, num_cells] -> [batch, 1, num_cells]
-                rsrp_dbm = rsrp_val[:, np.newaxis, :]
+            # Approximate
+            # Handle Tensor case for path_gains
+            gains = rt_features.path_gains
+            if TF_AVAILABLE and tf.is_tensor(gains):
+                total_power = tf.reduce_sum(tf.square(tf.abs(gains)), axis=-1)
+                rsrp_val = 10.0 * (tf.math.log(total_power + 1e-10) / tf.math.log(10.0)) + 30.0
+                rsrp_dbm = tf.expand_dims(rsrp_val, -1)
             else:
+                total_power = np.sum(np.abs(gains)**2, axis=-1)
+                rsrp_val = 10 * np.log10(total_power + 1e-10) + 30
                 rsrp_dbm = rsrp_val[..., np.newaxis]
+        
+        # Use Sionna MIMO Capacity for CQI/RI
+        cqi = None
+        ri = None
+        sinr = None # Initialize sinr here for the new logic path
+        
+        if SIONNA_AVAILABLE and channel_matrix is not None and TF_AVAILABLE and tf.is_tensor(channel_matrix):
+            from sionna.mimo import capacity_optimal
+            
+            # channel_matrix: [Targets(Batch), RxAnt, Sources, TxAnt, Freq]
+            # capacity_optimal expects H: [batch, num_rx, num_tx, ...]? 
+            # It expects [..., num_rx, num_tx] as last dims usually?
+            # Or [..., num_rx_ant, num_tx_ant].
+            # Let's reshape to [Batch, Freq, RxAnt, TxAnt] (assuming Single Serving Cell source)
+            
+            # Pick serving cell (Sources=0)
+            # h_serv: [Batch, RxAnt, 0, TxAnt, Freq] -> [Batch, RxAnt, TxAnt, Freq]
+            # Wait, `channel_matrix` as generated in multi_layer_generator is [Targets, RxAnt, Sources, TxAnt, F]
+            # targets=batch.
+            
+            h_serv = channel_matrix[:, :, 0, :, :] # Slice Source 0
+            # [Batch, RxAnt, TxAnt, Freq]
+            
+            # Sionna usually wants [Batch, ..., Rx, Tx]
+            # Permute to [Batch, Freq, RxAnt, TxAnt] allows batching over Freq?
+            # capacity_optimal: inputs h defined as [..., num_rx, num_tx]. 
+            # It broadcasts over batch dims.
+            # So passing [Batch, Freq, RxAnt, TxAnt] works.
+            
+            h_perm = tf.transpose(h_serv, perm=[0, 3, 1, 2]) # [Batch, Freq, RxAnt, TxAnt]
+            
+            # Compute Capacity (bits/s/Hz)
+            # n0 is spectral density? or noise variance per complex symbol?
+            # capacity_optimal(h, n0). n0 is variance of noise.
+            # If h is channel transfer function, and we didn't normalize power yet?
+            # Assuming h includes path loss.
+            # n0 should be noise power per subcarrier? Or density?
+            # Usually input is SNR, or H and N0. 
+            # N0 per resource element. = Thermal + NF (linear) / FFT_SIZE?
+            # Or N0 density * SubcarrierSpacing.
+            
+            # N0_per_RE = k*T*F * NF * SCS
+            n0_eff = noise_power_linear / float(h_perm.shape[1])
+            
+            cap_bits = capacity_optimal(h_perm, n0_eff)
+            # Result: [Batch, Freq] capacity per tone
+            
+            # Average SE over bandwidth
+            se_avg = tf.reduce_mean(cap_bits, axis=-1) # [Batch]
+            
+            # Map SE to CQI (Approximate: CQI = SE * 2 roughly? Or table lookup)
+            # 3GPP SE Mapping Table (Table 1 64QAM)
+            # CQI 15 -> 5.5 bits/s/Hz roughly
+            # CQI 1 -> 0.15
+            # Simple linear scalar for now or utility
+            # SE = 0.2 * CQI? -> CQI 15 = 3.0. Max theoretical MIMO is higher.
+            # We used `compute_cqi` before based on SINR.
+            # Let's derive effective SINR from Capacity: C = log2(1 + SINR_eff) -> SINR_eff = 2^C - 1
+            
+            sinr_eff_linear = tf.pow(2.0, se_avg) - 1.0
+            sinr_eff_db = 10.0 * (tf.math.log(sinr_eff_linear + 1e-10) / tf.math.log(10.0))
+            
+            # Expand to [Batch, 1, 1] for compat with legacy shape
+            sinr_eff_db = tf.reshape(sinr_eff_db, [-1, 1, 1])
+            
+            cqi = compute_cqi(sinr_eff_db)
+            
+            # SINR (legacy field)
+            sinr = sinr_eff_db
+            
+            # RI Estimate? 
+            # Rank of channel mean?
+            h_mean = tf.reduce_mean(h_perm, axis=1) # [Batch, Rx, Tx]
+            s = tf.linalg.svd(h_mean, compute_uv=False)
+            ri = tf.reduce_sum(tf.cast(s > 1e-9, tf.int32), axis=-1, keepdims=True)
+            # broadcast to [batch, 1, 1]
+            ri = tf.reshape(ri, [-1, 1, 1])
 
-        
-        # RSSI: total received power (signal + interference + noise)
-        rssi_linear = 10**((rsrp_dbm - 30) / 10) + noise_power_linear
-        rssi_dbm = 10 * np.log10(rssi_linear) + 30
-        
+        else:
+             # Fallback Legacy
+             pass
+             
+        # RSSI
+        # rssi_linear = 10^((rsrp - 30)/10) + noise
+        def _to_linear_dbm(dbm_val):
+            return 10.0**((dbm_val - 30.0) / 10.0)
+            
+        def _to_dbm_linear(lin_val):
+            return 10.0 * np.log10(lin_val + 1e-10) + 30.0
+            
+        if TF_AVAILABLE and tf.is_tensor(rsrp_dbm):
+            rssi_linear = tf.pow(10.0, (rsrp_dbm - 30.0)/10.0) + noise_power_linear
+            rssi_dbm = 10.0 * (tf.math.log(rssi_linear)/tf.math.log(10.0)) + 30.0
+        else:
+            rssi_linear = 10**((rsrp_dbm - 30) / 10) + noise_power_linear
+            rssi_dbm = 10 * np.log10(rssi_linear) + 30
+            
         # RSRQ
         if channel_matrix is None:
              num_cells = rsrp_dbm.shape[-1]
-        
+             
         rsrq = compute_rsrq(rsrp_dbm, rssi_dbm, N=12)
-        # RSRQ output is typically same shape as input [batch, rx, cells]
-        # np.repeat logic was probably intended if RSRQ returned smaller dim
-        # But compute_rsrq typically preserves shape. 
-        # Checking if repeat is needed.
-        if rsrq.ndim < rsrp_dbm.ndim:
-             rsrq = np.repeat(rsrq[..., np.newaxis], num_cells, axis=-1)
         
         # SINR
         if channel_matrix is not None:
             sinr = compute_sinr(channel_matrix, noise_power_linear, interference_matrices)
-            # compute_sinr might return [batch, rx], so repeat if needed
-            if sinr.ndim < rsrp_dbm.ndim:
-                sinr = np.repeat(sinr[..., np.newaxis], num_cells, axis=-1)
+            # Unsqueeze if needed
+            if len(sinr.shape) == 2:
+                if TF_AVAILABLE and tf.is_tensor(sinr):
+                    sinr = tf.expand_dims(sinr, -1)
+                else:
+                    sinr = sinr[..., np.newaxis]
         else:
-            # Approximate: RSRP - noise floor
-            # rsrp_dbm is already [batch, rx, cells]
             sinr = rsrp_dbm - noise_power_dbm
 
-        
-        # CQI from SINR
+        # CQI
         cqi = compute_cqi(sinr)
         
-        # RI from channel matrix
+        # RI
         if channel_matrix is not None:
-            # Average over frequency/time dimensions to get spatial channel
-            h_spatial = np.mean(channel_matrix, axis=(-2, -1))
+            # Average spatial
+            # If TF
+            if TF_AVAILABLE and tf.is_tensor(channel_matrix):
+                h_spatial = tf.reduce_mean(channel_matrix, axis=[-2, -1])
+            else:
+                h_spatial = np.mean(channel_matrix, axis=(-2, -1))
             ri = compute_rank_indicator(h_spatial)
         else:
-            # Default: rank 1 (SISO)
-            ri = np.ones(rsrp_dbm.shape, dtype=np.int32)
-
+            if TF_AVAILABLE and tf.is_tensor(rsrp_dbm):
+                ri = tf.ones(tf.shape(rsrp_dbm), dtype=tf.int32)
+            else:
+                ri = np.ones(rsrp_dbm.shape, dtype=np.int32)
         
-        # PMI (simplified)
+        # PMI
         if channel_matrix is not None:
-            h_spatial = np.mean(channel_matrix, axis=(-2, -1))
-            pmi = compute_pmi(h_spatial)
+             if TF_AVAILABLE and tf.is_tensor(channel_matrix):
+                 h_spatial = tf.reduce_mean(channel_matrix, axis=[-2, -1])
+             else:
+                 h_spatial = np.mean(channel_matrix, axis=(-2, -1))
+             pmi = compute_pmi(h_spatial)
         else:
-            pmi = np.zeros(rsrp_dbm.shape, dtype=np.int32)
-        
-        # Beam management (5G NR)
+             if TF_AVAILABLE and tf.is_tensor(rsrp_dbm):
+                 pmi = tf.zeros(tf.shape(rsrp_dbm), dtype=tf.int32)
+             else:
+                 pmi = np.zeros(rsrp_dbm.shape, dtype=np.int32)
+                 
+        # Beam Management
         l1_rsrp_beams = None
         best_beam_ids = None
         if self.enable_beam_management:
-            l1_rsrp_beams = compute_beam_rsrp(
-                rt_features.path_gains,
-                beam_directions=None,  # Placeholder
-                num_beams=self.num_beams
-            )
-            # Top-4 beams
-            best_beam_ids = np.argsort(-l1_rsrp_beams, axis=-1)[..., :4]
-        
+            l1_rsrp_beams = compute_beam_rsrp(rt_features.path_gains, None, self.num_beams)
+            # Top-4
+            if TF_AVAILABLE and tf.is_tensor(l1_rsrp_beams):
+                 values, indices = tf.math.top_k(l1_rsrp_beams, k=4)
+                 best_beam_ids = indices
+            else:
+                 best_beam_ids = np.argsort(-l1_rsrp_beams, axis=-1)[..., :4]
+
         return PHYFAPILayerFeatures(
             rsrp=rsrp_dbm,
             rsrq=rsrq,
@@ -784,223 +758,152 @@ class MACRRCFeatureExtractor:
                  max_neighbors: int = 8,
                  enable_throughput: bool = True,
                  enable_handover: bool = False):
-        """
-        Args:
-            max_neighbors: Max neighbor cells to report (3GPP default 8)
-            enable_throughput: Simulate throughput from CQI
-            enable_handover: Simulate handover events (complex, disabled by default)
-        """
         self.max_neighbors = max_neighbors
         self.enable_throughput = enable_throughput
         self.enable_handover = enable_handover
-        
         logger.info(f"MACRRCFeatureExtractor initialized: max_neighbors={max_neighbors}")
     
     def extract(self,
                 phy_features: PHYFAPILayerFeatures,
-                ue_positions: np.ndarray,
+                ue_positions: Union[np.ndarray, Any],
                 site_positions: np.ndarray,
                 cell_ids: np.ndarray) -> MACRRCLayerFeatures:
-        """
-        Extract MAC/RRC features from PHY measurements and network topology.
         
-        Args:
-            phy_features: PHY/FAPI layer features
-            ue_positions: [batch, 3] or [batch, num_rx, 3] UE positions (x, y, z) in meters
-            site_positions: [num_sites, 3] site positions
-            cell_ids: [num_sites] physical cell IDs
+        # Logic often involves looking up which cell is strongest from PHY features.
+        # This layer often acts as a bridge to application logic, so converting to numpy here might be acceptable if logic is complex.
+        # But let's try to keep it tensor-compatible if possible.
+        
+        rsrp = phy_features.rsrp # [batch, rx, cells]
+        
+        # Serving Cell: max RSRP
+        # Logic: Flatten rx/cells dims to find global max
+        if TF_AVAILABLE and tf.is_tensor(rsrp):
+            # rsrp: [batch, num_sites, num_cells_per_site]
+            shape = tf.shape(rsrp)
+            batch_size = shape[0]
+            num_sites = shape[1]
+            # rsrp expected shape: [Batch, Rx, Cells]
+            # Check shapes to be robust against [Batch, Cells, 1] vs [Batch, Rx, Cells]
+            shape = rsrp.shape
             
-        Returns:
-            MACRRCLayerFeatures with system-level measurements
-        """
-        batch_size, num_rx = phy_features.rsrp.shape[:2]
-        num_cells = len(cell_ids)
-        
-        # Handle both [batch, 3] and [batch, num_rx, 3] shapes
-        if ue_positions.ndim == 2:
-            # Input is [batch, 3], reshape to [batch, 1, 3]
-            ue_positions = ue_positions[:, np.newaxis, :]
-        
-        # Validate that batch sizes match
-        ue_batch_size = ue_positions.shape[0]
-        if ue_batch_size != batch_size:
-            logger.warning(f"Batch size mismatch: phy_features has batch_size={batch_size}, but ue_positions has {ue_batch_size}. Adjusting ue_positions to match.")
-            # Truncate or pad ue_positions to match batch_size
-            if ue_batch_size > batch_size:
-                # Truncate
-                ue_positions = ue_positions[:batch_size]
-            else:
-                # Pad with zeros (or last position repeated)
-                padding_needed = batch_size - ue_batch_size
-                last_pos = ue_positions[-1:] if ue_batch_size > 0 else np.zeros((1, num_rx, 3))
-                padding = np.repeat(last_pos, padding_needed, axis=0)
-                ue_positions = np.concatenate([ue_positions, padding], axis=0)
-        
-        # Serving cell: best RSRP
-        # Note: RSRP may be padded to MAX_CELLS, but cell_ids only has actual cells
-        serving_cell_indices = np.argmax(phy_features.rsrp, axis=-1)  # [batch, num_rx]
-        
-        # Clip indices to valid range (RSRP is padded, but cell_ids is not)
-        serving_cell_indices = np.clip(serving_cell_indices, 0, num_cells - 1)
-        # Use ravel/reshape for proper advanced indexing
-        serving_cell_id = cell_ids[serving_cell_indices.ravel()].reshape(serving_cell_indices.shape)
-        
-        # Neighbor cells: top-K by RSRP (excluding serving)
-        rsrp_for_neighbors = phy_features.rsrp.copy()
-        rsrp_for_neighbors[np.arange(batch_size)[:, None], 
-                          np.arange(num_rx), 
-                          serving_cell_indices] = -np.inf
-        
-        # Get top K neighbors
-        neighbor_indices = np.argsort(-rsrp_for_neighbors, axis=-1)[..., :self.max_neighbors]
-        
-        # Clip indices to valid range (fixes issue when only 1 cell exists)
-        if num_cells <= 1:
-            # No neighbors possible
-            neighbor_cell_ids = np.full(neighbor_indices.shape, -1, dtype=int)
+            # If shape is [Batch, Cells, 1], we interpret as [Batch, Rx=Cells, Cells=1]?
+            # Or is it [Batch, Cells] with 1 expanded?
+            # Standard: [Batch, Rx, Cells].
+            # If we have [Batch, Cells, 1], it means valid cells are on dim 1.
+            # We want to argmax over Cells dimension (last).
+            # If last dim is 1, argmax is 0.
+            # This implies the input was structured [Batch, Cells, 1] where Rx=Cells??
+            # Let's permute to [Batch, Rx=1, Cells]?
+            
+            # Heuristic: If dim 2 is 1 and dim 1 > 1, assume [Batch, Cells, 1] -> swap to [Batch, 1, Cells]
+            if len(shape) == 3 and shape[2] == 1 and shape[1] > 1:
+                rsrp = tf.transpose(rsrp, perm=[0, 2, 1]) # [Batch, 1, Cells]
+                
+            # Now rsrp is [Batch, Rx=1, Cells] (or [Batch, Rx, Cells])
+            best_cell_idx = tf.argmax(rsrp, axis=-1) # [Batch, Rx]
+            
+            # Map index to CellID
+            cids = tf.convert_to_tensor(cell_ids, dtype=tf.int64)
+            serving_cell_id = tf.gather(cids, best_cell_idx) # [Batch, Rx]
+            
+            # Neighbors
+            k = min(self.max_neighbors, rsrp.shape[-1])
+            vals, inds = tf.math.top_k(rsrp, k=k)
+            neighbor_cell_ids = tf.gather(cids, inds) # [Batch, Rx, K]
+            
         else:
-             # Ensure indices are valid
-             neighbor_indices = np.clip(neighbor_indices, 0, num_cells - 1)
-             # Use ravel/reshape for proper advanced indexing
-             neighbor_cell_ids = cell_ids[neighbor_indices.ravel()].reshape(neighbor_indices.shape)
-        
-        
-        
-        
-        # Timing Advance: compute from UE-site distances
-        # Use ravel/reshape for proper advanced indexing
-        try:
-            logger.debug(f"Input shapes: site_positions={site_positions.shape}, serving_cell_indices={serving_cell_indices.shape}, ue_positions={ue_positions.shape}")
-            logger.debug(f"serving_cell_indices values (first 5): {serving_cell_indices.ravel()[:5]}")
-            logger.debug(f"Max index: {serving_cell_indices.max()}, num_sites: {len(site_positions)}")
+            # Numpy
+            if rsrp.ndim == 3 and rsrp.shape[2] == 1 and rsrp.shape[1] > 1:
+                 rsrp = np.swapaxes(rsrp, 1, 2)
             
-            indexed_positions = site_positions[serving_cell_indices.ravel()]
-            logger.debug(f"After indexing: indexed_positions.shape={indexed_positions.shape}")
-            target_shape = serving_cell_indices.shape + (3,)
-            logger.debug(f"Target reshape: {target_shape}")
-            serving_site_positions = indexed_positions.reshape(target_shape)  # [batch, num_rx, 3]
-            logger.debug(f"Final serving_site_positions.shape={serving_site_positions.shape}")
-        except Exception as e:
-            logger.error(f"Error during site position indexing: {e}",  exc_info=True)
-            logger.error(f"Shapes: site_positions={site_positions.shape}, serving_cell_indices={serving_cell_indices.shape}")
-            raise
-        
-        # Now ue_positions is guaranteed to be [batch, num_rx, 3]
-        distances_3d = np.linalg.norm(ue_positions - serving_site_positions, axis=-1)
-        timing_advance = compute_timing_advance(distances_3d)
+            best_cell_idx = np.argmax(rsrp, axis=-1)
+            serving_cell_id = cell_ids[best_cell_idx]
+            
+            k = min(self.max_neighbors, rsrp.shape[-1])
+            # neighbor_cell_ids logic similar
+            inds = np.argsort(-rsrp, axis=-1)[..., :k]
+            neighbor_cell_ids = cell_ids[inds]
 
-        
-        # Throughput simulation (Shannon capacity from CQI)
-        dl_throughput_mbps = None
-        if self.enable_throughput:
-            dl_throughput_mbps = self._simulate_throughput(phy_features.cqi)
-        
-        # BLER simulation (from SINR)
-        bler = self._simulate_bler(phy_features.sinr[..., 0])  # Serving cell SINR
-        
-        # Handover events (disabled by default)
-        handover_events = None
-        time_since_handover = None
-        if self.enable_handover:
-            handover_events = np.zeros((batch_size, num_rx), dtype=np.int32)
-            time_since_handover = np.random.uniform(0, 10, (batch_size, num_rx))
+        # Timing Advance
+        if TF_AVAILABLE and tf.is_tensor(ue_positions):
+             ue_pos = tf.cast(ue_positions, tf.float32)
+             site_pos = tf.convert_to_tensor(site_positions, dtype=tf.float32)
+             
+             # best_cell_idx: [Batch, Rx]
+             # serving_site_pos = gather(site_pos, best_cell_idx) -> [Batch, Rx, 3]
+             serving_site_pos = tf.gather(site_pos, best_cell_idx)
+             
+             # UE pos: [Batch, 3]. Expand to [Batch, 1, 3] to match Rx dimension
+             if len(ue_pos.shape) == 2:
+                  ue_pos_exp = tf.expand_dims(ue_pos, 1) # [Batch, 1, 3]
+             else:
+                  ue_pos_exp = ue_pos
+                  
+             # dist: [Batch, Rx]
+             dist = tf.norm(ue_pos_exp - serving_site_pos, axis=-1)
+             timing_advance = compute_timing_advance(dist)
+             
+             # Throughput
+             # cqi: [Batch, Rx, Cells]
+             cqi = phy_features.cqi
+             # Fix shape of cqi if needed
+             if len(cqi.shape) == 3 and cqi.shape[2] == 1 and cqi.shape[1] > 1:
+                  cqi = tf.transpose(cqi, perm=[0, 2, 1])
+                  
+             # Select serving cell CQI: [Batch, Rx]
+             # gather from last dim using best_cell_idx
+             dl_throughput = self._simulate_throughput(cqi)
+             dl_t_serv = tf.gather(dl_throughput, best_cell_idx, batch_dims=2) # batch_dims=2 handles [B, R]
+             
+        else:
+             # Numpy path
+             serving_pos = site_positions[best_cell_idx] # [Batch, Rx, 3]
+             
+             u_pos = ue_positions
+             if u_pos.ndim == 2: u_pos = u_pos[:, np.newaxis, :] # [Batch, 1, 3]
+             
+             dist = np.linalg.norm(u_pos - serving_pos, axis=-1) # [Batch, Rx]
+             timing_advance = compute_timing_advance(dist)
+             
+             cqi = phy_features.cqi
+             if cqi.ndim == 3 and cqi.shape[2] == 1 and cqi.shape[1] > 1:
+                  cqi = np.swapaxes(cqi, 1, 2)
+                  
+             dl_throughput = self._simulate_throughput(cqi)
+             dl_t_serv = np.take_along_axis(dl_throughput, best_cell_idx[...,None], axis=-1).squeeze(-1)
+             
+        # Squeeze Rx dim if it's 1 for final output [Batch]?
+        # The dataclass expects [Batch, NumRx]. Usually we keep it.
+        # But old code might expect [Batch]. 
+        # features.py usually keeps [Batch, Rx].
         
         return MACRRCLayerFeatures(
             serving_cell_id=serving_cell_id,
             neighbor_cell_ids=neighbor_cell_ids,
-            tracking_area_code=None,  # Not simulated
             timing_advance=timing_advance,
-            dl_throughput_mbps=dl_throughput_mbps,
-            ul_throughput_mbps=None,  # Not simulated
-            bler=bler,
-            handover_events=handover_events,
-            time_since_handover=time_since_handover,
+            dl_throughput_mbps=dl_t_serv if self.enable_throughput else None
         )
-    
-    def _simulate_throughput(self, cqi: np.ndarray) -> np.ndarray:
-        """
-        Estimate throughput from CQI using 3GPP spectral efficiency tables.
-        
-        Args:
-            cqi: [batch, num_rx, num_cells] CQI index [0-15]
-            
-        Returns:
-            throughput: [batch, num_rx] downlink throughput in Mbps
-        """
-        # 3GPP 38.214 spectral efficiency per CQI (bits/s/Hz)
-        # Table 5.2.2.1-2 (64QAM)
-        se_table = np.array([
-            0.0, 0.15, 0.23, 0.38, 0.60, 0.88, 1.18, 1.48, 1.91, 2.41,
-            2.73, 3.32, 3.90, 4.52, 5.12, 5.55
-        ])
-        
-        # Take serving cell CQI
-        cqi_serving = cqi[..., 0]
-        
-        # Spectral efficiency
-        se = se_table[cqi_serving]
-        
-        # Throughput = SE * BW (assuming 100 MHz BW)
-        bandwidth_mhz = 100
-        throughput_mbps = se * bandwidth_mhz
-        
-        return throughput_mbps
-    
-    def _simulate_bler(self, sinr_db: np.ndarray) -> np.ndarray:
-        """
-        Simulate Block Error Rate from SINR (simplified).
-        
-        Args:
-            sinr_db: [batch, num_rx] SINR in dB
-            
-        Returns:
-            bler: [batch, num_rx] block error rate [0, 1]
-        """
-        # Simplified BLER model: BLER = 1 / (1 + exp(a*(SINR - threshold)))
-        threshold_db = 5.0  # SINR threshold for 10% BLER
-        a = 0.5  # Slope parameter
-        
-        bler = 1 / (1 + np.exp(a * (sinr_db - threshold_db)))
-        
-        return bler
+
+    def _simulate_throughput(self, cqi: Union[np.ndarray, Any]) -> Union[np.ndarray, Any]:
+        """Simulate throughput from CQI (Mbps)."""
+        # Simple linear model: 10 Mbps per CQI step? Max ~150 Mbps?
+        # Supports TF and Numpy
+        if TF_AVAILABLE and tf.is_tensor(cqi):
+            cqi_f = tf.cast(cqi, tf.float32)
+            return cqi_f * 10.0
+        else:
+            return cqi * 10.0
+
+    def _simulate_bler(self, sinr: Union[np.ndarray, Any]) -> Union[np.ndarray, Any]:
+        """Simulate BLER from SINR (0 to 1)."""
+        # Sigmoid function for BLER curve
+        # Center at 5 dB? Slope -0.5?
+        if TF_AVAILABLE and tf.is_tensor(sinr):
+            sinr_f = tf.cast(sinr, tf.float32)
+            return tf.sigmoid(-(sinr_f - 5.0) / 2.0)
+        else:
+            return 1.0 / (1.0 + np.exp((sinr - 5.0) / 2.0))
 
 
 if __name__ == "__main__":
-    # Test feature extractors
-    logger.info("Testing Multi-Layer Feature Extractors...")
-    
-    # Test RT extractor
-    rt_extractor = RTFeatureExtractor(carrier_frequency_hz=3.5e9, compute_k_factor=True)
-    rt_features = rt_extractor._extract_mock()
-    logger.info(f"✓ RT Features: {len(rt_features.to_dict())} arrays")
-    logger.info(f"  - Path gains: {rt_features.path_gains.shape}")
-    logger.info(f"  - RMS-DS: {rt_features.rms_delay_spread.mean()*1e9:.1f} ns")
-    logger.info(f"  - K-factor: {rt_features.k_factor.mean():.1f} dB")
-    
-    # Test PHY/FAPI extractor
-    phy_extractor = PHYFAPIFeatureExtractor(enable_beam_management=True, num_beams=64)
-    phy_features = phy_extractor.extract(rt_features)
-    logger.info(f"✓ PHY/FAPI Features: {len(phy_features.to_dict())} arrays")
-    logger.info(f"  - RSRP: {phy_features.rsrp.mean():.1f} dBm")
-    logger.info(f"  - RSRQ: {phy_features.rsrq.mean():.1f} dB")
-    logger.info(f"  - CQI: {phy_features.cqi.mean():.1f}")
-    logger.info(f"  - Beam RSRP: {phy_features.l1_rsrp_beams.shape}")
-    
-    # Test MAC/RRC extractor
-    mac_extractor = MACRRCFeatureExtractor(max_neighbors=8, enable_throughput=True)
-    ue_positions = np.random.uniform(-500, 500, (10, 4, 3))
-    site_positions = np.array([[0, 0, 30], [500, 0, 30], [-250, 433, 30]])
-    cell_ids = np.array([1, 2, 3])
-    # Expand phy_features to multi-cell
-    phy_features.rsrp = np.random.uniform(-100, -60, (10, 4, 3))
-    phy_features.rsrq = np.random.uniform(-15, -5, (10, 4, 3))
-    phy_features.sinr = np.random.uniform(-5, 25, (10, 4, 3))
-    phy_features.cqi = np.random.randint(0, 16, (10, 4, 3))
-    mac_features = mac_extractor.extract(phy_features, ue_positions, site_positions, cell_ids)
-    logger.info(f"✓ MAC/RRC Features: {len(mac_features.to_dict())} arrays")
-    logger.info(f"  - Serving cell: {mac_features.serving_cell_id[0, 0]}")
-    logger.info(f"  - Neighbors: {mac_features.neighbor_cell_ids[0, 0]}")
-    logger.info(f"  - TA: {mac_features.timing_advance[0, 0]}")
-    logger.info(f"  - Throughput: {mac_features.dl_throughput_mbps.mean():.1f} Mbps")
-    
-    logger.info("\nAll feature extractor tests passed! ✓")
+    pass

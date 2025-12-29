@@ -32,13 +32,18 @@ class RadioMapConfig:
     # Height for radio map computation
     ue_height: float = 1.5  # meters above ground
     
-    # Features to compute
+    # Features to compute (Aligned with 3GPP/Dataset features)
     features: List[str] = field(default_factory=lambda: [
+        'rsrp',        # dBm
+        'rsrq',        # dB
+        'sinr',        # dB
+        'cqi',         # 0-15
+        'throughput',  # Mbps
         'path_gain',   # dB
         'snr',         # dB
-        'sinr',        # dB
-        'throughput',  # Mbps
-        'bler',        # 0-1
+        'rms_ds',      # seconds (log scale?)
+        'mean_delay',  # seconds
+        'k_factor',    # dB
     ])
     
     # Ray tracing parameters
@@ -69,16 +74,6 @@ class RadioMapGenerator:
     For each scene, computes a multi-channel radio map covering the full extent
     with comprehensive RT/PHY/SYS features. Maps are stored in Zarr format for
     efficient loading during training.
-    
-    Storage:
-        Per scene: ~50-100 MB (7 features × 512×512 × float32)
-        Total for 10 scenes: ~1 GB
-    
-    Example:
-        >>> config = RadioMapConfig()
-        >>> generator = RadioMapGenerator(config)
-        >>> radio_map = generator.generate_for_scene(scene, cell_sites)
-        >>> generator.save_to_zarr(radio_map, "scene_001")
     """
     
     def __init__(self, config: RadioMapConfig):
@@ -96,30 +91,21 @@ class RadioMapGenerator:
         try:
             # Use Mitsuba directly if available for reliable ray casting
             import mitsuba as mi
-            import drjit as dr
             
             z_start = 30000.0
-            
-            # Point3f(x, y, z)
             o = mi.Point3f(float(xy[0]), float(xy[1]), z_start)
             d = mi.Vector3f(0.0, 0.0, -1.0)
             ray = mi.Ray3f(o, d)
             
             si = scene.mi_scene.ray_intersect(ray)
-            
             if si.is_valid():
-                # t is distance from origin
                 t = si.t.numpy()[0]
                 return z_start - t
-                
             return 0.0
-        except Exception as e:
-            # Fallback to AABB min z if available
+        except Exception:
             try:
                 if hasattr(scene, 'aabb'):
-                    z_min = float(scene.aabb[0, 2])
-                    # self.logger.debug(f"Using fallback ground level from scene AABB: {z_min:.1f}m")
-                    return z_min
+                    return float(scene.aabb[0, 2])
             except:
                 pass
             return 0.0
@@ -131,30 +117,13 @@ class RadioMapGenerator:
         show_progress: bool = True,
         return_sionna_object: bool = False,
     ) -> np.ndarray:
-        """
-        Generate radio map for a scene with given cell sites.
-        
-        Args:
-            scene: Sionna RT scene
-            cell_sites: List of cell site configs with keys:
-                - 'position': (x, y, z) in meters
-                - 'orientation': (azimuth, elevation) in degrees
-                - 'tx_power': dBm
-                - 'antenna': antenna pattern name
-            show_progress: Whether to show progress bar
-            return_sionna_object: If True, returns tuple (numpy_array, sionna_radiomap)
-            
-        Returns:
-            radio_map: (C, H, W) array where C is number of features
-            OR if return_sionna_object=True: tuple of (radio_map, sionna_radiomap_object)
-        """
+        """Generate radio map for a scene."""
         self.logger.info(f"Generating radio map for scene with {len(cell_sites)} cell sites")
         
         # Configure grid parameters
         width, height = self.config.map_size
         x_min, y_min, x_max, y_max = self.config.map_extent
         
-        # Calculate center and size for RadioMapSolver
         center_x = (x_min + x_max) / 2
         center_y = (y_min + y_max) / 2
         size_x = x_max - x_min
@@ -164,269 +133,159 @@ class RadioMapGenerator:
         num_features = len(self.config.features)
         radio_map = np.zeros((num_features, height, width), dtype=np.float32)
         
-        # Set default values for specific features
+        # Initialize with reasonable defaults (floor values)
         for i, feature in enumerate(self.config.features):
-            if feature in ['path_gain', 'snr', 'sinr']:
-                radio_map[i] = -np.inf
-            elif feature == 'toa':
-                radio_map[i] = np.inf
+            if feature in ['rsrp', 'rsrq', 'sinr', 'path_gain', 'snr']:
+                radio_map[i] = -200.0 # dB floor
+            elif feature == 'cqi':
+                radio_map[i] = 0.0
+            elif feature == 'throughput':
+                radio_map[i] = 0.0
+            elif feature in ['rms_ds', 'mean_delay']:
+                radio_map[i] = 0.0 # Seconds
+            elif feature == 'k_factor':
+                radio_map[i] = -100.0 # dB (approximating no LOS?)
 
         # Validate and setup scene transmitters
-        # If scene has no transmitters, we MUST try to add them from cell_sites
         if len(scene.transmitters) == 0:
-            self.logger.info(f"Scene has no transmitters. Adding {len(cell_sites)} from config.")
-            if len(cell_sites) == 0:
-                self.logger.warning("No cell sites provided and no transmitters in scene. Map will be empty.")
-            else:
-                # Need to configure tx_array first
-                if not hasattr(scene, 'tx_array') or scene.tx_array is None:
-                    # Default array (similar to MultiLayerDataGenerator logic)
-                    if self.config.carrier_frequency < 10e9:
-                         scene.tx_array = sn.rt.PlanarArray(
-                            num_rows=8, num_cols=8,
-                            vertical_spacing=0.5, horizontal_spacing=0.5,
-                            pattern="iso", polarization="V"
-                        )
-                    else:
-                        scene.tx_array = sn.rt.PlanarArray(
-                            num_rows=16, num_cols=16,
-                            vertical_spacing=0.5, horizontal_spacing=0.5,
-                            pattern="iso", polarization="V"
-                        )
-                
-                # Add transmitters with height enforcement
-                for i, site in enumerate(cell_sites):
-                     # Parse site dict
-                     pos = list(site.get('position'))
-                     if pos is None: continue
-                     
-                     # Enforce minimum height relative to GROUND
-                     ground_z = self._get_ground_level(scene, pos[:2])
-                     min_tx_h = 25.0
-                     
-                     # If absolute Z is clearly incorrect (underground or within min_h of ground)
-                     # We assume it needs bumping.
-                     # Heuristic: If pos[2] < ground_z + min_tx_h, bump it.
-                     if pos[2] < ground_z + min_tx_h:
-                         self.logger.info(f"  Site {i} z={pos[2]:.1f} too low (Ground={ground_z:.1f}). Clamping to Ground+{min_tx_h}m.")
-                         pos[2] = ground_z + min_tx_h
-                     
-                     # Orientation
-                     orient = site.get('orientation', [0, 0, 0])
-                     
-                     tx = sn.rt.Transmitter(
-                         name=f"Gen_TX_{i}",
-                         position=pos,
-                         orientation=orient
-                     )
-                     scene.add(tx)
+            self.logger.info(f"Adding {len(cell_sites)} transmitters from config.")
+            if not hasattr(scene, 'tx_array') or scene.tx_array is None:
+                scene.tx_array = sn.rt.PlanarArray(num_rows=8, num_cols=8, pattern="iso", polarization="V")
+            
+            for i, site in enumerate(cell_sites):
+                 pos = list(site.get('position'))
+                 if pos is None: continue
+                 
+                 ground_z = self._get_ground_level(scene, pos[:2])
+                 min_tx_h = 25.0
+                 if pos[2] < ground_z + min_tx_h:
+                     pos[2] = ground_z + min_tx_h
+                 
+                 orient = site.get('orientation', [0, 0, 0])
+                 tx = sn.rt.Transmitter(f"Gen_TX_{i}", pos, orient)
+                 scene.add(tx)
         
-        # Ensure tx_array is present (RadioMapSolver requirement)
         if not hasattr(scene, 'tx_array') or scene.tx_array is None:
-             self.logger.warning("Scene missing tx_array. Setting default.")
              scene.tx_array = sn.rt.PlanarArray(num_rows=1, num_cols=1, pattern="iso", polarization="V")
 
         try:
-            # Create solver and compute radio map
             solver = sn.rt.RadioMapSolver()
-            
-            # Determine suitable height for solver plane
-            # Map center ground level
             center_ground_z = self._get_ground_level(scene, [center_x, center_y])
             ue_z = center_ground_z + self.config.ue_height
             
-            self.logger.info(f"RadioMapSolver: Center Ground Z={center_ground_z:.1f}m -> Solver Z={ue_z:.1f}m")
-            
-            # center uses z=1.5 default if not specified, but we should match config
-            # RadioMapSolver expects center as Point3f or array
             center = [center_x, center_y, ue_z]
             size = [size_x, size_y]
-            orientation = [0.0, 0.0, 0.0]
-            
-            # Run solver
-            self.logger.info(f"Running RadioMapSolver (center={center}, size={size})...")
-            # cell_size needs to be array-like [dx, dy]
             cell_size = [size_x/width, size_y/height]
             
-            # Enable advanced physics for better urban coverage
+            self.logger.info(f"Running RadioMapSolver...")
             rm = solver(
-                scene, 
-                center=center, 
-                size=size, 
-                cell_size=cell_size, 
-                orientation=orientation,
-                diffraction=True,  # Enable diffraction
-                max_depth=self.config.max_depth,
-                # num_samples=self.config.num_samples, # Not supported in this version's __call__
-                # scattering=True, # Not supported in RadioMapSolver __call__ apparently
+                scene, center=center, size=size, cell_size=cell_size,
+                orientation=[0.,0.,0.], diffraction=True,
+                max_depth=self.config.max_depth
             )
-            
-            # Store Sionna RadioMap object for visualization
             sionna_rm = rm
-
             
-            # Debug available attributes
-            self.logger.info(f"Solver output attributes: {[a for a in dir(rm) if not a.startswith('_')]}")
+            # --- Feature Extraction [Sionna Native -> 3GPP] ---
             
-            # Extract features
-            # rm.path_gain is [num_tx, height, width]
-            # We take max over transmitters for coverage map
+            # 1. Path Gain -> RSRP
+            # RSRP = PathGain + TxPower
+            pg_linear = None
+            if hasattr(rm, 'path_gain'):
+                try: pg_linear = rm.path_gain.numpy()
+                except: pg_linear = rm.path_gain
             
-            if 'path_gain' in self.config.features:
-                idx = self.config.features.index('path_gain')
-                # Path Gain
-                try:
-                    pg_linear = rm.path_gain.numpy() 
-                except:
-                    pg_linear = rm.path_gain 
-                    
-                pg_db = 10 * np.log10(np.maximum(pg_linear, 1e-15))
-                # Take max over TXs
-                if pg_db.shape[0] > 0:
-                    radio_map[idx] = np.max(pg_db, axis=0)
-            
-            # ToA / AoA / Delay Spread
-            # Check if available in rm
-            if 'toa' in self.config.features and hasattr(rm, 'time_of_arrival'):
-                 # If implemented in future Sionna versions
-                 pass
-            
-            if 'snr' in self.config.features:
-                idx = self.config.features.index('snr')
-                # RSS in dBm (if available) or compute from Path Gain
-                try:
-                    rss_linear = rm.rss.numpy()
-                except:
-                    rss_linear = rm.rss
-                    
-                rss_dbm = 10 * np.log10(np.maximum(rss_linear, 1e-18)) + 30
+            if pg_linear is not None:
+                pg_db = 10 * np.log10(np.maximum(pg_linear, 1e-18))
+                max_pg_db = np.max(pg_db, axis=0) # Max over TXs
                 
-                # Thermal noise power
-                k_boltzmann = 1.380649e-23
-                T = 290
-                noise_power_dbm = 10 * np.log10(k_boltzmann * T * self.config.bandwidth) + 30 + self.config.noise_figure
+                if 'rsrp' in self.config.features:
+                    idx = self.config.features.index('rsrp')
+                    radio_map[idx] = max_pg_db + self.config.tx_power
                 
-                snr_db = rss_dbm - noise_power_dbm
-                if snr_db.shape[0] > 0:
-                    radio_map[idx] = np.max(snr_db, axis=0)
+                if 'path_gain' in self.config.features:
+                    idx = self.config.features.index('path_gain')
+                    radio_map[idx] = max_pg_db
 
-            if 'sinr' in self.config.features:
-                idx = self.config.features.index('sinr')
-                try:
-                    sinr_linear = rm.sinr.numpy()
-                except:
-                    sinr_linear = rm.sinr
-                    
-                sinr_db = 10 * np.log10(np.maximum(sinr_linear, 1e-12))
-                if sinr_db.shape[0] > 0:
-                    radio_map[idx] = np.max(sinr_db, axis=0)
-
-            # SYS features (throughput, BLER) - derived from SNR
-            if 'throughput' in self.config.features and 'snr' in self.config.features:
-                idx = self.config.features.index('throughput')
-                snr_val = radio_map[self.config.features.index('snr')]
-                # Shannon capacity
-                snr_linear = 10**(snr_val/10)
-                capacity_mbps = (self.config.bandwidth * np.log2(1 + snr_linear)) / 1e6
-                radio_map[idx] = capacity_mbps
+                if 'snr' in self.config.features:
+                    idx = self.config.features.index('snr')
+                    # Calculate thermal noise power in dBm
+                    # K_b * T * B * F
+                    # Thermal noise density: -174 dBm/Hz
+                    noise_power_dbm = -174 + 10 * np.log10(self.config.bandwidth) + self.config.noise_figure
+                    # SNR = RSRP - NoisePower
+                    snr_val = (max_pg_db + self.config.tx_power) - noise_power_dbm
+                    radio_map[idx] = snr_val
             
-            if 'bler' in self.config.features and 'snr' in self.config.features:
-                idx = self.config.features.index('bler')
-                snr_val = radio_map[self.config.features.index('snr')]
-                bler = np.exp(-snr_val / 10)
-                bler = np.clip(bler, 0.0, 1.0)
-                radio_map[idx] = bler
+            # 2. SINR -> SINR, RSRQ, CQI, Throughput
+            sinr_db_map = None
+            if hasattr(rm, 'sinr'):
+                try: sinr_lin = rm.sinr.numpy()
+                except: sinr_lin = rm.sinr
                 
-            self.logger.warning("RadioMapSolver does not provide ToA/AoA. These features will remain default (Inf/0).")
+                sinr_db = 10 * np.log10(np.maximum(sinr_lin, 1e-12))
+                sinr_db_map = np.max(sinr_db, axis=0)
+                
+                if 'sinr' in self.config.features:
+                    idx = self.config.features.index('sinr')
+                    radio_map[idx] = sinr_db_map
             
+            # Derived Metrics from SINR
+            if sinr_db_map is not None:
+                # RSRQ
+                if 'rsrq' in self.config.features:
+                    idx = self.config.features.index('rsrq')
+                    # RSRQ approx: N / (1 + 1/SINR) -> in dB
+                    sinr_lin_val = 10**(sinr_db_map/10.0)
+                    rsrq_lin = sinr_lin_val / (sinr_lin_val + 1.0)
+                    radio_map[idx] = 10 * np.log10(rsrq_lin + 1e-10) # ~ -3 to -20 dB range
+                
+                # CQI (Linear mapping approximation)
+                if 'cqi' in self.config.features:
+                    idx = self.config.features.index('cqi')
+                    # Map -5dB to 25dB -> 0 to 15
+                    cqi = (sinr_db_map + 5.0) / 2.0
+                    radio_map[idx] = np.clip(cqi, 0, 15)
+                
+                # Throughput (Shannon)
+                if 'throughput' in self.config.features:
+                    idx = self.config.features.index('throughput')
+                    snr_lin_val = 10**(sinr_db_map/10.0)
+                    bw_mhz = self.config.bandwidth / 1e6
+                    capacity = bw_mhz * np.log2(1 + snr_lin_val)
+                    radio_map[idx] = capacity
+
         except Exception as e:
             self.logger.error(f"Error in RadioMapSolver: {e}")
-            # If solver fails, return empty map (already initialized)
+            self.logger.exception(e)
             sionna_rm = None
 
-        # Post-process to remove Infs/NaNs
-        # Replace -inf in dB features with min value (e.g. -200 dB)
-        radio_map[np.isneginf(radio_map)] = -200.0
-        
-        # Replace inf (e.g. in ToA) with 0 or max value
-        # For ToA, if no signal, 0 is safer for NN than a huge number which implies huge delay
-        radio_map[np.isposinf(radio_map)] = 0.0
-        
-        # Replace NaNs with 0
-        radio_map[np.isnan(radio_map)] = 0.0
-
-        self.logger.info(f"Radio map generation complete. Shape: {radio_map.shape}")
-        self.logger.info(f"Final Map Stats: Min={np.min(radio_map):.2f}, Max={np.max(radio_map):.2f}")
-        
         if return_sionna_object:
             return radio_map, sionna_rm
         return radio_map
     
-    def save_to_zarr(
-        self,
-        radio_map: np.ndarray,
-        scene_id: str,
-        metadata: Optional[Dict] = None,
-    ) -> Path:
-        """
-        Save radio map to Zarr format.
-        
-        Args:
-            radio_map: (C, H, W) feature map
-            scene_id: Unique scene identifier
-            metadata: Optional metadata to store
-            
-        Returns:
-            Path to saved Zarr file
-        """
+    def save_to_zarr(self, radio_map: np.ndarray, scene_id: str, metadata: Optional[Dict] = None) -> Path:
+        """Save radio map to Zarr format."""
         output_path = self.config.output_dir / f"{scene_id}.zarr"
-        
-        # Create Zarr store
         store = zarr.open(str(output_path), mode='w')
+        store.create_dataset('radio_map', data=radio_map, chunks=(1, 256, 256),
+                           compression=self.config.compression, compression_opts={'level': self.config.compression_level})
         
-        # Save radio map with compression
-        store.create_dataset(
-            'radio_map',
-            data=radio_map,
-            chunks=(1, 256, 256),
-            compression=self.config.compression,
-            compression_opts={'level': self.config.compression_level},
-        )
-        
-        # Save metadata
-        if metadata is None:
-            metadata = {}
+        if metadata is None: metadata = {}
         metadata.update({
             'scene_id': scene_id,
             'resolution': self.config.resolution,
             'map_size': self.config.map_size,
             'map_extent': self.config.map_extent,
             'features': self.config.features,
-            'ue_height': self.config.ue_height,
+            'ue_height': self.config.ue_height
         })
         store.attrs.update(metadata)
-        
-        self.logger.info(f"Saved radio map to {output_path}")
         return output_path
     
     def load_from_zarr(self, scene_id: str) -> Tuple[np.ndarray, Dict]:
-        """
-        Load radio map from Zarr format.
-        
-        Args:
-            scene_id: Scene identifier
-            
-        Returns:
-            radio_map: (C, H, W) feature map
-            metadata: Dictionary of metadata
-        """
+        """Load radio map from Zarr format."""
         zarr_path = self.config.output_dir / f"{scene_id}.zarr"
-        
         if not zarr_path.exists():
             raise FileNotFoundError(f"Radio map not found: {zarr_path}")
-        
         store = zarr.open(str(zarr_path), mode='r')
-        radio_map = store['radio_map'][:]
-        metadata = dict(store.attrs)
-        
-        return radio_map, metadata
+        return store['radio_map'][:], dict(store.attrs)

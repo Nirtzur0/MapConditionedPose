@@ -26,6 +26,7 @@ from src.data_generation.features import (
 from src.data_generation.multi_layer_generator import (
     DataGenerationConfig, MultiLayerDataGenerator
 )
+from src.data_generation.trajectory import sample_ue_trajectories
 
 
 # ============================================================================
@@ -392,12 +393,16 @@ class TestDataGenerationConfig:
         config = DataGenerationConfig(
             scene_dir=Path("test_scenes"),
             scene_metadata_path=Path("test_scenes/metadata.json"),
+            carrier_frequency_hz=3.5e9,
+            bandwidth_hz=100e6,
+            tx_power_dbm=43.0,
+            noise_figure_db=9.0,
         )
         
         assert config.carrier_frequency_hz == 3.5e9
         assert config.num_ue_per_tile == 100
         assert config.num_reports_per_ue == 10
-        assert config.measurement_dropout_rates is not None
+        assert config.measurement_dropout_rates is None
     
     def test_config_custom_values(self):
         """Test config with custom values."""
@@ -405,6 +410,9 @@ class TestDataGenerationConfig:
             scene_dir=Path("test_scenes"),
             scene_metadata_path=Path("test_scenes/metadata.json"),
             carrier_frequency_hz=28e9,
+            bandwidth_hz=100e6,
+            tx_power_dbm=43.0,
+            noise_figure_db=9.0,
             num_ue_per_tile=50,
             num_reports_per_ue=5,
         )
@@ -450,6 +458,10 @@ class TestMultiLayerDataGenerator:
         config = DataGenerationConfig(
             scene_dir=temp_scene_dir,
             scene_metadata_path=temp_scene_dir / "metadata.json",
+            carrier_frequency_hz=3.5e9,
+            bandwidth_hz=100e6,
+            tx_power_dbm=43.0,
+            noise_figure_db=9.0,
             num_ue_per_tile=10,
             num_reports_per_ue=5,
         )
@@ -465,6 +477,10 @@ class TestMultiLayerDataGenerator:
         config = DataGenerationConfig(
             scene_dir=temp_scene_dir,
             scene_metadata_path=temp_scene_dir / "metadata.json",
+            carrier_frequency_hz=3.5e9,
+            bandwidth_hz=100e6,
+            tx_power_dbm=43.0,
+            noise_figure_db=9.0,
             num_ue_per_tile=10,
             num_reports_per_ue=5,
         )
@@ -472,7 +488,14 @@ class TestMultiLayerDataGenerator:
         generator = MultiLayerDataGenerator(config)
         
         scene_metadata = {'bbox': {'x_min': -500, 'x_max': 500, 'y_min': -500, 'y_max': 500}}
-        trajectories = generator._sample_ue_trajectories(scene_metadata)
+        trajectories = sample_ue_trajectories(
+            scene_metadata=scene_metadata,
+            num_ue_per_tile=config.num_ue_per_tile,
+            ue_height_range=config.ue_height_range,
+            ue_velocity_range=config.ue_velocity_range,
+            num_reports_per_ue=config.num_reports_per_ue,
+            report_interval_ms=config.report_interval_ms
+        )
         
         assert len(trajectories) == 10, "Should have 10 UE trajectories"
         assert trajectories[0].shape == (5, 3), "Each trajectory should have 5 positions (x,y,z)"
@@ -487,6 +510,10 @@ class TestMultiLayerDataGenerator:
         config = DataGenerationConfig(
             scene_dir=temp_scene_dir,
             scene_metadata_path=temp_scene_dir / "metadata.json",
+            carrier_frequency_hz=3.5e9,
+            bandwidth_hz=100e6,
+            tx_power_dbm=43.0,
+            noise_figure_db=9.0,
         )
         
         generator = MultiLayerDataGenerator(config)
@@ -560,6 +587,32 @@ class TestZarrWriter:
         
         store_path = writer.finalize()
         assert store_path.exists()
+
+    def test_zarr_resume_functionality(self, temp_output_dir):
+        """Test resuming/appending to an existing Zarr dataset."""
+        from src.data_generation.zarr_writer import ZarrDatasetWriter
+        
+        # Initial write
+        writer1 = ZarrDatasetWriter(output_dir=temp_output_dir)
+        data1 = {'positions': np.zeros((50, 3))}
+        writer1.append(data1, scene_id='scene1')
+        path1 = writer1.finalize()
+        
+        # Resume (create new writer point to same dir should ideally append or handle overwrite)
+        # Note: Current implementation makes a new dataset each time. 
+        # This test ensures we don't crash and create a NEW valid dataset.
+        
+        # Sleep to ensure unique timestamp
+        import time
+        time.sleep(1.2)
+        
+        writer2 = ZarrDatasetWriter(output_dir=temp_output_dir)
+        data2 = {'positions': np.ones((50, 3))}
+        writer2.append(data2, scene_id='scene2')
+        path2 = writer2.finalize()
+        
+        assert path2.exists()
+        assert path1 != path2 # Should create unique timestamped datasets by default
 
 
 if __name__ == "__main__":

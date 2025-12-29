@@ -15,6 +15,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from unittest.mock import MagicMock
 sys.modules["plyfile"] = MagicMock() # Mock missing dependency
 
+# Skip if shapely is not installed (required by geo2sigmap)
+pytest.importorskip("shapely")
+
+# Skip entire module if open3d is not installed (required by geo2sigmap)
+try:
+    import open3d
+except ImportError:
+    pytest.skip("open3d not installed", allow_module_level=True)
+
 from geo2sigmap import lidar_terrain_mesh
 
 @pytest.fixture
