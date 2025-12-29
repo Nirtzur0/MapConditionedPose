@@ -34,7 +34,7 @@ except ImportError:
 # Try importing Sionna
 try:
     import sionna
-    from sionna.rt import Scene, Camera, load_scene
+    from sionna.rt import load_scene
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
