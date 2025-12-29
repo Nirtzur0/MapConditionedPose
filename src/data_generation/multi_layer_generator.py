@@ -322,44 +322,60 @@ class MultiLayerDataGenerator:
             
             # --- Fix UE Z-coordinates relative to terrain ---
             if SIONNA_AVAILABLE and scene is not None:
-                try:
-                    import tensorflow as tf
-                    # Batch ray-cast to find ground
-                    # Origins at [x, y, 30000]
-                    z_start = 30000.0
+                # Initialize support flag if checking for the first time
+                if not hasattr(self, '_ground_clamp_supported'):
+                    self._ground_clamp_supported = True
                     
-                    # Create batch tensors
-                    # shape [Batch, 3]
-                    origins = np.stack([
-                        ue_positions_sim_arr[:, 0], 
-                        ue_positions_sim_arr[:, 1], 
-                        np.full(len(batch), z_start)
-                    ], axis=1).astype(np.float32)
-                    
-                    directions = np.tile([0.0, 0.0, -1.0], (len(batch), 1)).astype(np.float32)
-                    
-                    # Query Sionna
-                    hits = scene.closest_point(tf.constant(origins), tf.constant(directions))
-                    
-                    # hits.positions is [Batch, 3]
-                    ground_z = hits.positions.numpy()[:, 2]
-                    
-                    # Update Z: Ground + Original Z (height relative to ground)
-                    # Use original Z as 'h_ue'
-                    h_ue = ue_positions_sim_arr[:, 2]
-                    ue_positions_sim_arr[:, 2] = ground_z + h_ue
-                    
-                    # Also update storage Z so it matches (or keep storage relative? usually absolute)
-                    # We want storage to reflect valid global coordinates
-                    # But pos_store includes offset.
-                    # Let's update `ue_positions_store` too.
-                    # storage Z = SimZ (assuming Sim and Store share Z frame, usually global UTM Z)
-                    # yes, sim_offset is xy only.
-                    for j in range(len(batch)):
-                        ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
+                if self._ground_clamp_supported:
+                    try:
+                        if not hasattr(scene, 'closest_point'):
+                            raise AttributeError("Scene missing closest_point")
+                            
+                        import tensorflow as tf
+                        # Batch ray-cast to find ground
+                        # Origins at [x, y, 30000]
+                        z_start = 30000.0
                         
-                except Exception as e:
-                    logger.warning(f"UE Ground Clamping failed: {e}")
+                        # Create batch tensors
+                        origins = np.stack([
+                            ue_positions_sim_arr[:, 0], 
+                            ue_positions_sim_arr[:, 1], 
+                            np.full(len(batch), z_start)
+                        ], axis=1).astype(np.float32)
+                        
+                        directions = np.tile([0.0, 0.0, -1.0], (len(batch), 1)).astype(np.float32)
+                        
+                        # Query Sionna
+                        hits = scene.closest_point(tf.constant(origins), tf.constant(directions))
+                        
+                        # hits.positions is [Batch, 3]
+                        ground_z = hits.positions.numpy()[:, 2]
+                        
+                        # Update Z: Ground + Original Z (height relative to ground)
+                        h_ue = ue_positions_sim_arr[:, 2]
+                        ue_positions_sim_arr[:, 2] = ground_z + h_ue
+                        
+                        # Sync storage Z
+                        for j in range(len(batch)):
+                            ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
+                            
+                    except Exception as e:
+                        # Disable future checks to avoid log spam
+                        self._ground_clamp_supported = False
+                        logger.warning(f"UE Ground Clamping failed (feature disabled): {e}")
+                        
+                        # Fallback: Try setting to Scene Z-Min + UE Height (heuristic for flat-ish scenes at high altitude)
+                        try:
+                            # Try to get AABB from Mitsuba scene or Sionna properties
+                            # Sionna usually exposes aabb as [min, max] tensor
+                            if hasattr(scene, 'aabb'):
+                                z_min = float(scene.aabb[0, 2])
+                                logger.info(f"Fallback: Setting UE Z to Scene Z-Min ({z_min:.1f}) + Height")
+                                ue_positions_sim_arr[:, 2] += z_min
+                                for j in range(len(batch)):
+                                    ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
+                        except:
+                            pass
 
             # Simulate Batch
             rt_batch, phy_batch, mac_batch = self._simulate_batch(
@@ -690,20 +706,43 @@ class MultiLayerDataGenerator:
             try:
                 # Clamp site to ground level if needed
                 if SIONNA_AVAILABLE:
-                    import tensorflow as tf
-                    z_start = 30000.0
-                    pos_t = tf.constant([[pos[0], pos[1], z_start]], dtype=tf.float32)
-                    dir_t = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
-                    hits = scene.closest_point(pos_t, dir_t)
-                    ground_z = float(hits.positions[0, 2])
-                    
-                    min_tx_h = 25.0
-                    if pos[2] < ground_z + min_tx_h:
-                         logger.debug(f"Adjusting Site {site_idx} height: {pos[2]:.1f} -> {ground_z+min_tx_h:.1f}")
-                         pos[2] = ground_z + min_tx_h
-                         
-                         # Update the object wrapper position
-                         tx.position = pos if isinstance(pos, list) else pos.tolist()
+                    try:
+                        import tensorflow as tf
+                        z_start = 30000.0
+                        pos_t = tf.constant([[pos[0], pos[1], z_start]], dtype=tf.float32)
+                        dir_t = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
+                        
+                        # Check if closest_point exists
+                        if hasattr(scene, 'closest_point'):
+                            hits = scene.closest_point(pos_t, dir_t)
+                            ground_z = float(hits.positions[0, 2])
+                            
+                            min_tx_h = 25.0
+                            if pos[2] < ground_z + min_tx_h:
+                                 logger.debug(f"Adjusting Site {site_idx} height: {pos[2]:.1f} -> {ground_z+min_tx_h:.1f}")
+                                 pos[2] = ground_z + min_tx_h
+                                 
+                                 # Update the object wrapper position
+                                 tx.position = pos if isinstance(pos, list) else pos.tolist()
+                    except Exception as clamp_e:
+                        if site_idx == 0: # Log once
+                            logger.warning(f"Tx Ground Clamping failed (will fallback to AABB if available): {clamp_e}")
+                        
+                        # Fallback to AABB Z-min
+                        try:
+                            if hasattr(scene, 'aabb'):
+                                z_min = float(scene.aabb[0, 2])
+                                # If pos is very low (e.g. 30), assume it's relative? 
+                                # But if it is < z_min, it implies it's definitely wrong for UTM.
+                                if pos[2] < z_min:
+                                     # Bump to z_min + 30m?
+                                     # Assume the provided pos[2] was intended as "height above ground" 
+                                     # if it's that small compared to z_min (e.g. 30 vs 1600).
+                                     if z_min > 500 and pos[2] < 100:
+                                         pos[2] += z_min
+                                         tx.position = pos if isinstance(pos, list) else pos.tolist()
+                        except:
+                            pass
                 
                 scene.add(tx)
                 transmitters.append(tx)

@@ -111,6 +111,14 @@ class RadioMapGenerator:
             return 0.0
         except Exception as e:
             self.logger.debug(f"Ground probe failed: {e}")
+            # Fallback to AABB min z if available
+            try:
+                if hasattr(scene, 'aabb'):
+                    z_min = float(scene.aabb[0, 2])
+                    self.logger.info(f"Using fallback ground level from scene AABB: {z_min:.1f}m")
+                    return z_min
+            except:
+                pass
             return 0.0
 
     def generate_for_scene(

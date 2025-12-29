@@ -51,7 +51,6 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         # Try to set clipping planes if possible after creation or via different args
         # For now, stick to basic args to ensure creation succeeds
         cam_top = Camera(
-            name=f"cam_top_{safe_scene_id}", # Try adding name
             position=[cx, cy, cam_z],
             look_at=[cx, cy, 0],
         )
@@ -72,7 +71,6 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         iso_dist = max_dim * 0.8
         
         cam_iso = Camera(
-            name=f"cam_iso_{safe_scene_id}",
             position=[cx - iso_dist, cy - iso_dist, max_dim * 0.6],
             look_at=[cx, cy, 0],
         )
