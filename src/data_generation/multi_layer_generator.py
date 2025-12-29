@@ -5,11 +5,13 @@ Orchestrates multi-layer radio propagation simulation, feature extraction, and d
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
 import logging
-import yaml
 import json
 import traceback
+
+from .config import DataGenerationConfig
+from .trajectory import sample_ue_trajectories
+from .visualization import render_scene_3d, save_map_visualizations
 
 from .features import (
     RTFeatureExtractor, PHYFAPIFeatureExtractor, MACRRCFeatureExtractor,
@@ -17,7 +19,6 @@ from .features import (
 )
 from .measurement_utils import add_measurement_dropout
 from .radio_map_generator import RadioMapGenerator, RadioMapConfig
-from src.datasets.radio_dataset import RadioLocalizationDataset # Reusing for OSM logic if possible, or build custom generator
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 try:
     from .zarr_writer import ZarrDatasetWriter
     from .osm_rasterizer import OSMRasterizer
-
     ZARR_AVAILABLE = True
 except ImportError:
     ZARR_AVAILABLE = False
@@ -41,165 +41,6 @@ except ImportError:
     logger.warning("Sionna not available; MultiLayerDataGenerator will operate in mock mode.")
 
 MAX_CELLS = 16  # Fixed size for array padding
-
-
-
-@dataclass
-class DataGenerationConfig:
-    """Configuration for multi-layer data generation.
-    
-    Attributes:
-        scene_dir: Directory containing M1 scenes.
-        scene_metadata_path: Path to scene metadata.
-        carrier_frequency_hz: Carrier frequency in Hz.
-        bandwidth_hz: System bandwidth in Hz.
-        tx_power_dbm: Transmit power in dBm.
-        noise_figure_db: Receiver noise figure in dB.
-        use_mock_mode: If True, uses mock data instead of Sionna.
-        max_depth: Max reflections/diffractions for ray tracing.
-        num_samples: Number of samples per source for path tracing.
-        enable_diffraction: Enable diffraction in ray tracing.
-        num_ue_per_tile: Number of UEs to sample per scene tile.
-        ue_height_range: Min/max UE height in meters.
-        ue_velocity_range: Min/max UE velocity in m/s.
-        num_reports_per_ue: Number of measurement reports per UE trajectory.
-        report_interval_ms: Time between reports in milliseconds.
-        enable_k_factor: Compute Rician K-factor.
-        enable_beam_management: Enable 5G NR beam management.
-        num_beams: Number of SSB beams.
-        max_neighbors: Max neighbor cells to report.
-        measurement_dropout_rates: Dictionary of dropout rates for measurements.
-        quantization_enabled: Enable 3GPP quantization.
-        output_dir: Output directory for the Zarr dataset.
-        zarr_chunk_size: Zarr chunk size (samples per chunk).
-    """
-    scene_dir: Path
-    scene_metadata_path: Path
-    carrier_frequency_hz: float
-    bandwidth_hz: float
-    tx_power_dbm: float
-    noise_figure_db: float
-    use_mock_mode: bool = False
-    max_depth: int = 5
-    num_samples: int = 100_000
-    enable_diffraction: bool = True
-    num_ue_per_tile: int = 100
-    ue_height_range: Tuple[float, float] = (1.5, 1.5)
-    ue_velocity_range: Tuple[float, float] = (0.0, 1.5)
-    num_reports_per_ue: int = 10
-    report_interval_ms: float = 200.0
-    enable_k_factor: bool = False
-    enable_beam_management: bool = True
-    num_beams: int = 64
-    max_neighbors: int = 8
-    measurement_dropout_rates: Optional[Dict[str, float]] = None
-    quantization_enabled: bool = True
-    output_dir: Path = Path('data/synthetic')
-    zarr_chunk_size: int = 100
-    
-    @classmethod
-    def from_yaml(cls, yaml_path: Path) -> 'DataGenerationConfig':
-        """Load configuration from YAML file."""
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
-        
-        # Extract data_generation section
-        dg_config = data.get('data_generation', {})
-        
-        # Convert paths
-        scene_dir = Path(dg_config.get('scenes', {}).get('root_dir', 'data/scenes'))
-        scene_metadata_path = Path(dg_config.get('scene_metadata_path', scene_dir / 'metadata.json'))
-        output_dir = Path(dg_config.get('output', {}).get('path', 'data/processed/sionna_dataset'))
-        
-        return cls(
-            scene_dir=scene_dir,
-            scene_metadata_path=scene_metadata_path,
-            carrier_frequency_hz=float(dg_config.get('carrier_frequency_hz', 3.5e9)),
-            bandwidth_hz=float(dg_config.get('bandwidth_hz', 100e6)),
-            tx_power_dbm=float(dg_config.get('tx_power_dbm', 43.0)),
-            noise_figure_db=float(dg_config.get('noise_figure_db', 9.0)),
-            use_mock_mode=dg_config.get('use_mock_mode', False),
-            max_depth=dg_config.get('max_depth', 5),
-            num_samples=dg_config.get('num_samples', 1_000_000),
-            enable_diffraction=dg_config.get('enable_diffraction', True),
-            num_ue_per_tile=dg_config.get('num_ue_per_tile', 100),
-            ue_height_range=tuple(dg_config.get('ue_height_range', [1.5, 1.5])),
-            ue_velocity_range=tuple(dg_config.get('ue_velocity_range', [0.0, 1.5])),
-            num_reports_per_ue=dg_config.get('num_reports_per_ue', 10),
-            report_interval_ms=dg_config.get('report_interval_ms', 200.0),
-            enable_k_factor=dg_config.get('enable_k_factor', False),
-            enable_beam_management=dg_config.get('enable_beam_management', True),
-            num_beams=dg_config.get('num_beams', 64),
-            max_neighbors=dg_config.get('max_neighbors', 8),
-            measurement_dropout_rates=dg_config.get('measurement_dropout_rates'),
-            quantization_enabled=dg_config.get('quantization_enabled', True),
-            output_dir=output_dir,
-            zarr_chunk_size=dg_config.get('zarr_chunk_size', 100),
-        )
-    scene_dir: Path
-    scene_metadata_path: Path
-    carrier_frequency_hz: float
-    bandwidth_hz: float
-    tx_power_dbm: float
-    noise_figure_db: float
-    use_mock_mode: bool = False
-    max_depth: int = 5
-    num_samples: int = 100_000
-    enable_diffraction: bool = True
-    num_ue_per_tile: int = 100
-    ue_height_range: Tuple[float, float] = (1.5, 1.5)
-    ue_velocity_range: Tuple[float, float] = (0.0, 1.5)
-    num_reports_per_ue: int = 10
-    report_interval_ms: float = 200.0
-    enable_k_factor: bool = False
-    enable_beam_management: bool = True
-    num_beams: int = 64
-    max_neighbors: int = 8
-    measurement_dropout_rates: Optional[Dict[str, float]] = None
-    quantization_enabled: bool = True
-    output_dir: Path = Path('data/synthetic')
-    zarr_chunk_size: int = 100
-    
-    @classmethod
-    def from_yaml(cls, yaml_path: Path) -> 'DataGenerationConfig':
-        """Load configuration from YAML file."""
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
-        
-        # Extract data_generation section
-        dg_config = data.get('data_generation', {})
-        
-        # Convert paths
-        scene_dir = Path(dg_config.get('scenes', {}).get('root_dir', 'data/scenes'))
-        scene_metadata_path = Path(dg_config.get('scene_metadata_path', scene_dir / 'metadata.json'))
-        output_dir = Path(dg_config.get('output', {}).get('path', 'data/processed/sionna_dataset'))
-        
-        return cls(
-            scene_dir=scene_dir,
-            scene_metadata_path=scene_metadata_path,
-            carrier_frequency_hz=float(dg_config.get('carrier_frequency_hz', 3.5e9)),
-            bandwidth_hz=float(dg_config.get('bandwidth_hz', 100e6)),
-            tx_power_dbm=float(dg_config.get('tx_power_dbm', 43.0)),
-            noise_figure_db=float(dg_config.get('noise_figure_db', 9.0)),
-            use_mock_mode=dg_config.get('use_mock_mode', False),
-            max_depth=dg_config.get('max_depth', 5),
-            num_samples=dg_config.get('num_samples', 1_000_000),
-            enable_diffraction=dg_config.get('enable_diffraction', True),
-            num_ue_per_tile=dg_config.get('num_ue_per_tile', 100),
-            ue_height_range=tuple(dg_config.get('ue_height_range', [1.5, 1.5])),
-            ue_velocity_range=tuple(dg_config.get('ue_velocity_range', [0.0, 1.5])),
-            num_reports_per_ue=dg_config.get('num_reports_per_ue', 10),
-            report_interval_ms=dg_config.get('report_interval_ms', 200.0),
-            enable_k_factor=dg_config.get('enable_k_factor', False),
-            enable_beam_management=dg_config.get('enable_beam_management', True),
-            num_beams=dg_config.get('num_beams', 64),
-            max_neighbors=dg_config.get('max_neighbors', 8),
-            measurement_dropout_rates=dg_config.get('measurement_dropout_rates'),
-            quantization_enabled=dg_config.get('quantization_enabled', True),
-            output_dir=output_dir,
-            zarr_chunk_size=dg_config.get('zarr_chunk_size', 100),
-        )
-
 
 class MultiLayerDataGenerator:
     """
@@ -328,7 +169,11 @@ class MultiLayerDataGenerator:
                 self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
                 
                 # Save map visualizations as reference images
-                self._save_map_visualizations(scene_id, radio_map, osm_map)
+                save_map_visualizations(scene_id, radio_map, osm_map, self.config.output_dir)
+                
+                # Generate 3D Scene Rederings (Sionna)
+                if SIONNA_AVAILABLE and scene_obj is not None:
+                     render_scene_3d(scene_obj, scene_id, scene_metadata, self.config.output_dir)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
         
@@ -348,15 +193,6 @@ class MultiLayerDataGenerator:
                            scene_obj: Any = None) -> Dict[str, np.ndarray]:
         """
         Generates multi-layer data for a single scene.
-        
-        Args:
-            scene_path: Path to scene.xml.
-            scene_id: Identifier for the scene.
-            scene_metadata: Optional pre-loaded metadata.
-            scene_obj: Optional pre-loaded Sionna scene.
-            
-        Returns:
-            Dictionary with all generated features and positions.
         """
         # Load scene-specific metadata
         if scene_metadata is None:
@@ -420,7 +256,15 @@ class MultiLayerDataGenerator:
             
         # Sample UE trajectories in GLOBAL frame (offset=0)
         # We will convert them to Sim/Store frames as needed
-        trajectories_global = self._sample_ue_trajectories(scene_metadata, offset=(0.0, 0.0))
+        trajectories_global = sample_ue_trajectories(
+            scene_metadata=scene_metadata,
+            num_ue_per_tile=self.config.num_ue_per_tile,
+            ue_height_range=self.config.ue_height_range,
+            ue_velocity_range=self.config.ue_velocity_range,
+            num_reports_per_ue=self.config.num_reports_per_ue,
+            report_interval_ms=self.config.report_interval_ms,
+            offset=(0.0, 0.0)
+        )
         
         # Collect data
         all_features = {
@@ -481,128 +325,6 @@ class MultiLayerDataGenerator:
         
         return scene_data
     
-    def _sample_ue_trajectories(self, scene_metadata: Dict, offset: Tuple[float, float] = (0.0, 0.0)) -> List[np.ndarray]:
-        """
-        Samples UE positions and trajectories within scene bounds.
-        
-        Args:
-            scene_metadata: Scene metadata including bounding box.
-            offset: (x, y) offset to subtract from sampled positions.
-            
-        Returns:
-            List of [num_reports, 3] position arrays for UE trajectories.
-        """
-        # Get scene bounds
-        bbox = scene_metadata.get('bbox', {})
-        x_min = bbox.get('x_min', -500)
-        x_max = bbox.get('x_max', 500)
-        y_min = bbox.get('y_min', -500)
-        y_max = bbox.get('y_max', 500)
-        
-        trajectories = []
-        # Stratified Sampling (Grid-Jittered)
-        # Guarantees uniform coverage by dividing the area into a grid
-        num_ues = self.config.num_ue_per_tile
-        
-        # Calculate aspect ratio to distribute grid cells
-        width = x_max - x_min
-        height = y_max - y_min
-        aspect_ratio = width / height if height > 0 else 1.0
-        
-        # Determine grid dimensions (cols * rows ≈ num_ues)
-        # cols / rows ≈ aspect_ratio  =>  cols ≈ rows * aspect_ratio
-        # rows * (rows * aspect_ratio) ≈ num_ues  =>  rows^2 ≈ num_ues / aspect_ratio
-        num_rows = int(np.sqrt(num_ues / aspect_ratio))
-        num_cols = int(num_ues / num_rows) if num_rows > 0 else 1
-        
-        # Adjust to match exact count or close to it
-        actual_ues = num_rows * num_cols
-        
-        # Grid cell sizes
-        cell_w = width / num_cols
-        cell_h = height / num_rows
-        
-        logger.info(f"Using Stratified Sampling: {num_cols}x{num_rows} grid ({actual_ues} UEs). bbox: {width:.0f}x{height:.0f}m")
-        
-        trajectories = []
-        
-        # Generate grid cells
-        cells = []
-        for r in range(num_rows):
-            for c in range(num_cols):
-                cells.append((r, c))
-                
-        # If we need more UEs to match exact request, add random cells
-        # (Though usually acceptable to be slightly under/over, let's just fill the grid primarily)
-        
-        for i in range(actual_ues):
-            r, c = cells[i]
-            
-            # Cell bounds
-            cell_x_min = x_min + c * cell_w
-            cell_y_min = y_min + r * cell_h
-            
-            # Sample ONE point uniformly within this cell (Jittered)
-            x0 = np.random.uniform(cell_x_min, cell_x_min + cell_w)
-            y0 = np.random.uniform(cell_y_min, cell_y_min + cell_h)
-            z0 = np.random.uniform(*self.config.ue_height_range)
-            
-            speed = np.random.uniform(*self.config.ue_velocity_range)
-            direction = np.random.uniform(0, 2*np.pi)
-            vx = speed * np.cos(direction)
-            vy = speed * np.sin(direction)
-            
-            # Generate trajectory
-            trajectory = []
-            for t in range(self.config.num_reports_per_ue):
-                dt = t * self.config.report_interval_ms / 1000.0
-                x = x0 + vx * dt
-                y = y0 + vy * dt
-                z = z0
-                
-                # Clip to bounds
-                x = np.clip(x, x_min, x_max)
-                y = np.clip(y, y_min, y_max)
-                
-                # Apply offset to convert to local coordinates
-                x_local = x - offset[0]
-                y_local = y - offset[1]
-                
-                trajectory.append([x_local, y_local, z])
-            
-            trajectories.append(np.array(trajectory))
-            
-        # Add any remaining UEs randomly if grid count was less than requested
-        remaining = num_ues - actual_ues
-        if remaining > 0:
-            logger.debug(f"Adding {remaining} extra random UEs to match requested count.")
-            for _ in range(remaining):
-                x0 = np.random.uniform(x_min, x_max)
-                y0 = np.random.uniform(y_min, y_max)
-                z0 = np.random.uniform(*self.config.ue_height_range)
-                
-                speed = np.random.uniform(*self.config.ue_velocity_range)
-                direction = np.random.uniform(0, 2*np.pi)
-                vx = speed * np.cos(direction)
-                vy = speed * np.sin(direction)
-                
-                trajectory = []
-                for t in range(self.config.num_reports_per_ue):
-                    dt = t * self.config.report_interval_ms / 1000.0
-                    x = x0 + vx * dt
-                    y = y0 + vy * dt
-                    z = z0
-                    
-                    x = np.clip(x, x_min, x_max)
-                    y = np.clip(y, y_min, y_max)
-                    
-                    x_local = x - offset[0]
-                    y_local = y - offset[1]
-                    trajectory.append([x_local, y_local, z])
-                trajectories.append(np.array(trajectory))
-
-        return trajectories
-    
     def _simulate_measurement(self,
                              scene: Any,
                              ue_position: np.ndarray,
@@ -610,18 +332,7 @@ class MultiLayerDataGenerator:
                              cell_ids: np.ndarray) -> Tuple[RTLayerFeatures, 
                                                              PHYFAPILayerFeatures,
                                                              MACRRCLayerFeatures]:
-        """
-        Runs a simulation for a single UE position.
-        
-        Args:
-            scene: Sionna RT Scene.
-            ue_position: [3] UE position (x, y, z) in meters.
-            site_positions: [num_sites, 3] site positions.
-            cell_ids: [num_sites] cell IDs.
-            
-        Returns:
-            Tuple of RT, PHY, and MAC layer features.
-        """
+        """Runs a simulation for a single UE position."""
         if not SIONNA_AVAILABLE or scene is None:
             logger.debug("Sionna unavailable or no scene; using mock simulation.")
             return self._simulate_mock(ue_position, site_positions, cell_ids)
@@ -731,15 +442,7 @@ class MultiLayerDataGenerator:
                     pass
     
     def _load_sionna_scene(self, scene_path: Path) -> Any:
-        """
-        Loads a Mitsuba XML scene into Sionna RT.
-        
-        Args:
-            scene_path: Path to scene.xml (Mitsuba format).
-            
-        Returns:
-            Sionna RT Scene object.
-        """
+        """Loads a Mitsuba XML scene into Sionna RT."""
         if not SIONNA_AVAILABLE:
             logger.warning("Sionna unavailable; cannot load scene.")
             return None
@@ -759,17 +462,7 @@ class MultiLayerDataGenerator:
     def _setup_transmitters(self, scene: Any, 
                            site_positions: np.ndarray,
                            site_metadata: Dict) -> List[Any]:
-        """
-        Setup cell site transmitters with antenna arrays.
-        
-        Args:
-            scene: Sionna RT Scene
-            site_positions: [num_sites, 3] positions (x, y, z) in meters
-            site_metadata: Site configuration
-            
-        Returns:
-            List of Sionna Transmitter objects
-        """
+        """Setup cell site transmitters with antenna arrays."""
         if not SIONNA_AVAILABLE or scene is None:
             return []
             
@@ -793,7 +486,7 @@ class MultiLayerDataGenerator:
                 pattern="iso", polarization="V"
             )
         scene.tx_array = array
-
+        
         for site_idx, pos in enumerate(site_positions):
             
             # Get site-specific metadata
@@ -825,16 +518,7 @@ class MultiLayerDataGenerator:
         return transmitters
     
     def _setup_receiver(self, scene: Any, ue_position: np.ndarray, name: str) -> str:
-        """
-        Setup UE receiver at given position.
-        
-        Args:
-            scene: Sionna RT Scene
-            ue_position: [3] position in meters
-            
-        Returns:
-            Receiver name
-        """
+        """Setup UE receiver at given position."""
         if not SIONNA_AVAILABLE or scene is None:
             return None
             
@@ -944,16 +628,10 @@ class MultiLayerDataGenerator:
                 return np.pad(a, padding, mode='constant', constant_values=fill_value)
 
         # Helper to pad TX dimension (dimension 2, usually just after [batch, rx])
-        # After safe_extract_layers, shape depends on whether RX was squeezed.
-        # Typically: [RX, TX] or [RX, TX, Cell].
-        # We need to pad the TX dimension.
         def pad_tx_dim(a, target_size=MAX_TX, fill_value=0, axis=1):
             if a is None: return a
             
-            # If axis is out of bounds (e.g. if RX was squeezed and shape is [TX]), adjust?
-            # Safer to assume RX is always present as dimension 0 based on logs.
             if axis >= a.ndim:
-                # Fallback: if axis=1 but ndim=1, assume it is [TX]
                  if axis == 1 and a.ndim == 1:
                      axis = 0
             
@@ -1020,30 +698,38 @@ class MultiLayerDataGenerator:
                     stacked[key] = arrays_cleaned
         
         return stacked
-        
-        return stacked
     
     def _apply_measurement_realism(self, scene_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """
-        Apply measurement dropout and quantization.
-        
-        Args:
-            scene_data: Scene data dictionary
-            
-        Returns:
-            scene_data_realistic: Data with dropout and quantization
-        """
+        """Apply measurement dropout and quantization."""
         if not self.config.quantization_enabled:
             return scene_data
         
         # Apply dropout to PHY/FAPI measurements
+        phy_fapi_keys = [k for k in scene_data.keys() if k.startswith('phy_fapi/')]
+        phy_fapi_dict = {k: scene_data[k] for k in phy_fapi_keys if isinstance(scene_data[k], np.ndarray)}
+        
+        # Map keys to dropout rates
+        dropout_mapping = {
+            'phy_fapi/rsrp': 'rsrp',
+            'phy_fapi/rsrq': 'rsrq',
+            'phy_fapi/sinr': 'sinr',
+            'phy_fapi/cqi': 'cqi',
+            'phy_fapi/ri': 'ri',
+            'phy_fapi/pmi': 'pmi',
+        }
+        
+        dropout_rates = {k: self.config.measurement_dropout_rates.get(v, 0.0) if self.config.measurement_dropout_rates else 0.0
+                        for k, v in dropout_mapping.items()}
+        
+        phy_fapi_dropped = add_measurement_dropout(phy_fapi_dict, dropout_rates, seed=42)
+        
+        # Update scene_data
+        scene_data.update(phy_fapi_dropped)
+        
         return scene_data
 
     def _generate_radio_map_for_scene(self, scene: Any, scene_path: Path, scene_metadata: Dict) -> np.ndarray:
-        """
-        Generates a radio map for the scene using RadioMapGenerator.
-        Returns: [C, H, W] array.
-        """
+        """Generates a radio map for the scene using RadioMapGenerator."""
         if not SIONNA_AVAILABLE:
              logger.warning("Radio Map Gen: Sionna not available.")
              return np.zeros((5, 256, 256), dtype=np.float32)
@@ -1065,7 +751,7 @@ class MultiLayerDataGenerator:
              logger.info(f"Radio Map Gen: Extent={map_extent}")
              
              map_config = RadioMapConfig(
-                 resolution=1.0, # Will be adjusted by Generator if map_size fixed
+                 resolution=1.0, 
                  map_size=(256, 256),
                  map_extent=map_extent,
                  output_dir=Path("/tmp"),
@@ -1087,9 +773,8 @@ class MultiLayerDataGenerator:
 
              generator = RadioMapGenerator(map_config)
              
-             # Generate
-             # Note: generate_for_scene returns [C, H, W] (or H,W,C?) - checked, it's [C, H, W] or [H,W,C] depending on generator.
-             # scripts/generate_radio_maps.py checks dims and permutes. We should do same.
+             # Note: generate_for_scene returns [C, H, W] or [H,W,C] depending on implementation
+             # Assuming standard format: we ensure [C, H, W]
              radio_map = generator.generate_for_scene(scene, cell_sites_for_gen, show_progress=False)
              
              # Ensure [C, H, W]
@@ -1109,64 +794,21 @@ class MultiLayerDataGenerator:
         except Exception as e:
             logger.error(f"Failed to generate radio map for scene: {e}")
             return np.zeros((5, 256, 256), dtype=np.float32)
-        phy_fapi_dict = {k: scene_data[k] for k in phy_fapi_keys if isinstance(scene_data[k], np.ndarray)}
-        
-        # Map keys to dropout rates
-        dropout_mapping = {
-            'phy_fapi/rsrp': 'rsrp',
-            'phy_fapi/rsrq': 'rsrq',
-            'phy_fapi/sinr': 'sinr',
-            'phy_fapi/cqi': 'cqi',
-            'phy_fapi/ri': 'ri',
-            'phy_fapi/pmi': 'pmi',
-        }
-        
-        dropout_rates = {k: self.config.measurement_dropout_rates.get(v, 0.0)
-                        for k, v in dropout_mapping.items()}
-        
-        phy_fapi_dropped = add_measurement_dropout(phy_fapi_dict, dropout_rates, seed=42)
-        
-        # Update scene_data
-        scene_data.update(phy_fapi_dropped)
-        
-        logger.debug(f"Applied measurement dropout: "
-                    f"{sum(dropout_rates.values())/len(dropout_rates)*100:.1f}% avg")
-        
-        return scene_data
-
 
     def _generate_osm_map_for_scene(self, scene: Any, metadata: Dict) -> np.ndarray:
-        """
-        Generates 5-channel OSM map for the scene.
-        """
-        # Default empty map
+        """Generates 5-channel OSM map for the scene."""
         default_map = np.zeros((5, 256, 256), dtype=np.float32)
 
         if scene is None:
              return default_map
              
         try:
-             # Config (should match RadioMapConfig)
-             # Center is 0,0 relative to scene origin in typical quick_test setup
-             # But we should verify. 
-             # RadioMapGenerator uses config.map_extent.
-             # quick_test uses scene center at 0,0 locally? 
-             # Yes, Sionna scene usually centered or we convert coords.
-             
              # Calculate dynamic extent to match Radio Map
              bbox = metadata.get('bbox', {})
-             logger.info(f"DEBUG: Metadata BBox keys: {bbox.keys() if bbox else 'None'}")
-             logger.info(f"DEBUG: Metadata BBox content: {bbox}")
-             
              x_min = bbox.get('x_min', -1000)
              x_max = bbox.get('x_max', 1000)
              y_min = bbox.get('y_min', -1000)
              y_max = bbox.get('y_max', 1000)
-             
-             width_m = x_max - x_min
-             height_m = y_max - y_min
-             max_dim = max(width_m, height_m)
-             radius = (max_dim / 2.0) * 1.05 
              
              map_size = (256, 256)
              # Use actual UTM extent to match Radio Map and Scene content
@@ -1181,133 +823,10 @@ class MultiLayerDataGenerator:
              logger.error(f"Failed to generate OSM map: {e}")
              return default_map
 
-    def _save_map_visualizations(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
-        """
-        Save radio and OSM map visualizations as reference images.
-        
-        Args:
-            scene_id: Scene identifier for naming
-            radio_map: [C, H, W] radio map array
-            osm_map: [C, H, W] OSM map array
-        """
-        try:
-            import matplotlib
-            matplotlib.use('Agg')  # Non-interactive backend
-            import matplotlib.pyplot as plt
-            
-            # Create output directory inside the dataset output folder
-            viz_dir = self.config.output_dir / "map_visualizations"
-            viz_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Clean scene_id for filename (replace / with _)
-            safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
-            
-            # Helper: Percentile-based normalization
-            # Helper: Percentile-based normalization with fallback
-            def normalize_map(data, fixed_range=None):
-                data = np.asarray(data, dtype=np.float32)
-                # Replace Inf with NaN for percentile calc
-                valid_data = np.where(np.isinf(data), np.nan, data)
-                
-                # Filter out "background" values (e.g. -200 or 0 for linear) if they dominate
-                # For Path Gain (dB), background is usually <= -150
-                signal_mask = valid_data > -150
-                
-                if not np.any(signal_mask):
-                    # No signal at all
-                    return np.zeros_like(data)
-                
-                if fixed_range:
-                    vmin, vmax = fixed_range
-                else:
-                    # Calculate percentiles only on "signal" pixels to avoid background skewing
-                    if np.sum(signal_mask) > 10: # Sufficient samples
-                        vmin = np.nanpercentile(valid_data[signal_mask], 2)
-                        vmax = np.nanpercentile(valid_data[signal_mask], 98)
-                    else:
-                        vmin = np.nanmin(valid_data)
-                        vmax = np.nanmax(valid_data)
-                
-                # Safety check
-                if vmax - vmin < 1e-6:
-                    vmax = vmin + 10.0 # Arbitrary range to avoid div/0
-                
-                # Normalize
-                # Use entire array (including background)
-                normalized = np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
-                return normalized
-            
-            # Create figure with radio and OSM maps
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-            
-            # Radio Map - Path Gain (first channel)
-            # Use fixed range for Path Gain to ensure consistent visualization
-            # -120 dB (weak) to -50 dB (strong) covers typical cellular range
-            radio_img = normalize_map(radio_map[0], fixed_range=(-120, -50))
-            im0 = axes[0].imshow(radio_img, cmap='inferno', origin='lower')
-            axes[0].set_title(f"Radio Map (Path Gain)\n{scene_id}")
-            axes[0].axis("off")
-            plt.colorbar(im0, ax=axes[0], shrink=0.8, label="Normalized Path Gain (-120 to -50 dB)")
-            
-            # OSM Map - RGB visualization (R:Height, G:Footprint, B:Road+Terrain)
-            h, w = osm_map.shape[1], osm_map.shape[2]
-            osm_height = normalize_map(osm_map[0]) if osm_map.shape[0] > 0 else np.zeros((h, w))
-            osm_footprint = normalize_map(osm_map[2]) if osm_map.shape[0] > 2 else np.zeros((h, w))
-            osm_road = osm_map[3] if osm_map.shape[0] > 3 else np.zeros((h, w))
-            osm_terrain = osm_map[4] if osm_map.shape[0] > 4 else np.zeros((h, w))
-            osm_blue = normalize_map(np.maximum(osm_road, osm_terrain * 0.3))
-            osm_rgb = np.stack([osm_height, osm_footprint, osm_blue], axis=-1)
-            
-            axes[1].imshow(osm_rgb, origin='lower')
-            axes[1].set_title(f"OSM Map (R:Height G:Build B:Road/Terrain)\n{scene_id}")
-            axes[1].axis("off")
-            
-            plt.tight_layout()
-            
-            # Save combined figure
-            output_path = viz_dir / f"{safe_scene_id}_maps.png"
-            fig.savefig(output_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            
-            logger.info(f"Saved map visualization: {output_path}")
-            
-            # Also save individual channel visualizations for detailed inspection
-            fig2, axes2 = plt.subplots(2, 3, figsize=(15, 10))
-            
-            # Radio map channels
-            channel_names = ['Path Gain', 'SNR', 'SINR', 'Throughput', 'BLER']
-            for i in range(min(3, radio_map.shape[0])):
-                img = normalize_map(radio_map[i])
-                # Skip Ch2 (AoA) in individual plots if it's not provided
-                axes2[0, i].imshow(img, cmap='viridis', origin='lower')
-                title = channel_names[i] if i < len(channel_names) else f'Ch{i}'
-                axes2[0, i].set_title(f"Radio Ch{i}: {title}")
-                axes2[0, i].axis("off")
-            
-            # OSM map channels
-            osm_names = ['Height', 'Material', 'Footprint', 'Road', 'Terrain']
-            for i in range(min(3, osm_map.shape[0])):
-                ax_idx = [0, 2, 4][i] if i < 3 else i  # Show Height, Footprint, Terrain
-                ch_idx = [0, 2, 4][i] if i < 3 else i
-                if ch_idx < osm_map.shape[0]:
-                    img = normalize_map(osm_map[ch_idx])
-                    axes2[1, i].imshow(img, cmap='gray', origin='lower')
-                    axes2[1, i].set_title(f"OSM Ch{ch_idx}: {osm_names[ch_idx]}")
-                axes2[1, i].axis("off")
-            
-            plt.tight_layout()
-            
-            detailed_path = viz_dir / f"{safe_scene_id}_maps_detailed.png"
-            fig2.savefig(detailed_path, dpi=100, bbox_inches='tight')
-            plt.close(fig2)
-            
-            logger.info(f"Saved detailed map visualization: {detailed_path}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to save map visualization for {scene_id}: {e}")
-
-
 if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(level=logging.INFO)
+    
     # Test data generator
     logger.info("Testing MultiLayerDataGenerator...")
     
@@ -1344,8 +863,15 @@ if __name__ == "__main__":
     # Initialize generator
     generator = MultiLayerDataGenerator(config)
     
-    # Test UE trajectory sampling
-    trajectories = generator._sample_ue_trajectories(metadata['scene_001'])
+    # Test UE trajectory sampling (via imported function)
+    trajectories = sample_ue_trajectories(
+        metadata['scene_001'], 
+        config.num_ue_per_tile, 
+        config.ue_height_range, 
+        config.ue_velocity_range, 
+        config.num_reports_per_ue, 
+        config.report_interval_ms
+    )
     logger.info(f"✓ Sampled {len(trajectories)} UE trajectories")
     logger.info(f"  Trajectory shape: {trajectories[0].shape}")
     
