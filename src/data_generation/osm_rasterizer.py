@@ -457,8 +457,8 @@ class OSMRasterizer:
         # Meshgrid 'xy': x (W), y (H). Output (H, W).  <- Matches Image (row=y, col=x)
         xv, yv = tf.meshgrid(xs, ys) 
         
-        # Ray Origins: Start high up (e.g. 1000m)
-        z_start = 1000.0
+        # Ray Origins: Start high up (e.g. 30000m to cover all terrain)
+        z_start = 30000.0
         zv = tf.fill(tf.shape(xv), z_start)
         
         origins = tf.stack([xv, yv, zv], axis=-1) # [H, W, 3]
@@ -499,9 +499,9 @@ class OSMRasterizer:
              z_map = positions[..., 2]
              
              # Mask invalid hits (Z close to start or obj_index < 0)
-             # Usually obj_indices is -1 if no hit (depends on backend).
+             # usually obj_indices is -1 if no hit (depends on backend).
              # Let's assume hits < z_start - epsilon
-             valid_mask = z_map < (z_start - 1.0)
+             valid_mask = z_map < (z_start - 1000.0)
              
              # Convert to numpy
              z_map_np = z_map.numpy()

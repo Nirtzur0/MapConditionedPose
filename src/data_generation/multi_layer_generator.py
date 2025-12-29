@@ -37,6 +37,7 @@ try:
     from sionna.rt import load_scene
     SIONNA_AVAILABLE = True
 except ImportError:
+    SIONNA_AVAILABLE = False
     logger.warning("Sionna not available; MultiLayerDataGenerator will operate in mock mode.")
 
 # Try importing tqdm for progress bars
@@ -319,6 +320,47 @@ class MultiLayerDataGenerator:
             
             ue_positions_sim_arr = np.array(ue_positions_sim)
             
+            # --- Fix UE Z-coordinates relative to terrain ---
+            if SIONNA_AVAILABLE and scene is not None:
+                try:
+                    import tensorflow as tf
+                    # Batch ray-cast to find ground
+                    # Origins at [x, y, 30000]
+                    z_start = 30000.0
+                    
+                    # Create batch tensors
+                    # shape [Batch, 3]
+                    origins = np.stack([
+                        ue_positions_sim_arr[:, 0], 
+                        ue_positions_sim_arr[:, 1], 
+                        np.full(len(batch), z_start)
+                    ], axis=1).astype(np.float32)
+                    
+                    directions = np.tile([0.0, 0.0, -1.0], (len(batch), 1)).astype(np.float32)
+                    
+                    # Query Sionna
+                    hits = scene.closest_point(tf.constant(origins), tf.constant(directions))
+                    
+                    # hits.positions is [Batch, 3]
+                    ground_z = hits.positions.numpy()[:, 2]
+                    
+                    # Update Z: Ground + Original Z (height relative to ground)
+                    # Use original Z as 'h_ue'
+                    h_ue = ue_positions_sim_arr[:, 2]
+                    ue_positions_sim_arr[:, 2] = ground_z + h_ue
+                    
+                    # Also update storage Z so it matches (or keep storage relative? usually absolute)
+                    # We want storage to reflect valid global coordinates
+                    # But pos_store includes offset.
+                    # Let's update `ue_positions_store` too.
+                    # storage Z = SimZ (assuming Sim and Store share Z frame, usually global UTM Z)
+                    # yes, sim_offset is xy only.
+                    for j in range(len(batch)):
+                        ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
+                        
+                except Exception as e:
+                    logger.warning(f"UE Ground Clamping failed: {e}")
+
             # Simulate Batch
             rt_batch, phy_batch, mac_batch = self._simulate_batch(
                 scene, ue_positions_sim_arr, site_positions_sim, cell_ids
@@ -646,6 +688,23 @@ class MultiLayerDataGenerator:
             )
             
             try:
+                # Clamp site to ground level if needed
+                if SIONNA_AVAILABLE:
+                    import tensorflow as tf
+                    z_start = 30000.0
+                    pos_t = tf.constant([[pos[0], pos[1], z_start]], dtype=tf.float32)
+                    dir_t = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
+                    hits = scene.closest_point(pos_t, dir_t)
+                    ground_z = float(hits.positions[0, 2])
+                    
+                    min_tx_h = 25.0
+                    if pos[2] < ground_z + min_tx_h:
+                         logger.debug(f"Adjusting Site {site_idx} height: {pos[2]:.1f} -> {ground_z+min_tx_h:.1f}")
+                         pos[2] = ground_z + min_tx_h
+                         
+                         # Update the object wrapper position
+                         tx.position = pos if isinstance(pos, list) else pos.tolist()
+                
                 scene.add(tx)
                 transmitters.append(tx)
                 logger.debug(f"Added transmitter BS_{site_idx} at {pos}")
@@ -786,20 +845,31 @@ class MultiLayerDataGenerator:
                     processed_batches = []
                     for b in batches:
                         val = b
-                        if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
+                        
+                        # RT Features: [Batch, Sites] -> Pad Axis 1
+                        if key in ['rt/rms_delay_spread', 'rt/num_paths']:
+                             val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=0)
+                        
+                        # PHY Features: [Batch, Sites, Beams] -> Pad Axis 1
+                        elif key in ['phy_fapi/l1_rsrp_beams', 'phy_fapi/best_beam_ids']:
+                             fill_val = -150.0 if 'rsrp' in key else -1
+                             val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=fill_val)
+
+                        # PHY Features: [Batch, Rx, Cells] -> Pad Last Dim
+                        elif key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
                                 'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
                             fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
-                            # Assuming [Batch, Rx, Tx] or [Batch, Rx, Cells]
-                            # Axis 2 is usually TX or Cell?
-                            # RSRP: [Batch, Rx, Tx] -> Pad axis 2? 
-                            # Wait, PHY extractor outputs [Batch, Rx, Cell].
-                            # So axis 2 is Cell.
-                            # But `channel_matrix` logic in extractor might produce [Batch, Rx, Tx].
-                            # Standardizing:
                             val = pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
+                        
+                        # MAC Features: [Batch, UE, Neighbors] -> Pad Last Dim
+                        elif key == 'mac_rrc/neighbor_cell_ids':
+                            # Pad to max_neighbors (configured)
+                            val = pad_cell_dim(val, target_size=self.config.max_neighbors, fill_value=-1)
+                            
                         elif key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
                             # [Batch, Rx] - no padding needed usually unless Multi-Cell?
                             pass
+                        
                         processed_batches.append(val)
 
                     # First, ensure all batches have the same shape (except axis 0)

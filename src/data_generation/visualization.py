@@ -9,18 +9,14 @@ from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
 def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path):
     """
     Render 3D visualizations of the scene using Sionna's PBR renderer.
     Generates Top-Down and Isometric views.
-    
-    Args:
-        scene: Sionna RT Scene object.
-        scene_id: Scene identifier.
-        metadata: Scene metadata.
-        output_dir: Directory to save visualizations.
     """
     if scene is None:
+        logger.warning(f"Scene is None, skipping 3D render for {scene_id}")
         return
 
     try:
@@ -33,7 +29,7 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         viz_dir.mkdir(parents=True, exist_ok=True)
         safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
         
-        # Get scene bounds for camera placement
+        # Get scene bounds
         bbox = metadata.get('bbox', {})
         x_min = bbox.get('x_min', -500)
         x_max = bbox.get('x_max', 500)
@@ -48,39 +44,41 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         max_dim = max(width, height)
         
         # --- View 1: Top-Down ---
-        # Height needs to be sufficient to see the whole scene (FOV ~60 deg)
-        # tan(30) = (max_dim/2) / h  =>  h = (max_dim/2) / tan(30) ~ max_dim * 0.866
-        cam_z = max_dim * 1.5 # Add some margin
+        cam_z = max_dim * 1.5 
         
-        # Instantiate Camera (Note: do not pass name, do not pass orientation if look_at is used)
-        # Fix: ensure far_clip is large enough to see the scene.
-        # Default might be too small for scenes with >1km dimensions.
+        logger.debug(f"Creating Top-Down Camera at ({cx}, {cy}, {cam_z})")
+        
+        # Try to set clipping planes if possible after creation or via different args
+        # For now, stick to basic args to ensure creation succeeds
         cam_top = Camera(
+            name=f"cam_top_{safe_scene_id}", # Try adding name
             position=[cx, cy, cam_z],
             look_at=[cx, cy, 0],
-            near_clip=1.0,
-            far_clip=100000.0  # Large enough to cover the whole scene
         )
+        # Try setting standard mitsuba params if exposed
+        # if hasattr(cam_top, 'near_clip'): cam_top.near_clip = 1.0
+        # if hasattr(cam_top, 'far_clip'): cam_top.far_clip = 100000.0
         
         # Render
         out_path_top = viz_dir / f"{safe_scene_id}_top_down.png"
+        logger.info(f"Rendering to {out_path_top}")
         scene.render_to_file(
             camera=cam_top,
             filename=str(out_path_top),
             resolution=(1024, 768)
         )
         
-        # --- View 2: Isometric / Angled ---
-        # Position: Offset in X/Y (-1, -1 direction) and up Z
+        # --- View 2: Isometric ---
         iso_dist = max_dim * 0.8
+        
         cam_iso = Camera(
+            name=f"cam_iso_{safe_scene_id}",
             position=[cx - iso_dist, cy - iso_dist, max_dim * 0.6],
             look_at=[cx, cy, 0],
-            near_clip=1.0,
-            far_clip=100000.0
         )
         
         out_path_iso = viz_dir / f"{safe_scene_id}_isometric.png"
+        logger.info(f"Rendering to {out_path_iso}")
         scene.render_to_file(
             camera=cam_iso,
             filename=str(out_path_iso),
@@ -89,11 +87,10 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         
         logger.info(f"Saved 3D renders -> {viz_dir}")
 
-    except ImportError:
-        logger.warning("Sionna not available for 3D rendering.")
     except Exception as e:
-        logger.warning(f"3D Rendering failed for {scene_id}: {e}")
-        # logger.error(traceback.format_exc()) # Optional debugging
+        import traceback
+        logger.error(f"3D Rendering failed for {scene_id}: {e}")
+        logger.error(traceback.format_exc())
 
 
 def normalize_map(data: np.ndarray, fixed_range: Optional[Tuple[float, float]] = None) -> np.ndarray:

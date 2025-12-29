@@ -91,6 +91,28 @@ class RadioMapGenerator:
                 "Install with: pip install sionna"
             )
     
+    def _get_ground_level(self, scene: 'sn.rt.Scene', xy: List[float]) -> float:
+        """Determines ground level at given (x,y) by casting a ray from above."""
+        try:
+            import tensorflow as tf
+            # Ray from very high up
+            z_start = 30000.0
+            origins = tf.constant([[xy[0], xy[1], z_start]], dtype=tf.float32)
+            directions = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
+            
+            hits = scene.closest_point(origins, directions)
+            # hits.positions is [1, 3]
+            pos = hits.positions[0]
+            z_hit = pos[2]
+            
+            # Check for valid hit
+            if z_hit < z_start - 100.0:
+                return float(z_hit)
+            return 0.0
+        except Exception as e:
+            self.logger.debug(f"Ground probe failed: {e}")
+            return 0.0
+
     def generate_for_scene(
         self,
         scene: 'sn.rt.Scene',
@@ -161,15 +183,19 @@ class RadioMapGenerator:
                 # Add transmitters with height enforcement
                 for i, site in enumerate(cell_sites):
                      # Parse site dict
-                     pos = site.get('position')
+                     pos = list(site.get('position'))
                      if pos is None: continue
                      
-                     # Enforce minimum height for transmitters (e.g. 25m) to ensure coverage
-                     # unless explicitly marked as 'small_cell' or similar (not available here)
+                     # Enforce minimum height relative to GROUND
+                     ground_z = self._get_ground_level(scene, pos[:2])
                      min_tx_h = 25.0
-                     if pos[2] < min_tx_h:
-                         self.logger.warning(f"  Site {i} height {pos[2]:.1f}m too low. Bumping to {min_tx_h}m.")
-                         pos[2] = min_tx_h
+                     
+                     # If absolute Z is clearly incorrect (underground or within min_h of ground)
+                     # We assume it needs bumping.
+                     # Heuristic: If pos[2] < ground_z + min_tx_h, bump it.
+                     if pos[2] < ground_z + min_tx_h:
+                         self.logger.info(f"  Site {i} z={pos[2]:.1f} too low (Ground={ground_z:.1f}). Clamping to Ground+{min_tx_h}m.")
+                         pos[2] = ground_z + min_tx_h
                      
                      # Orientation
                      orient = site.get('orientation', [0, 0, 0])
@@ -190,9 +216,16 @@ class RadioMapGenerator:
             # Create solver and compute radio map
             solver = sn.rt.RadioMapSolver()
             
+            # Determine suitable height for solver plane
+            # Map center ground level
+            center_ground_z = self._get_ground_level(scene, [center_x, center_y])
+            ue_z = center_ground_z + self.config.ue_height
+            
+            self.logger.info(f"RadioMapSolver: Center Ground Z={center_ground_z:.1f}m -> Solver Z={ue_z:.1f}m")
+            
             # center uses z=1.5 default if not specified, but we should match config
             # RadioMapSolver expects center as Point3f or array
-            center = [center_x, center_y, self.config.ue_height]
+            center = [center_x, center_y, ue_z]
             size = [size_x, size_y]
             orientation = [0.0, 0.0, 0.0]
             
@@ -210,7 +243,7 @@ class RadioMapGenerator:
                 orientation=orientation,
                 diffraction=True,  # Enable diffraction
                 max_depth=self.config.max_depth,
-                num_samples=self.config.num_samples,
+                # num_samples=self.config.num_samples, # Not supported in this version's __call__
                 # scattering=True, # Not supported in RadioMapSolver __call__ apparently
             )
 
