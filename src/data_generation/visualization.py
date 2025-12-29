@@ -53,9 +53,13 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         cam_z = max_dim * 1.5 # Add some margin
         
         # Instantiate Camera (Note: do not pass name, do not pass orientation if look_at is used)
+        # Fix: ensure far_clip is large enough to see the scene.
+        # Default might be too small for scenes with >1km dimensions.
         cam_top = Camera(
             position=[cx, cy, cam_z],
-            look_at=[cx, cy, 0]
+            look_at=[cx, cy, 0],
+            near_clip=1.0,
+            far_clip=100000.0  # Large enough to cover the whole scene
         )
         
         # Render
@@ -71,7 +75,9 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         iso_dist = max_dim * 0.8
         cam_iso = Camera(
             position=[cx - iso_dist, cy - iso_dist, max_dim * 0.6],
-            look_at=[cx, cy, 0]
+            look_at=[cx, cy, 0],
+            near_clip=1.0,
+            far_clip=100000.0
         )
         
         out_path_iso = viz_dir / f"{safe_scene_id}_isometric.png"
