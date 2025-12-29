@@ -164,14 +164,14 @@ class MultiLayerDataGenerator:
             
             scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata, scene_obj=scene_obj)
             
-            # Generate Maps
-            radio_map = self._generate_radio_map_for_scene(scene_obj, scene_path, scene_metadata)
+            # Generate Maps - returns tuple of (numpy_array, sionna_radiomap_object)
+            radio_map, sionna_rm = self._generate_radio_map_for_scene(scene_obj, scene_path, scene_metadata)
             osm_map = self._generate_osm_map_for_scene(scene_obj, scene_metadata)
 
             # Write to Zarr
             if self.zarr_writer is not None:
 
-                # First write maps
+                # First write maps (use numpy array for storage)
                 self.zarr_writer.write_scene_maps(scene_id, radio_map, osm_map)
                 # Then append samples (linked by scene_id internal index)
                 self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
@@ -179,9 +179,9 @@ class MultiLayerDataGenerator:
                 # Save map visualizations as reference images
                 save_map_visualizations(scene_id, radio_map, osm_map, self.config.output_dir)
                 
-                # Generate 3D Scene Rederings (Sionna)
+                # Generate 3D Scene Renderings (Sionna) - pass Sionna RadioMap object for native rendering
                 if SIONNA_AVAILABLE and scene_obj is not None:
-                     render_scene_3d(scene_obj, scene_id, scene_metadata, self.config.output_dir)
+                     render_scene_3d(scene_obj, scene_id, scene_metadata, self.config.output_dir, radio_map=sionna_rm)
             else:
                 logger.warning("Zarr writer not available; skipping data write.")
         
@@ -328,49 +328,74 @@ class MultiLayerDataGenerator:
                     
                 if self._ground_clamp_supported:
                     try:
-                        if not hasattr(scene, 'closest_point'):
-                            raise AttributeError("Scene missing closest_point")
-                            
+                        import drjit as dr
+                        import mitsuba as mi
                         import tensorflow as tf
-                        # Batch ray-cast to find ground
+                        
+                        # Use Mitsuba scene directly for ray casting
                         # Origins at [x, y, 30000]
                         z_start = 30000.0
                         
-                        # Create batch tensors
-                        origins = np.stack([
+                        # Prepare data for Mitsuba (on CPU/LLVM backend)
+                        batch_len = len(batch)
+                        
+                        # Create Rays in Dr.Jit/Mitsuba format
+                        # Ray(o, d, time, wavelengths)
+                        origin_np = np.stack([
                             ue_positions_sim_arr[:, 0], 
                             ue_positions_sim_arr[:, 1], 
-                            np.full(len(batch), z_start)
+                            np.full(batch_len, z_start)
                         ], axis=1).astype(np.float32)
                         
-                        directions = np.tile([0.0, 0.0, -1.0], (len(batch), 1)).astype(np.float32)
+                        direction_np = np.tile([0.0, 0.0, -1.0], (batch_len, 1)).astype(np.float32)
                         
-                        # Query Sionna
-                        hits = scene.closest_point(tf.constant(origins), tf.constant(directions))
+                        # Convert to Mitsuba types
+                        o = mi.Point3f(origin_np)
+                        d = mi.Vector3f(direction_np)
+                        ray = mi.Ray3f(o, d)
                         
-                        # hits.positions is [Batch, 3]
-                        ground_z = hits.positions.numpy()[:, 2]
+                        # Ray Cast
+                        si = scene.mi_scene.ray_intersect(ray)
                         
-                        # Update Z: Ground + Original Z (height relative to ground)
+                        # Check Hits
+                        # si.t is the distance. collision point = o + t * d
+                        # here d = (0,0,-1), so o.z - t = ground.z
+                        hits_t = si.t.numpy()
+                        valid = si.is_valid()
+                        
+                        # Ground Z
+                        # If hit: z_start - t
+                        # If invalid: 0.0 (or fallback)
+                        ground_z = z_start - hits_t
+                        
+                        # Apply clamping only for valid hits
+                        valid_np = valid.numpy()
+                        
+                        # Update Z
                         h_ue = ue_positions_sim_arr[:, 2]
-                        ue_positions_sim_arr[:, 2] = ground_z + h_ue
+                        # Only update where valid hit occurred
+                        ue_positions_sim_arr[valid_np, 2] = ground_z[valid_np] + h_ue[valid_np]
+                        
+                        # Fallback for invalid hits (missed terrain?) -> Try AABB min
+                        if not np.all(valid_np) and hasattr(scene, 'aabb'):
+                             z_min = float(scene.aabb[0, 2])
+                             ue_positions_sim_arr[~valid_np, 2] += z_min
                         
                         # Sync storage Z
-                        for j in range(len(batch)):
+                        for j in range(batch_len):
+                            ue_positions_sim_arr[j, 2] = float(ue_positions_sim_arr[j, 2]) # Ensure float
                             ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
                             
                     except Exception as e:
-                        # Disable future checks to avoid log spam
-                        self._ground_clamp_supported = False
-                        logger.warning(f"UE Ground Clamping failed (feature disabled): {e}")
+                        # Disable future checks only if it's a critical missing module
+                        # Otherwise log once per batch might be too much, log debug
+                        logger.debug(f"UE Ground Clamping (Mitsuba) failed: {e}")
                         
-                        # Fallback: Try setting to Scene Z-Min + UE Height (heuristic for flat-ish scenes at high altitude)
+                        # Fallback: Try setting to Scene Z-Min + UE Height (heuristic)
                         try:
-                            # Try to get AABB from Mitsuba scene or Sionna properties
-                            # Sionna usually exposes aabb as [min, max] tensor
                             if hasattr(scene, 'aabb'):
                                 z_min = float(scene.aabb[0, 2])
-                                logger.info(f"Fallback: Setting UE Z to Scene Z-Min ({z_min:.1f}) + Height")
+                                # Heuristic: if valid_np logic didn't run, apply to all
                                 ue_positions_sim_arr[:, 2] += z_min
                                 for j in range(len(batch)):
                                     ue_positions_store[j][2] = ue_positions_sim_arr[j, 2]
@@ -707,15 +732,24 @@ class MultiLayerDataGenerator:
                 # Clamp site to ground level if needed
                 if SIONNA_AVAILABLE:
                     try:
+                        import drjit as dr
+                        import mitsuba as mi
                         import tensorflow as tf
-                        z_start = 30000.0
-                        pos_t = tf.constant([[pos[0], pos[1], z_start]], dtype=tf.float32)
-                        dir_t = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
                         
-                        # Check if closest_point exists
-                        if hasattr(scene, 'closest_point'):
-                            hits = scene.closest_point(pos_t, dir_t)
-                            ground_z = float(hits.positions[0, 2])
+                        z_start = 30000.0
+                        
+                        # Mitsuba Ray
+                        o = mi.Point3f(pos[0], pos[1], z_start)
+                        d = mi.Vector3f(0.0, 0.0, -1.0)
+                        ray = mi.Ray3f(o, d)
+                        
+                        # Ray Cast
+                        si = scene.mi_scene.ray_intersect(ray)
+                        
+                        if si.is_valid():
+                            # Ground found
+                            dist_t = si.t.numpy()[0]
+                            ground_z = z_start - dist_t
                             
                             min_tx_h = 25.0
                             if pos[2] < ground_z + min_tx_h:
@@ -724,9 +758,11 @@ class MultiLayerDataGenerator:
                                  
                                  # Update the object wrapper position
                                  tx.position = pos if isinstance(pos, list) else pos.tolist()
+                                 
                     except Exception as clamp_e:
                         if site_idx == 0: # Log once
-                            logger.warning(f"Tx Ground Clamping failed (will fallback to AABB if available): {clamp_e}")
+                            # logger.warning(f"Tx Ground Clamping (Mitsuba) failed: {clamp_e}")
+                            pass # Debug mainly
                         
                         # Fallback to AABB Z-min
                         try:
@@ -736,8 +772,6 @@ class MultiLayerDataGenerator:
                                 # But if it is < z_min, it implies it's definitely wrong for UTM.
                                 if pos[2] < z_min:
                                      # Bump to z_min + 30m?
-                                     # Assume the provided pos[2] was intended as "height above ground" 
-                                     # if it's that small compared to z_min (e.g. 30 vs 1600).
                                      if z_min > 500 and pos[2] < 100:
                                          pos[2] += z_min
                                          tx.position = pos if isinstance(pos, list) else pos.tolist()
@@ -984,24 +1018,32 @@ class MultiLayerDataGenerator:
         
         return scene_data
 
-    def _generate_radio_map_for_scene(self, scene: Any, scene_path: Path, scene_metadata: Dict) -> np.ndarray:
-        """Generates a radio map for the scene using RadioMapGenerator."""
+    def _generate_radio_map_for_scene(self, scene: Any, scene_path: Path, scene_metadata: Dict) -> Tuple[np.ndarray, Any]:
+        """Generates a radio map for the scene using RadioMapGenerator.
+        
+        Returns:
+            Tuple of (radio_map_numpy, sionna_radiomap_object)
+            - radio_map_numpy: [C, H, W] numpy array for storage
+            - sionna_radiomap_object: Sionna RadioMap for visualization (or None)
+        """
+        default_map = np.zeros((5, 256, 256), dtype=np.float32)
+        
         if not SIONNA_AVAILABLE:
              logger.warning("Radio Map Gen: Sionna not available.")
-             return np.zeros((5, 256, 256), dtype=np.float32)
+             return default_map, None
         if scene is None:
              logger.warning("Radio Map Gen: Scene is None.")
-             return np.zeros((5, 256, 256), dtype=np.float32)
+             return default_map, None
 
         logger.info("Radio Map Gen: Starting generation...")
 
         try:
              # Configure Radio Map Generator using UTM coordinates
              bbox = scene_metadata.get('bbox', {})
-             x_min = bbox.get('x_min', -1000)
-             x_max = bbox.get('x_max', 1000)
-             y_min = bbox.get('y_min', -1000)
-             y_max = bbox.get('y_max', 1000)
+             x_min = bbox.get('x_min', -250)
+             x_max = bbox.get('x_max', 250)
+             y_min = bbox.get('y_min', -250)
+             y_max = bbox.get('y_max', 250)
              
              map_extent = (x_min, y_min, x_max, y_max)
              logger.info(f"Radio Map Gen: Extent={map_extent}")
@@ -1029,9 +1071,10 @@ class MultiLayerDataGenerator:
 
              generator = RadioMapGenerator(map_config)
              
-             # Note: generate_for_scene returns [C, H, W] or [H,W,C] depending on implementation
-             # Assuming standard format: we ensure [C, H, W]
-             radio_map = generator.generate_for_scene(scene, cell_sites_for_gen, show_progress=False)
+             # Request both numpy array and Sionna RadioMap object
+             radio_map, sionna_rm = generator.generate_for_scene(
+                 scene, cell_sites_for_gen, show_progress=False, return_sionna_object=True
+             )
              
              # Ensure [C, H, W]
              if radio_map.ndim == 3:
@@ -1045,11 +1088,11 @@ class MultiLayerDataGenerator:
                  padding = np.zeros((5 - radio_map.shape[0], radio_map.shape[1], radio_map.shape[2]), dtype=np.float32)
                  radio_map = np.concatenate([radio_map, padding], axis=0)
                  
-             return radio_map
+             return radio_map, sionna_rm
 
         except Exception as e:
             logger.error(f"Failed to generate radio map for scene: {e}")
-            return np.zeros((5, 256, 256), dtype=np.float32)
+            return default_map, None
 
     def _generate_osm_map_for_scene(self, scene: Any, metadata: Dict) -> np.ndarray:
         """Generates 5-channel OSM map for the scene."""
@@ -1061,10 +1104,10 @@ class MultiLayerDataGenerator:
         try:
              # Calculate dynamic extent to match Radio Map
              bbox = metadata.get('bbox', {})
-             x_min = bbox.get('x_min', -1000)
-             x_max = bbox.get('x_max', 1000)
-             y_min = bbox.get('y_min', -1000)
-             y_max = bbox.get('y_max', 1000)
+             x_min = bbox.get('x_min', -250)
+             x_max = bbox.get('x_max', 250)
+             y_min = bbox.get('y_min', -250)
+             y_max = bbox.get('y_max', 250)
              
              map_size = (256, 256)
              # Use actual UTM extent to match Radio Map and Scene content
@@ -1106,10 +1149,10 @@ if __name__ == "__main__":
     # Write mock metadata
     metadata = {
         'scene_001': {
-            'bbox': {'x_min': -500, 'x_max': 500, 'y_min': -500, 'y_max': 500},
+            'bbox': {'x_min': -250, 'x_max': 250, 'y_min': -250, 'y_max': 250},
             'sites': [
                 {'position': [0, 0, 30], 'cell_id': 1},
-                {'position': [500, 0, 30], 'cell_id': 2},
+                {'position': [200, 0, 30], 'cell_id': 2},
             ],
         }
     }

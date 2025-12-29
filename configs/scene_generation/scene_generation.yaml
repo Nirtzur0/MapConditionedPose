@@ -3,26 +3,27 @@
 
 scene_generation:
   # City/Region Configuration
+  # Scene size: ~500m x 500m (0.005° ≈ 500m at mid-latitudes)
   cities:
     - name: "Boulder, Colorado"
-      bounding_box: [-105.30, 40.00, -105.25, 40.03]
+      bounding_box: [-105.280, 40.015, -105.275, 40.020]
     - name: "New York, New York"
-      bounding_box: [-73.99, 40.745, -73.97, 40.765]
-    # - name: "Los Angeles, California"
-    #   bounding_box: [-118.285, 34.045, -118.265, 34.060]
-    # - name: "Chicago, Illinois"
-    #   bounding_box: [-87.675, 41.87, -87.655, 41.885]
-    # - name: "Seattle, Washington"
-    #   bounding_box: [-122.365, 47.62, -122.345, 47.635]
-    # - name: "Austin, Texas"
-    #   bounding_box: [-97.765, 30.27, -97.745, 30.285]
+      bounding_box: [-73.985, 40.750, -73.980, 40.755]
+    - name: "Los Angeles, California"
+      bounding_box: [-118.280, 34.050, -118.275, 34.055]
+    - name: "Chicago, Illinois"
+      bounding_box: [-87.670, 41.875, -87.665, 41.880]
+    - name: "Seattle, Washington"
+      bounding_box: [-122.360, 47.625, -122.355, 47.630]
+    - name: "Austin, Texas"
+      bounding_box: [-97.760, 30.275, -97.755, 30.280]
   city:
     name: "Boulder, Colorado"
-    bounding_box: [-105.28, 40.01, -105.27, 40.02]  # [min_lon, min_lat, max_lon, max_lat]
+    bounding_box: [-105.280, 40.015, -105.275, 40.020]  # [min_lon, min_lat, max_lon, max_lat]
     tiles:
       num_tiles: 0
-      tile_size_m: 512  # meters per side
-      overlap_m: 50  # overlap for edge effects
+      tile_size_m: 500  # meters per side (~500m x 500m scenes)
+      overlap_m: 25  # overlap for edge effects
   
   # OSM Data Extraction
   osm:

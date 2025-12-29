@@ -94,28 +94,31 @@ class RadioMapGenerator:
     def _get_ground_level(self, scene: 'sn.rt.Scene', xy: List[float]) -> float:
         """Determines ground level at given (x,y) by casting a ray from above."""
         try:
-            import tensorflow as tf
-            # Ray from very high up
+            # Use Mitsuba directly if available for reliable ray casting
+            import mitsuba as mi
+            import drjit as dr
+            
             z_start = 30000.0
-            origins = tf.constant([[xy[0], xy[1], z_start]], dtype=tf.float32)
-            directions = tf.constant([[0.0, 0.0, -1.0]], dtype=tf.float32)
             
-            hits = scene.closest_point(origins, directions)
-            # hits.positions is [1, 3]
-            pos = hits.positions[0]
-            z_hit = pos[2]
+            # Point3f(x, y, z)
+            o = mi.Point3f(float(xy[0]), float(xy[1]), z_start)
+            d = mi.Vector3f(0.0, 0.0, -1.0)
+            ray = mi.Ray3f(o, d)
             
-            # Check for valid hit
-            if z_hit < z_start - 100.0:
-                return float(z_hit)
+            si = scene.mi_scene.ray_intersect(ray)
+            
+            if si.is_valid():
+                # t is distance from origin
+                t = si.t.numpy()[0]
+                return z_start - t
+                
             return 0.0
         except Exception as e:
-            self.logger.debug(f"Ground probe failed: {e}")
             # Fallback to AABB min z if available
             try:
                 if hasattr(scene, 'aabb'):
                     z_min = float(scene.aabb[0, 2])
-                    self.logger.info(f"Using fallback ground level from scene AABB: {z_min:.1f}m")
+                    # self.logger.debug(f"Using fallback ground level from scene AABB: {z_min:.1f}m")
                     return z_min
             except:
                 pass
@@ -126,6 +129,7 @@ class RadioMapGenerator:
         scene: 'sn.rt.Scene',
         cell_sites: List[Dict],
         show_progress: bool = True,
+        return_sionna_object: bool = False,
     ) -> np.ndarray:
         """
         Generate radio map for a scene with given cell sites.
@@ -138,9 +142,11 @@ class RadioMapGenerator:
                 - 'tx_power': dBm
                 - 'antenna': antenna pattern name
             show_progress: Whether to show progress bar
+            return_sionna_object: If True, returns tuple (numpy_array, sionna_radiomap)
             
         Returns:
             radio_map: (C, H, W) array where C is number of features
+            OR if return_sionna_object=True: tuple of (radio_map, sionna_radiomap_object)
         """
         self.logger.info(f"Generating radio map for scene with {len(cell_sites)} cell sites")
         
@@ -254,6 +260,9 @@ class RadioMapGenerator:
                 # num_samples=self.config.num_samples, # Not supported in this version's __call__
                 # scattering=True, # Not supported in RadioMapSolver __call__ apparently
             )
+            
+            # Store Sionna RadioMap object for visualization
+            sionna_rm = rm
 
             
             # Debug available attributes
@@ -333,7 +342,7 @@ class RadioMapGenerator:
         except Exception as e:
             self.logger.error(f"Error in RadioMapSolver: {e}")
             # If solver fails, return empty map (already initialized)
-            pass
+            sionna_rm = None
 
         # Post-process to remove Infs/NaNs
         # Replace -inf in dB features with min value (e.g. -200 dB)
@@ -348,6 +357,9 @@ class RadioMapGenerator:
 
         self.logger.info(f"Radio map generation complete. Shape: {radio_map.shape}")
         self.logger.info(f"Final Map Stats: Min={np.min(radio_map):.2f}, Max={np.max(radio_map):.2f}")
+        
+        if return_sionna_object:
+            return radio_map, sionna_rm
         return radio_map
     
     def save_to_zarr(

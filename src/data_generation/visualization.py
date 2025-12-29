@@ -1,19 +1,39 @@
 """
 Visualization utilities for data generation (3D rendering and map plotting).
+Uses Sionna's native rendering capabilities for proper radio map visualization.
 """
 
 import numpy as np
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
+import sys
+import os
+
+if TYPE_CHECKING:
+    from sionna.rt import Scene, RadioMap
 
 logger = logging.getLogger(__name__)
 
 
-def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path):
+def render_scene_3d(
+    scene: Any, 
+    scene_id: str, 
+    metadata: Dict, 
+    output_dir: Path, 
+    radio_map: Optional[Any] = None  # Should be sionna.rt.RadioMap (PlanarRadioMap)
+):
     """
-    Render 3D visualizations of the scene using Sionna's PBR renderer.
-    Generates Top-Down and Isometric views.
+    Render 3D visualizations of the scene using Sionna's native renderer.
+    Generates Top-Down and Isometric views with optional radio map overlay.
+    
+    Args:
+        scene: Sionna RT Scene object
+        scene_id: Identifier for the scene
+        metadata: Scene metadata dict
+        output_dir: Output directory path
+        radio_map: Optional Sionna RadioMap object (from RadioMapSolver). 
+                   If provided, renders coverage overlay using Sionna's native support.
     """
     if scene is None:
         logger.warning(f"Scene is None, skipping 3D render for {scene_id}")
@@ -21,6 +41,9 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
 
     try:
         from sionna.rt import Camera
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
+        import matplotlib.pyplot as plt
         
         logger.info(f"Rendering 3D visualizations for {scene_id}...")
         
@@ -29,38 +52,64 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         viz_dir.mkdir(parents=True, exist_ok=True)
         safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
         
-        # Get scene bounds
-        bbox = metadata.get('bbox', {})
-        x_min = bbox.get('x_min', -500)
-        x_max = bbox.get('x_max', 500)
-        y_min = bbox.get('y_min', -500)
-        y_max = bbox.get('y_max', 500)
+        # Get scene bounds from Mitsuba scene bbox
+        try:
+            bbox = scene.mi_scene.bbox()
+            x_min, y_min, z_min = bbox.min.x, bbox.min.y, bbox.min.z
+            x_max, y_max, z_max = bbox.max.x, bbox.max.y, bbox.max.z
+            logger.info(f"Scene BBox: Min=({x_min:.1f}, {y_min:.1f}, {z_min:.1f}), Max=({x_max:.1f}, {y_max:.1f}, {z_max:.1f})")
+        except Exception as e:
+            logger.warning(f"Could not get scene bbox: {e}, using metadata")
+            bbox_meta = metadata.get('bbox', {})
+            x_min = bbox_meta.get('x_min', -250)
+            x_max = bbox_meta.get('x_max', 250)
+            y_min = bbox_meta.get('y_min', -250)
+            y_max = bbox_meta.get('y_max', 250)
+            z_min = 0
+            z_max = 100
         
         cx = (x_min + x_max) / 2
         cy = (y_min + y_max) / 2
-        
         width = x_max - x_min
         height = y_max - y_min
         max_dim = max(width, height)
+        ground_z = z_min
         
         # --- View 1: Top-Down ---
-        cam_z = max_dim * 1.5 
+        dist_z = max_dim * 1.5 
+        cam_height = ground_z + dist_z
         
-        logger.debug(f"Creating Top-Down Camera at ({cx}, {cy}, {cam_z})")
-        
-        # Try to set clipping planes if possible after creation or via different args
-        # For now, stick to basic args to ensure creation succeeds
         cam_top = Camera(
-            position=[cx, cy, cam_z],
-            look_at=[cx, cy, 0],
+            position=[float(cx + 0.1), float(cy + 0.1), float(cam_height)],
+            look_at=[float(cx), float(cy), float(ground_z)], 
         )
-        # Try setting standard mitsuba params if exposed
-        # if hasattr(cam_top, 'near_clip'): cam_top.near_clip = 1.0
-        # if hasattr(cam_top, 'far_clip'): cam_top.far_clip = 100000.0
         
-        # Render
+        # Render with optional radio map overlay (Sionna native)
+        # Only attempt if radio_map is a Sionna RadioMap object, not a numpy array
+        if radio_map is not None and not isinstance(radio_map, np.ndarray):
+            logger.info("Rendering Top-Down with radio map coverage (Sionna native)...")
+            try:
+                fig = scene.render(
+                    camera=cam_top,
+                    radio_map=radio_map,
+                    rm_metric='path_gain',
+                    rm_db_scale=True,
+                    rm_vmin=-120,
+                    rm_vmax=-50,
+                    rm_show_color_bar=True,
+                    show_devices=True,
+                    resolution=(1024, 768)
+                )
+                out_path_coverage = viz_dir / f"{safe_scene_id}_top_down_coverage.png"
+                fig.savefig(out_path_coverage, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Saved coverage map: {out_path_coverage}")
+            except Exception as e:
+                logger.warning(f"Sionna native coverage render failed: {e}")
+        
+        # Plain render (no radio map)
         out_path_top = viz_dir / f"{safe_scene_id}_top_down.png"
-        logger.info(f"Rendering to {out_path_top}")
+        logger.info(f"Rendering Top-Down plain to {out_path_top}")
         scene.render_to_file(
             camera=cam_top,
             filename=str(out_path_top),
@@ -69,19 +118,42 @@ def render_scene_3d(scene: Any, scene_id: str, metadata: Dict, output_dir: Path)
         
         # --- View 2: Isometric ---
         iso_dist = max_dim * 0.8
+        cam_iso_z = ground_z + (max_dim * 0.6)
         
         cam_iso = Camera(
-            position=[cx - iso_dist, cy - iso_dist, max_dim * 0.6],
-            look_at=[cx, cy, 0],
+            position=[float(cx - iso_dist), float(cy - iso_dist), float(cam_iso_z)],
+            look_at=[float(cx), float(cy), float(ground_z)], 
         )
         
         out_path_iso = viz_dir / f"{safe_scene_id}_isometric.png"
-        logger.info(f"Rendering to {out_path_iso}")
+        logger.info(f"Rendering Isometric to {out_path_iso}")
         scene.render_to_file(
             camera=cam_iso,
             filename=str(out_path_iso),
             resolution=(1024, 768)
         )
+        
+        # Isometric with coverage (only if radio_map is a Sionna object)
+        if radio_map is not None and not isinstance(radio_map, np.ndarray):
+            try:
+                logger.info("Rendering Isometric with coverage...")
+                fig_iso = scene.render(
+                    camera=cam_iso,
+                    radio_map=radio_map,
+                    rm_metric='path_gain',
+                    rm_db_scale=True,
+                    rm_vmin=-120,
+                    rm_vmax=-50,
+                    rm_show_color_bar=True,
+                    show_devices=True,
+                    resolution=(1024, 768)
+                )
+                out_path_iso_cov = viz_dir / f"{safe_scene_id}_isometric_coverage.png"
+                fig_iso.savefig(out_path_iso_cov, dpi=150, bbox_inches='tight')
+                plt.close(fig_iso)
+                logger.info(f"Saved isometric coverage: {out_path_iso_cov}")
+            except Exception as e:
+                logger.warning(f"Isometric coverage render failed: {e}")
         
         logger.info(f"Saved 3D renders -> {viz_dir}")
 
@@ -121,7 +193,6 @@ def normalize_map(data: np.ndarray, fixed_range: Optional[Tuple[float, float]] =
         vmax = vmin + 10.0 # Arbitrary range to avoid div/0
     
     # Normalize
-    # Use entire array (including background)
     normalized = np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
     return normalized
 
@@ -192,7 +263,6 @@ def save_map_visualizations(scene_id: str, radio_map: np.ndarray, osm_map: np.nd
         channel_names = ['Path Gain', 'SNR', 'SINR', 'Throughput', 'BLER']
         for i in range(min(3, radio_map.shape[0])):
             img = normalize_map(radio_map[i])
-            # Skip Ch2 (AoA) in individual plots if it's not provided
             axes2[0, i].imshow(img, cmap='viridis', origin='lower')
             title = channel_names[i] if i < len(channel_names) else f'Ch{i}'
             axes2[0, i].set_title(f"Radio Ch{i}: {title}")
@@ -200,8 +270,6 @@ def save_map_visualizations(scene_id: str, radio_map: np.ndarray, osm_map: np.nd
         
         # OSM map channels
         osm_names = ['Height', 'Material', 'Footprint', 'Road', 'Terrain']
-        # Map indices to plot 0, 1, 2 in the loop to Height, Footprint, Terrain
-        # Indices in osm_map: 0:Height, 1:Material, 2:Footprint, 3:Road, 4:Terrain
         plot_indices = [0, 2, 4] # Select most interesting ones
         
         for i in range(3):
@@ -222,3 +290,102 @@ def save_map_visualizations(scene_id: str, radio_map: np.ndarray, osm_map: np.nd
         
     except Exception as e:
         logger.warning(f"Failed to save map visualization for {scene_id}: {e}")
+
+
+if __name__ == "__main__":
+    """
+    Test entry point for debugging visualizations using Sionna native rendering.
+    Usage: python src/data_generation/visualization.py [scene_id]
+    """
+    # Configure logging
+    logging.basicConfig(level=logging.INFO)
+    
+    if len(sys.argv) < 2:
+        print("Usage: python src/data_generation/visualization.py <scene_id>")
+        print("Example: python src/data_generation/visualization.py austin_texas/scene_-97.765_30.27")
+        # Try to find a default scene
+        base_dir = Path("data/scenes")
+        if base_dir.exists():
+            scenes = list(base_dir.rglob("scene.xml"))
+            if scenes:
+                default_scene = scenes[0].parent
+                scene_id = str(default_scene.relative_to(base_dir))
+                print(f"No scene specified. Using first found: {scene_id}")
+            else:
+                sys.exit(1)
+        else:
+            print("No data/scenes directory found.")
+            sys.exit(1)
+    else:
+        scene_id = sys.argv[1]
+
+    try:
+        import sionna.rt as rt
+        
+        project_root = Path(__file__).parent.parent.parent
+        scene_dir = project_root / "data/scenes"
+        output_dir = project_root / "data/processed/test_viz"
+        
+        print(f"Loading scene: {scene_id}")
+        scene_path = scene_dir / scene_id / "scene.xml"
+        
+        if not scene_path.exists():
+            print(f"Scene file not found: {scene_path}")
+            sys.exit(1)
+            
+        scene = rt.load_scene(str(scene_path))
+        scene.frequency = 3.5e9
+        print("Scene loaded.")
+        
+        # Setup antenna arrays for radio map generation
+        scene.tx_array = rt.PlanarArray(num_rows=8, num_cols=8, 
+                                         vertical_spacing=0.5, horizontal_spacing=0.5,
+                                         pattern="iso", polarization="V")
+        scene.rx_array = rt.PlanarArray(num_rows=1, num_cols=1, 
+                                         pattern="iso", polarization="V")
+        
+        # Get scene bounds
+        bbox = scene.mi_scene.bbox()
+        cx = (bbox.min.x + bbox.max.x) / 2
+        cy = (bbox.min.y + bbox.max.y) / 2
+        width = min(bbox.max.x - bbox.min.x, 500.0)
+        height = min(bbox.max.y - bbox.min.y, 500.0)
+        ground_z = bbox.min.z
+        
+        # Add transmitter
+        tx = rt.Transmitter(name="TX_1", position=[float(cx), float(cy), float(ground_z + 30)])
+        scene.add(tx)
+        print(f"Added transmitter at center: ({cx:.1f}, {cy:.1f}, {ground_z + 30:.1f})")
+        
+        # Generate radio map using Sionna's RadioMapSolver
+        print("Generating radio map...")
+        solver = rt.RadioMapSolver()
+        radio_map = solver(
+            scene, 
+            center=[float(cx), float(cy), float(ground_z + 1.5)],
+            size=[float(width), float(height)],
+            cell_size=[5.0, 5.0],
+            orientation=[0.0, 0.0, 0.0],
+            max_depth=5,
+            diffraction=True
+        )
+        print(f"Radio map generated: {radio_map.path_gain.shape}")
+        
+        # Metadata mockup
+        metadata = {
+            'bbox': {
+                'x_min': bbox.min.x, 'x_max': bbox.max.x,
+                'y_min': bbox.min.y, 'y_max': bbox.max.y
+            }
+        }
+        
+        # Render with coverage
+        render_scene_3d(scene, scene_id, metadata, output_dir, radio_map=radio_map)
+        print("Done.")
+        
+    except ImportError:
+        print("Sionna not available. Cannot test rendering.")
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
