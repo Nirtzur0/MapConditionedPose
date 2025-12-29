@@ -266,50 +266,33 @@ class RTFeatureExtractor:
         # Magnitude
         mag_a = tf.abs(raw_a)
         
-        # Reduce over antennas (Axes 3, 4) if present
-        # Check rank
-        rank = len(mag_a.shape)
-        if rank >= 5:
-            mag_a_red = tf.reduce_mean(mag_a, axis=[3, 4]) # Result: [S, T, P, 1, 1]
-        else:
-            mag_a_red = mag_a
-            
-        # Squeeze last dims if they are 1
-        # Use reshape to be safe? Or simple squeeze.
-        # Targets are usually dimension 1, Sources 0.
-        # We want [Targets (Batch), Sources (Rx), Paths]
-        
-        # Current: [S, T, P]
-        
+        # Reduce all spatial/temporal dimensions to [S, T, P]
+        def _reduce_to_3d(x):
+            # Target shape is [S, T, P]
+            # S=0, T=1, P=2. Reduce everything after 2.
+            while len(x.shape) > 3:
+                x = tf.reduce_mean(x, axis=3)
+            return x
+
+        mag_a_red = _reduce_to_3d(mag_a)
+        raw_tau_red = _reduce_to_3d(raw_tau)
+
         # Permute to [T, S, P]
-        # Check standard Sionna output
-        # If [S, T, P, ...], we perform transpose(1, 0, ...)
-        
-        # Helper to transpose first 2 dims
         def _transpose_st(x):
-            # assume [S, T, ...]
-            perm = [1, 0] + list(range(2, len(x.shape)))
-            return tf.transpose(x, perm=perm)
+            # assume [S, T, P]
+            return tf.transpose(x, perm=[1, 0, 2])
         
         mag_a_fin = _transpose_st(mag_a_red)
-        tau_fin = _transpose_st(raw_tau)
-        
-        # Squeeze trailing 1s
-        # mag_a_fin might be [T, S, P, 1, 1]
-        # We want [T, S, P]
-        # Safe squeeze:
-        shape = tf.shape(mag_a_fin)
-        if len(mag_a_fin.shape) > 3:
-             mag_a_fin = tf.reshape(mag_a_fin, [shape[0], shape[1], -1]) # [T, S, P]
+        tau_fin = _transpose_st(raw_tau_red)
         
         # Angles
-        ang_r_az = _transpose_st(paths.phi_r)
-        ang_r_el = _transpose_st(paths.theta_r)
-        ang_t_az = _transpose_st(paths.phi_t)
-        ang_t_el = _transpose_st(paths.theta_t)
+        ang_r_az = _transpose_st(_reduce_to_3d(paths.phi_r))
+        ang_r_el = _transpose_st(_reduce_to_3d(paths.theta_r))
+        ang_t_az = _transpose_st(_reduce_to_3d(paths.phi_t))
+        ang_t_el = _transpose_st(_reduce_to_3d(paths.theta_t))
         
         if hasattr(paths, 'doppler') and paths.doppler is not None:
-             dop = _transpose_st(paths.doppler)
+             dop = _transpose_st(_reduce_to_3d(paths.doppler))
         else:
              dop = tf.zeros_like(tau_fin)
 
@@ -370,37 +353,33 @@ class RTFeatureExtractor:
              return _to_numpy(x)
 
         # Basic extraction logic from original code...
+        # Normalize shapes to [Batch(T), Rx(S), Paths]
+        # Standard Sionna is [S, T, P, ...]. We reduce to 3D and swap.
+        def _reduce_np(x):
+             x_arr = _to_numpy(x)
+             while x_arr.ndim > 3:
+                  x_arr = np.mean(x_arr, axis=3)
+             return x_arr
+
+        # Swap axes helper
+        def _swap_st(x):
+             if x.ndim >= 2:
+                  return np.swapaxes(x, 0, 1)
+             return x
+
         path_gains_complex = _to_complex(paths.a)
-        path_delays = _to_numpy(paths.tau)
+        path_gains_magnitude = np.abs(_swap_st(_reduce_np(path_gains_complex)))
+        path_delays = _swap_st(_reduce_np(paths.tau))
         
-        # Normalize shapes to [Batch(T), Rx(S), Paths, ...]
-        # Standard Sionna is [S, T, P, ...]
-        # We swap 0 and 1 to get [T, S, P, ...]
-        if path_gains_complex.ndim >= 2:
-             path_gains_complex = np.swapaxes(path_gains_complex, 0, 1)
-             path_delays = np.swapaxes(path_delays, 0, 1)
-        
-        # Reduce antennas and time
-        # We want final shape [Batch, Rx, Paths]
-        # Recursively mean over extra dimensions
-        while path_gains_complex.ndim > 3:
-             path_gains_complex = np.mean(path_gains_complex, axis=3)
-        
-        path_gains_magnitude = np.abs(path_gains_complex)
-        
-        # Ensure delays match
-        while path_delays.ndim > 3:
-             path_delays = np.mean(path_delays, axis=3)
-             
         # Angles
-        p_az = np.swapaxes(_to_numpy(paths.phi_r), 0, 1)
-        p_el = np.swapaxes(_to_numpy(paths.theta_r), 0, 1)
-        t_az = np.swapaxes(_to_numpy(paths.phi_t), 0, 1)
-        t_el = np.swapaxes(_to_numpy(paths.theta_t), 0, 1)
+        p_az = _swap_st(_reduce_np(paths.phi_r))
+        p_el = _swap_st(_reduce_np(paths.theta_r))
+        t_az = _swap_st(_reduce_np(paths.phi_t))
+        t_el = _swap_st(_reduce_np(paths.theta_t))
         
         # Doppler
         if hasattr(paths, 'doppler') and paths.doppler is not None:
-             dop = np.swapaxes(_to_numpy(paths.doppler), 0, 1)
+             dop = _swap_st(_reduce_np(paths.doppler))
         else:
              dop = np.zeros_like(path_delays)
              

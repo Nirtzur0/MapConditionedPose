@@ -83,7 +83,6 @@ def _reduce_expected(arr):
     return reduced
 
 
-@pytest.mark.skip(reason="Mock shape mismatch with RTFeatureExtractor update")
 def test_rt_extractor_paths_reduction(monkeypatch):
     """Ensure RTFeatureExtractor reduces Sionna Paths to expected shapes/values."""
     monkeypatch.setattr(features_module, "SIONNA_AVAILABLE", True)
@@ -96,14 +95,13 @@ def test_rt_extractor_paths_reduction(monkeypatch):
     expected_delays = _reduce_expected(paths.tau)
 
     assert rt_features.is_mock is False
-    assert rt_features.path_gains.shape == (1, 1, 3)
-    assert rt_features.path_delays.shape == (1, 1, 3)
+    assert rt_features.path_gains.shape == (1, 2, 3)
+    assert rt_features.path_delays.shape == (1, 2, 3)
     np.testing.assert_allclose(rt_features.path_gains, expected_gains)
     np.testing.assert_allclose(rt_features.path_delays, expected_delays)
     assert np.all(rt_features.num_paths == 3)
 
 
-@pytest.mark.skip(reason="Mock shape mismatch with RTFeatureExtractor update")
 def test_rt_extractor_missing_doppler(monkeypatch):
     """Verify missing doppler falls back to zeros."""
     monkeypatch.setattr(features_module, "SIONNA_AVAILABLE", True)
