@@ -294,9 +294,19 @@ class RadioLocalizationDataset(Dataset):
             if 'path_aod_azimuth' in rt_group: rt_features.append(np.mean(rt_group['path_aod_azimuth'][zarr_idx]))
             if 'path_aod_elevation' in rt_group: rt_features.append(np.mean(rt_group['path_aod_elevation'][zarr_idx]))
             if 'path_doppler' in rt_group: rt_features.append(np.mean(rt_group['path_doppler'][zarr_idx]))
-            if 'rms_delay_spread' in rt_group: rt_features.append(rt_group['rms_delay_spread'][zarr_idx])
-            if 'k_factor' in rt_group: rt_features.append(rt_group['k_factor'][zarr_idx])
-            if 'num_paths' in rt_group: rt_features.append(float(rt_group['num_paths'][zarr_idx]))
+            
+            # Handle potentially multi-dimensional aggregates
+            if 'rms_delay_spread' in rt_group:
+                rms_ds_val = rt_group['rms_delay_spread'][zarr_idx]
+                rt_features.append(float(np.mean(rms_ds_val)) if hasattr(rms_ds_val, '__len__') else float(rms_ds_val))
+            
+            if 'k_factor' in rt_group:
+                k_fac_val = rt_group['k_factor'][zarr_idx]
+                rt_features.append(float(np.mean(k_fac_val)) if hasattr(k_fac_val, '__len__') else float(k_fac_val))
+            
+            if 'num_paths' in rt_group:
+                num_paths_val = rt_group['num_paths'][zarr_idx]
+                rt_features.append(float(np.mean(num_paths_val)) if hasattr(num_paths_val, '__len__') else float(num_paths_val))
             
             if rt_features:
                 rt_data['features'] = torch.tensor(

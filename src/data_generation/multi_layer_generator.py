@@ -421,9 +421,16 @@ class MultiLayerDataGenerator:
             # Add N receivers to the scene
             for i, pos in enumerate(ue_positions):
                 rx_name = f"UE_Batch_{i}"
-                self._setup_receiver(scene, pos, rx_name)
-                added_rx_names.append(rx_name)
+                try:
+                    self._setup_receiver(scene, pos, rx_name)
+                    added_rx_names.append(rx_name)
+                except Exception as rx_e:
+                    logger.warning(f"Failed to add receiver {rx_name}: {rx_e}")
             
+            # Log how many receivers were successfully added
+            if len(added_rx_names) < len(ue_positions):
+                logger.warning(f"Successfully added {len(added_rx_names)} out of {len(ue_positions)} receivers to the scene.")
+
             # 2. Compute Propagation (Batch)
             from sionna.rt import PathSolver
             
@@ -452,7 +459,9 @@ class MultiLayerDataGenerator:
 
             # 3. Extract Features (Batch)
             # The updated RTFeatureExtractor handles [Batch=Targets, ...] permutation
-            rt_features = self.rt_extractor.extract(paths)
+            # Pass batch_size and num_sites so fallback mock has correct dimensions
+            num_sites = len(site_positions)
+            rt_features = self.rt_extractor.extract(paths, batch_size=batch_size, num_rx=num_sites)
             
             # Channel Matrix
             channel_matrix = None
@@ -510,10 +519,55 @@ class MultiLayerDataGenerator:
             self._sionna_fail += batch_size
             logger.error(f"Sionna batch simulation failed: {e}")
             logger.error(traceback.format_exc())
-            # Fallback (mock)
-            # Ideally loop mock
-            rt_m, phy_m, mac_m = self._simulate_mock(ue_positions[0], site_positions, cell_ids)
-            return rt_m, phy_m, mac_m # Incorrect shape for batch, but prevents crash
+            # Fallback (mock) - create mock features for entire batch
+            logger.warning(f"Falling back to mock simulation for batch of {batch_size}")
+            
+            # Generate mock for each UE and stack
+            rts, phys, macs = [], [], []
+            for i in range(batch_size):
+                rt_m, phy_m, mac_m = self._simulate_mock(ue_positions[i], site_positions, cell_ids)
+                rts.append(rt_m)
+                phys.append(phy_m)
+                macs.append(mac_m)
+            
+            # Stack into batch objects
+            from src.data_generation.features import RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
+            
+            # Helper to stack feature dataclass objects
+            def stack_features(feat_list, FeatureClass):
+                """Stack a list of feature objects into a single batched object."""
+                if not feat_list:
+                    return None
+                
+                # Get all fields from the first object
+                first = feat_list[0]
+                stacked_dict = {}
+                
+                for field_name in first.__dataclass_fields__:
+                    field_values = [getattr(f, field_name) for f in feat_list]
+                    
+                    # Check if all are None
+                    if all(v is None for v in field_values):
+                        stacked_dict[field_name] = None
+                    # Check if all are numpy arrays
+                    elif all(isinstance(v, np.ndarray) for v in field_values if v is not None):
+                        # Stack non-None values
+                        non_none_values = [v for v in field_values if v is not None]
+                        if non_none_values:
+                            stacked_dict[field_name] = np.concatenate(non_none_values, axis=0)
+                        else:
+                            stacked_dict[field_name] = None
+                    else:
+                        # For scalar fields, just take first value
+                        stacked_dict[field_name] = field_values[0]
+                
+                return FeatureClass(**stacked_dict)
+            
+            rt_batch = stack_features(rts, RTLayerFeatures)
+            phy_batch = stack_features(phys, PHYFAPILayerFeatures)
+            mac_batch = stack_features(macs, MACRRCLayerFeatures)
+            
+            return rt_batch, phy_batch, mac_batch
             
         finally:
             # Clean up receivers
@@ -656,10 +710,11 @@ class MultiLayerDataGenerator:
         phy_features.pmi = np.random.randint(0, 8, (1, 1, num_cells))
         
         # MAC/RRC features
-        ue_positions_batch = ue_position[np.newaxis, np.newaxis, :]  # [1, 1, 3]
+        # ue_position is [3,]
         mac_features = self.mac_extractor.extract(
-            phy_features, ue_positions_batch, site_positions, cell_ids
+            phy_features, ue_position[np.newaxis, :], site_positions, cell_ids
         )
+
         
         return rt_features, phy_features, mac_features
     
@@ -709,52 +764,77 @@ class MultiLayerDataGenerator:
 
         # Generic Stacker for Feature Lists
         def process_feature_list(feat_list, key_prefix):
-             if not feat_list: return
-             keys = feat_list[0].keys()
+            if not feat_list: return
+            keys = feat_list[0].keys()
              
-             for key in keys:
-                 # Collect all batches for this key
-                 batches = [d[key] for d in feat_list if d[key] is not None]
-                 if not batches: continue
+            for key in keys:
+                # Collect all batches for this key
+                batches = [d[key] for d in feat_list if d[key] is not None]
+                if not batches: continue
                  
                  # Concat batch blocks
-                 try:
-                     # Check if shapes match (except dim 0)
-                     # Sometimes variable length paths might cause issue -> use object array or fail
-                     # If variable length, concatenate usually fails or creates flat.
+                try:
+                    # Check if shapes match (except dim 0)
+                    # Sometimes variable length paths might cause issue -> use object array or fail
+                    # If variable length, concatenate usually fails or creates flat.
                      
-                     # Special handling for padded features
-                     # Apply padding per batch BEFORE concat to ensure safety
-                     MAX_CELLS = 16
-                     MAX_TX = 8
+                    # Special handling for padded features
+                    # Apply padding per batch BEFORE concat to ensure safety
+                    MAX_CELLS = 16
+                    MAX_TX = 8
                      
-                     processed_batches = []
-                     for b in batches:
-                         val = b
-                         if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
-                                    'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
-                             fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
-                             # Assuming [Batch, Rx, Tx] or [Batch, Rx, Cells]
-                             # Axis 2 is usually TX or Cell?
-                             # RSRP: [Batch, Rx, Tx] -> Pad axis 2? 
-                             # Wait, PHY extractor outputs [Batch, Rx, Cell].
-                             # So axis 2 is Cell.
-                             # But `channel_matrix` logic in extractor might produce [Batch, Rx, Tx].
-                             # Standardizing:
-                             val = pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
-                                 
-                         elif key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
-                             # [Batch, Rx] - no padding needed usually unless Multi-Cell?
-                             pass
-                             
-                         processed_batches.append(val)
-                         
-                     concatenated = np.concatenate(processed_batches, axis=0)
-                     stacked[key] = concatenated
-                     
-                 except ValueError as e:
-                     logger.warning(f"Failed to stack feature {key}: {e}")
-                     stacked[key] = np.array(batches, dtype=object)
+                    processed_batches = []
+                    for b in batches:
+                        val = b
+                        if key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
+                                'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
+                            fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                            # Assuming [Batch, Rx, Tx] or [Batch, Rx, Cells]
+                            # Axis 2 is usually TX or Cell?
+                            # RSRP: [Batch, Rx, Tx] -> Pad axis 2? 
+                            # Wait, PHY extractor outputs [Batch, Rx, Cell].
+                            # So axis 2 is Cell.
+                            # But `channel_matrix` logic in extractor might produce [Batch, Rx, Tx].
+                            # Standardizing:
+                            val = pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
+                        elif key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
+                            # [Batch, Rx] - no padding needed usually unless Multi-Cell?
+                            pass
+                        processed_batches.append(val)
+
+                    # First, ensure all batches have the same shape (except axis 0)
+                    # Find the maximum shape for each dimension
+                    ndim = processed_batches[0].ndim
+                    max_shape = list(processed_batches[0].shape)
+                    for b in processed_batches[1:]:
+                        for i in range(1, ndim):  # Skip axis 0 (batch)
+                            max_shape[i] = max(max_shape[i], b.shape[i])
+                      
+                    # Pad all batches to max_shape
+                    padded_batches = []
+                    for b in processed_batches:
+                        if list(b.shape[1:]) != max_shape[1:]:
+                            # Need padding
+                            pad_width = [(0, 0)]  # No padding on axis 0
+                            for i in range(1, ndim):
+                                pad_width.append((0, max_shape[i] - b.shape[i]))
+                            fill_val = -150.0 if ('rsr' in key or 'sinr' in key) else 0
+                            b_padded = np.pad(b, pad_width, mode='constant', constant_values=fill_val)
+                            padded_batches.append(b_padded)
+                        else:
+                            padded_batches.append(b)
+                      
+                    concatenated = np.concatenate(padded_batches, axis=0)
+                    stacked[key] = concatenated
+                      
+                except ValueError as e:
+                    logger.warning(f"Failed to stack feature {key}: {e}")
+                    # Last resort: just take the first batch if all else fails
+                    if processed_batches:
+                        logger.warning(f"Using only first batch for {key}")
+                        stacked[key] = processed_batches[0]
+                    else:
+                        stacked[key] = None
 
         # Process RT
         process_feature_list(all_data['rt'], 'rt')

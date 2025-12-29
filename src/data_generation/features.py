@@ -196,19 +196,21 @@ class RTFeatureExtractor:
         logger.info(f"RTFeatureExtractor initialized: fc={carrier_frequency_hz/1e9:.2f} GHz, "
                    f"BW={bandwidth_hz/1e6:.1f} MHz")
     
-    def extract(self, paths: Any) -> RTLayerFeatures:
+    def extract(self, paths: Any, batch_size: int = None, num_rx: int = None) -> RTLayerFeatures:
         """
         Extract RT features from Sionna Paths object.
         
         Args:
             paths: Sionna RT Paths object from scene.compute_paths()
+            batch_size: Expected batch size (number of UE positions). If None, inferred from paths.
+            num_rx: Expected number of RX points (usually num_sites). If None, inferred from paths.
             
         Returns:
             RTLayerFeatures with all path-level and aggregate features
         """
         if not SIONNA_AVAILABLE:
             logger.warning("Sionna not available - returning mock RT features")
-            return self._extract_mock()
+            return self._extract_mock(batch_size=batch_size or 10, num_rx=num_rx or 4)
         
         try:
             # Extract path-level features from Sionna Paths
@@ -361,57 +363,113 @@ class RTFeatureExtractor:
                 # We want output: [batch_size (targets), num_rx (sources), num_paths]
                 # Input standard: [sources, targets, paths, ...]
                 
-                # Helper to permute [S, T, ...] -> [T, S, ...]
-                def _permute_batch(arr):
-                    if arr is None: return None
-                    if arr.ndim >= 2:
-                        # Swap axis 0 (Sources) and axis 1 (Targets) to make Targets primary batch dim
-                        return np.swapaxes(arr, 0, 1)
-                    return arr[np.newaxis, ...] # Backup
                 
-                # 1. Permute to [Targets, Sources, Paths, ...]
-                path_gains_complex = _permute_batch(path_gains_complex) # [T, S, P, RxAnt, TxAnt]
-                path_delays = _permute_batch(path_delays)             # [T, S, P]
-                path_aoa_azimuth = _permute_batch(path_aoa_azimuth)
-                path_aoa_elevation = _permute_batch(path_aoa_elevation)
-                path_aod_azimuth = _permute_batch(path_aod_azimuth)
-                path_aod_elevation = _permute_batch(path_aod_elevation)
-                path_doppler = _permute_batch(path_doppler)
+                # --- Dimensionality Handling and Normalization ---
+                # We expect output: [batch, num_rx, num_paths]
+                
+                def _normalize_shape(arr, name="arr"):
+                     if arr is None: return None
+                     if batch_size is None or num_rx is None:
+                         # Fallback to old behavior: swap 0 and 1
+                         if arr.ndim >= 2: return np.swapaxes(arr, 0, 1)
+                         return arr[np.newaxis, ...]
+
+                     # Try to identify dimensions
+                     shape = arr.shape
+                     
+                     # Case 1: [Batch, Rx, ...]
+                     # Matches expected output order.
+                     if shape[0] == batch_size and (len(shape) < 2 or shape[1] == num_rx):
+                         return arr
+                         
+                     # Handle case where Rx=1 and input is [Batch, 1, ...]
+                     if shape[0] == batch_size and num_rx == 1 and len(shape) >= 2 and shape[1] == 1:
+                         return arr
+                     
+                     # Case 2: [Rx, Batch, ...]
+                     # Standard Sionna [Sources, Targets] -> Swap to [Batch, Rx]
+                     if shape[0] == num_rx and len(shape) >= 2 and shape[1] == batch_size:
+                         return np.swapaxes(arr, 0, 1)
+                     
+                     # Case 3: [Batch, Paths, Rx=1] (Weird case observed)
+                     # shape=(32, 3, 1) where batch=32, rx=2?
+                     # If Rx dimension is last or mismatched
+                     if shape[0] == batch_size:
+                         # Check other dims
+                         # If we have (Batch, X, Y) and we want (Batch, Rx, Paths)
+                         # If Y=Rx ...
+                         if arr.ndim >= 3 and shape[2] == num_rx:
+                             return np.swapaxes(arr, 1, 2) # [Batch, Rx, Paths]
+                         
+                         # If Y=1 and Rx > 1 -> Broadcast?
+                         if arr.ndim >= 3 and shape[2] == 1 and num_rx > 1:
+                             # Assume structure is [Batch, Paths, 1]
+                             # Transpose to [Batch, 1, Paths] and broadcast
+                             arr_t = np.swapaxes(arr, 1, 2) # [Batch, 1, Paths]
+                             # We let broadcasting handle the Rx dim expansion later or tile it now
+                             # Safe to tile
+                             return np.repeat(arr_t, num_rx, axis=1)
+                     
+                     # Case 4: [Target=Batch, Rx, ...] with swapped expectations? 
+                     # If we failed to match, fallback to swap-if-incorrect assumption
+                     # Assuming usually [S, T] coming in.
+                     if shape[0] != batch_size and len(shape) >= 2 and shape[1] == batch_size:
+                         return np.swapaxes(arr, 0, 1)
+                         
+                     return arr
+
+                # Normalize all inputs to [Batch, Rx, Paths]
+                path_gains_complex = _normalize_shape(path_gains_complex, "gains")
+                path_delays = _normalize_shape(path_delays, "delays")
+                path_aoa_azimuth = _normalize_shape(path_aoa_azimuth, "aoa_az")
+                path_aoa_elevation = _normalize_shape(path_aoa_elevation, "aoa_el")
+                path_aod_azimuth = _normalize_shape(path_aod_azimuth, "aod_az")
+                path_aod_elevation = _normalize_shape(path_aod_elevation, "aod_el")
+                path_doppler = _normalize_shape(path_doppler, "doppler")
                 
                 # 2. Reduce Antennas (Magnitude for gains)
-                # Shape is now [T, S, P, RxAnt, TxAnt]
+                # Shape is now [Batch, Rx, Paths, RxAnt, TxAnt] (or similar)
+                # But sometimes Antennas are already reduced or missing?
                 if path_gains_complex.ndim == 5:
-                    # Average magnitude over antennas (axes 3, 4)
-                    # Note: This is an approximation. Ideally we beamform.
-                    # But for RT features usually we want per-path scalar gain.
                     path_gains_magnitude = np.mean(np.abs(path_gains_complex), axis=(3, 4))
                 else:
                     path_gains_magnitude = np.abs(path_gains_complex)
                 
-            # Now all are [T, S, P] -> [batch, num_rx, num_paths]
-            # This matches RTLayerFeatures expected structure.
+            # Now all are [Batch, Rx, Paths]
             
-            # Squeeze time dim if it leaked through
-            # paths.a can be [S, T, P, Rx, Tx, 1, 1]
-            # after reduce [S, T, P, 1, 1] -> transpose [T, S, P, 1, 1]
-            # we want [T, S, P]
-            if path_gains_magnitude.ndim > 3:
-                 path_gains_magnitude = np.squeeze(path_gains_magnitude)
-            if path_delays.ndim > 3:
-                 path_delays = np.squeeze(path_delays)
-            # Ensure 3D [Batch, Rx, Paths]
-            path_gains_magnitude = _ensure_batch(path_gains_magnitude)
-            path_delays = _ensure_batch(path_delays)
+            # Ensure we have precisely 3D arrays [Batch, num_rx, Paths] or [Batch, num_rx]
+            # Avoid global squeeze which kills intended dimensions if they are 1.
             
-            # Angles likely [Batch, Rx, Paths] already
-            path_aoa_azimuth = _ensure_batch(path_aoa_azimuth)
-            path_aoa_elevation = _ensure_batch(path_aoa_elevation)
-            path_aod_azimuth = _ensure_batch(path_aod_azimuth)
-            path_aod_elevation = _ensure_batch(path_aod_elevation)
-            path_doppler = _ensure_batch(path_doppler)
+            def _ensure_3d(arr):
+                if arr is None: return None
+                if arr.ndim == 2: return arr[:, np.newaxis, :]
+                if arr.ndim > 3:
+                     # Squeeze only later dims (antennas/time)
+                     # Sionna tensors can be [Targets, Sources, Paths, 1, 1]
+                     for _ in range(arr.ndim - 3):
+                         if arr.shape[-1] == 1:
+                             arr = np.squeeze(arr, axis=-1)
+                return arr
+
+            path_gains_magnitude = _ensure_3d(path_gains_magnitude)
+            path_delays = _ensure_3d(path_delays)
+            path_aoa_azimuth = _ensure_3d(path_aoa_azimuth)
+            path_aoa_elevation = _ensure_3d(path_aoa_elevation)
+            path_aod_azimuth = _ensure_3d(path_aod_azimuth)
+            path_aod_elevation = _ensure_3d(path_aod_elevation)
+            path_doppler = _ensure_3d(path_doppler)
             
             # Compute aggregate statistics
+            # These should produce [Batch, num_rx]
             rms_delay_spread = self._compute_rms_ds(path_gains_magnitude, path_delays)
+            
+            k_factor = None
+            if self.compute_k_factor:
+                k_factor = self._compute_k_factor(path_gains_magnitude)
+            
+            # Count valid paths (non-zero gain)
+            num_paths = np.sum(path_gains_magnitude > 1e-13, axis=-1)
+
 
             
             k_factor = None
@@ -440,7 +498,33 @@ class RTFeatureExtractor:
         except Exception as e:
             logger.error(f"Failed to extract RT features from Sionna paths: {e}")
             logger.warning("Falling back to mock RT features")
-            return self._extract_mock()
+            
+            # Try to infer batch_size and num_rx from paths if available
+            inferred_batch_size = batch_size
+            inferred_num_rx = num_rx
+            
+            if paths is not None:
+                try:
+                    if hasattr(paths, 'tau'):
+                        tau = paths.tau
+                        if hasattr(tau, 'shape'):
+                            # tau is typically [sources, targets, paths]
+                            # We can't be sure without context, but we try.
+                            if len(tau.shape) >= 2:
+                                # Heuristic: larger dim is likely batch/targets
+                                s0, s1 = tau.shape[0], tau.shape[1]
+                                if s0 > s1:
+                                     inferred_batch_size = s0
+                                     inferred_num_rx = s1
+                                else:
+                                     inferred_batch_size = s1
+                                     inferred_num_rx = s0
+                except Exception:
+                    pass
+            
+            return self._extract_mock(batch_size=inferred_batch_size or 10, num_rx=inferred_num_rx or 4)
+            
+            return self._extract_mock(batch_size=inferred_batch_size or 10, num_rx=inferred_num_rx or 4)
     
     def _compute_rms_ds(self, gains: np.ndarray, delays: np.ndarray) -> np.ndarray:
         """
@@ -492,9 +576,14 @@ class RTFeatureExtractor:
         
         return k_db
     
-    def _extract_mock(self) -> RTLayerFeatures:
-        """Mock features for testing without Sionna."""
-        batch_size, num_rx, num_paths = 10, 4, 50
+    def _extract_mock(self, batch_size: int = 10, num_rx: int = 4) -> RTLayerFeatures:
+        """Mock features for testing without Sionna.
+        
+        Args:
+            batch_size: Number of UE positions in the batch
+            num_rx: Number of receiver points (usually number of sites)
+        """
+        num_paths = 50
         
         return RTLayerFeatures(
             path_gains=np.random.randn(batch_size, num_rx, num_paths) + 
@@ -574,46 +663,72 @@ class PHYFAPIFeatureExtractor:
         # FORCE correct shape manually given we know the input 7D structure
         # h: [1, batch, rx, rx_ant, tx, tx_ant, fft]
         if channel_matrix is not None:
-            h_pilots = channel_matrix[..., pilot_re_indices] # [..., fft_subset]
-            p_pilots = np.mean(np.abs(h_pilots)**2, axis=-1) # [..., tx, tx_ant]
-            # Sum over TX antennas (last dim) -> [..., tx]
-            p_tx = np.sum(p_pilots, axis=-1)
-            # Sum over RX antennas (3rd form start? 0, 1, 2=rx_ant) -> [1, batch, rx, tx]
-            rsrp_linear = np.sum(p_tx, axis=3) 
+            # Expected incoming: [1, batch, rx, rx_ant, tx, tx_ant, fft]
+            # If we get [batch, rx_ant, tx, tx_ant, fft], we prepend dims
+            if channel_matrix.ndim == 5:
+                # [batch, rx_ant, tx, tx_ant, fft] -> [1, batch, 1, rx_ant, tx, tx_ant, fft]
+                h = channel_matrix[:, np.newaxis, :, :, :] # [batch, 1, rx_ant, tx, tx_ant, fft]
+                h = h[np.newaxis, ...] # [1, batch, 1, rx_ant, tx, tx_ant, fft]
+            else:
+                h = channel_matrix
+
+            h_pilots = h[..., pilot_re_indices] # [..., fft_subset]
+            p_pilots = np.mean(np.abs(h_pilots)**2, axis=-1) # [1, batch, rx, rx_ant, tx, tx_ant]
+            # Sum over TX antennas (last dim)
+            p_tx = np.sum(p_pilots, axis=-1) # [1, batch, rx, rx_ant, tx]
+            # Sum over RX antennas (axis 3)
+            rsrp_linear = np.sum(p_tx, axis=3)  # [1, batch, rx, tx]
             
             # Convert to dBm
             rsrp = 10 * np.log10(rsrp_linear + 1e-10) + 30
             
-            # Now shape is [1, batch, rx, tx] -> Squeeze first 2
-            if rsrp.shape[0] == 1: rsrp = np.squeeze(rsrp, axis=0) # [batch, rx, tx]
-            if rsrp.ndim == 4: rsrp = np.squeeze(rsrp, axis=0)
+            # Now shape is [1, batch, rx, tx] -> Squeeze to [batch, rx, tx]
+            rsrp = np.squeeze(rsrp, axis=0)
             
-            num_cells = rsrp.shape[-1]
             rsrp_dbm = rsrp
         else:
             # Approximate from path gains
+            # path_gains is [batch, num_rx, num_paths]
+            # num_rx here is actually Site count if RTExtractor produced it that way
             total_power = np.sum(np.abs(rt_features.path_gains)**2, axis=-1)
-            rsrp_dbm = 10 * np.log10(total_power + 1e-10) + 30
+            rsrp_val = 10 * np.log10(total_power + 1e-10) + 30 # [batch, num_rx]
             
-            # Expand to multi-cell: [batch, num_rx, num_cells]
-            num_cells = 1 + (len(interference_matrices) if interference_matrices else 0)
-            rsrp = np.repeat(rsrp_dbm[..., np.newaxis], num_cells, axis=-1)
+            # If num_rx > 1, it might mean we have RSRP for multiple cells already
+            # We want [batch, 1, num_cells]
+            if rsrp_val.ndim == 2:
+                # [batch, num_cells] -> [batch, 1, num_cells]
+                rsrp_dbm = rsrp_val[:, np.newaxis, :]
+            else:
+                rsrp_dbm = rsrp_val[..., np.newaxis]
+
         
         # RSSI: total received power (signal + interference + noise)
         rssi_linear = 10**((rsrp_dbm - 30) / 10) + noise_power_linear
         rssi_dbm = 10 * np.log10(rssi_linear) + 30
         
         # RSRQ
+        if channel_matrix is None:
+             num_cells = rsrp_dbm.shape[-1]
+        
         rsrq = compute_rsrq(rsrp_dbm, rssi_dbm, N=12)
-        rsrq = np.repeat(rsrq[..., np.newaxis], num_cells, axis=-1)
+        # RSRQ output is typically same shape as input [batch, rx, cells]
+        # np.repeat logic was probably intended if RSRQ returned smaller dim
+        # But compute_rsrq typically preserves shape. 
+        # Checking if repeat is needed.
+        if rsrq.ndim < rsrp_dbm.ndim:
+             rsrq = np.repeat(rsrq[..., np.newaxis], num_cells, axis=-1)
         
         # SINR
         if channel_matrix is not None:
             sinr = compute_sinr(channel_matrix, noise_power_linear, interference_matrices)
+            # compute_sinr might return [batch, rx], so repeat if needed
+            if sinr.ndim < rsrp_dbm.ndim:
+                sinr = np.repeat(sinr[..., np.newaxis], num_cells, axis=-1)
         else:
             # Approximate: RSRP - noise floor
+            # rsrp_dbm is already [batch, rx, cells]
             sinr = rsrp_dbm - noise_power_dbm
-        sinr = np.repeat(sinr[..., np.newaxis], num_cells, axis=-1)
+
         
         # CQI from SINR
         cqi = compute_cqi(sinr)
@@ -625,14 +740,15 @@ class PHYFAPIFeatureExtractor:
             ri = compute_rank_indicator(h_spatial)
         else:
             # Default: rank 1 (SISO)
-            ri = np.ones(rsrp.shape, dtype=np.int32)
+            ri = np.ones(rsrp_dbm.shape, dtype=np.int32)
+
         
         # PMI (simplified)
         if channel_matrix is not None:
             h_spatial = np.mean(channel_matrix, axis=(-2, -1))
             pmi = compute_pmi(h_spatial)
         else:
-            pmi = np.zeros(rsrp.shape, dtype=np.int32)
+            pmi = np.zeros(rsrp_dbm.shape, dtype=np.int32)
         
         # Beam management (5G NR)
         l1_rsrp_beams = None
@@ -647,7 +763,7 @@ class PHYFAPIFeatureExtractor:
             best_beam_ids = np.argsort(-l1_rsrp_beams, axis=-1)[..., :4]
         
         return PHYFAPILayerFeatures(
-            rsrp=rsrp,
+            rsrp=rsrp_dbm,
             rsrq=rsrq,
             sinr=sinr,
             cqi=cqi,
@@ -690,7 +806,7 @@ class MACRRCFeatureExtractor:
         
         Args:
             phy_features: PHY/FAPI layer features
-            ue_positions: [batch, num_rx, 3] UE positions (x, y, z) in meters
+            ue_positions: [batch, 3] or [batch, num_rx, 3] UE positions (x, y, z) in meters
             site_positions: [num_sites, 3] site positions
             cell_ids: [num_sites] physical cell IDs
             
@@ -700,13 +816,34 @@ class MACRRCFeatureExtractor:
         batch_size, num_rx = phy_features.rsrp.shape[:2]
         num_cells = len(cell_ids)
         
+        # Handle both [batch, 3] and [batch, num_rx, 3] shapes
+        if ue_positions.ndim == 2:
+            # Input is [batch, 3], reshape to [batch, 1, 3]
+            ue_positions = ue_positions[:, np.newaxis, :]
+        
+        # Validate that batch sizes match
+        ue_batch_size = ue_positions.shape[0]
+        if ue_batch_size != batch_size:
+            logger.warning(f"Batch size mismatch: phy_features has batch_size={batch_size}, but ue_positions has {ue_batch_size}. Adjusting ue_positions to match.")
+            # Truncate or pad ue_positions to match batch_size
+            if ue_batch_size > batch_size:
+                # Truncate
+                ue_positions = ue_positions[:batch_size]
+            else:
+                # Pad with zeros (or last position repeated)
+                padding_needed = batch_size - ue_batch_size
+                last_pos = ue_positions[-1:] if ue_batch_size > 0 else np.zeros((1, num_rx, 3))
+                padding = np.repeat(last_pos, padding_needed, axis=0)
+                ue_positions = np.concatenate([ue_positions, padding], axis=0)
+        
         # Serving cell: best RSRP
         # Note: RSRP may be padded to MAX_CELLS, but cell_ids only has actual cells
         serving_cell_indices = np.argmax(phy_features.rsrp, axis=-1)  # [batch, num_rx]
         
         # Clip indices to valid range (RSRP is padded, but cell_ids is not)
         serving_cell_indices = np.clip(serving_cell_indices, 0, num_cells - 1)
-        serving_cell_id = cell_ids[serving_cell_indices]
+        # Use ravel/reshape for proper advanced indexing
+        serving_cell_id = cell_ids[serving_cell_indices.ravel()].reshape(serving_cell_indices.shape)
         
         # Neighbor cells: top-K by RSRP (excluding serving)
         rsrp_for_neighbors = phy_features.rsrp.copy()
@@ -724,12 +861,34 @@ class MACRRCFeatureExtractor:
         else:
              # Ensure indices are valid
              neighbor_indices = np.clip(neighbor_indices, 0, num_cells - 1)
-             neighbor_cell_ids = cell_ids[neighbor_indices]
+             # Use ravel/reshape for proper advanced indexing
+             neighbor_cell_ids = cell_ids[neighbor_indices.ravel()].reshape(neighbor_indices.shape)
+        
+        
+        
         
         # Timing Advance: compute from UE-site distances
-        serving_site_positions = site_positions[serving_cell_indices]  # [batch, num_rx, 3]
+        # Use ravel/reshape for proper advanced indexing
+        try:
+            logger.debug(f"Input shapes: site_positions={site_positions.shape}, serving_cell_indices={serving_cell_indices.shape}, ue_positions={ue_positions.shape}")
+            logger.debug(f"serving_cell_indices values (first 5): {serving_cell_indices.ravel()[:5]}")
+            logger.debug(f"Max index: {serving_cell_indices.max()}, num_sites: {len(site_positions)}")
+            
+            indexed_positions = site_positions[serving_cell_indices.ravel()]
+            logger.debug(f"After indexing: indexed_positions.shape={indexed_positions.shape}")
+            target_shape = serving_cell_indices.shape + (3,)
+            logger.debug(f"Target reshape: {target_shape}")
+            serving_site_positions = indexed_positions.reshape(target_shape)  # [batch, num_rx, 3]
+            logger.debug(f"Final serving_site_positions.shape={serving_site_positions.shape}")
+        except Exception as e:
+            logger.error(f"Error during site position indexing: {e}",  exc_info=True)
+            logger.error(f"Shapes: site_positions={site_positions.shape}, serving_cell_indices={serving_cell_indices.shape}")
+            raise
+        
+        # Now ue_positions is guaranteed to be [batch, num_rx, 3]
         distances_3d = np.linalg.norm(ue_positions - serving_site_positions, axis=-1)
         timing_advance = compute_timing_advance(distances_3d)
+
         
         # Throughput simulation (Shannon capacity from CQI)
         dl_throughput_mbps = None

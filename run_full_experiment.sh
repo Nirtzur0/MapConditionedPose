@@ -43,6 +43,7 @@ python run_pipeline.py \
   --study-name "$STUDY_NAME" \
   --eval-dataset "$EVAL_DATASET" \
   --run-name "$RUN_NAME" \
-  --clean
+  --clean \
+  "$@"
 
 echo "✅ Pipeline successfully finished!"
