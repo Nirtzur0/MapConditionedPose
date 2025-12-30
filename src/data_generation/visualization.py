@@ -73,7 +73,8 @@ def render_scene_3d(
         cy = (y_min + y_max) / 2
         width = x_max - x_min
         height = y_max - y_min
-        max_dim = max(width, height)
+        # Enforce minimum dimension to prevent camera from being too close/grounded
+        max_dim = max(width, height, 100.0)
         ground_z = z_min
         
         # --- View 1: Top-Down ---
