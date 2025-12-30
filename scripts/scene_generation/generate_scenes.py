@@ -147,6 +147,13 @@ def parse_args():
         default="/home/ubuntu/projects/geo2sigmap/package/src",
         help="Path to geo2sigmap package src",
     )
+    # Overpass API
+    parser.add_argument(
+        "--osm-server",
+        type=str,
+        default=None,
+        help="Custom Overpass API endpoint (e.g. kumi.systems mirror)",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -301,6 +308,7 @@ def main():
                 'use_dem': args.use_dem,
                 'hag_tiff_path': str(args.hag_tiff) if args.hag_tiff else None,
             },
+            osm_server_addr=args.osm_server,
         )
         
         logger.info(f"\n✓ Generated scene: {metadata['scene_id']}")

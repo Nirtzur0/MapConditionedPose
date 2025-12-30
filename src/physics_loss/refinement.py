@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 import logging
 
-from .physics_loss import compute_physics_loss
+from .core import compute_physics_loss
 
 logger = logging.getLogger(__name__)
 

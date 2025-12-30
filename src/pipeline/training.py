@@ -152,7 +152,7 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
                 'num_layers': 8,
                 'dropout': 0.1,
                 'max_seq_len': 20,
-                'rt_features_dim': 10,
+                'rt_features_dim': 16,  # Updated to match dataset loader (radio_dataset.py line 420)
                 'phy_features_dim': 8,
                 'mac_features_dim': 6,
                 'embedding': {

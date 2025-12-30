@@ -207,34 +207,106 @@ class TestRTFeatureExtractor:
         assert np.all(rt_features.rms_delay_spread >= 0), "RMS-DS must be positive"
     
     def test_rms_ds_computation(self):
-        """Test RMS delay spread calculation."""
+        """Test RMS delay spread calculation using public extract()."""
         extractor = RTFeatureExtractor()
         
+        # simple mock paths object
+        class MockPaths:
+            def __init__(self, a, tau):
+                self.a = a
+                self.tau = tau
+                self.phi_r = np.zeros_like(a) # placeholder
+                self.theta_r = np.zeros_like(a)
+                self.phi_t = np.zeros_like(a)
+                self.theta_t = np.zeros_like(a)
+                self.doppler = None
+
         # Simple case: two paths
-        gains = np.array([[[1.0 + 0j, 0.5 + 0j]]])
-        delays = np.array([[[0.0, 1e-6]]])
+        # [Sources=1, Targets=1, Paths=2, Rx=1, Tx=1, 1, 1]
+        # Or simpler structure that generic extraction accepts (it handles various shapes)
+        # Let's provide [Batch=1, Rx=1, Paths=2] directly? 
+        # But generic extraction expects Sionna shape and tries to reduce/align.
+        # Let's provide [Batch=1, Rx=1, Paths=2]
         
-        rms_ds = extractor._compute_rms_ds(gains, delays)
+        gains = np.array([[[1.0 + 0j, 0.5 + 0j]]]) # [1, 1, 2]
+        delays = np.array([[[0.0, 1e-6]]]) # [1, 1, 2]
         
+        paths = MockPaths(gains, delays)
+        
+        # Extract with explicit batch_size=1
+        features = extractor.extract(paths, batch_size=1, num_rx=1)
+        
+        rms_ds = features.rms_delay_spread
         assert rms_ds.shape == (1, 1)
         assert rms_ds[0, 0] > 0, "RMS-DS should be positive"
     
     def test_k_factor_computation(self):
         """Test Rician K-factor calculation."""
-        extractor = RTFeatureExtractor()
+        extractor = RTFeatureExtractor(compute_k_factor=True)
+        
+        class MockPaths:
+            def __init__(self, a, tau):
+                self.a = a
+                self.tau = tau
+                self.phi_r = np.zeros_like(a)
+                self.theta_r = np.zeros_like(a)
+                self.phi_t = np.zeros_like(a)
+                self.theta_t = np.zeros_like(a)
         
         # Strong LOS scenario
         gains_los = np.array([[[10.0 + 0j, 1.0 + 0j, 0.5 + 0j]]])
-        k_los = extractor._compute_k_factor(gains_los)
+        delays = np.zeros_like(gains_los, dtype=float)
+        paths_los = MockPaths(gains_los, delays)
+        
+        features_los = extractor.extract(paths_los, batch_size=1, num_rx=1)
+        k_los = features_los.k_factor
         
         assert k_los[0, 0] > 10, "Strong LOS should have high K-factor"
         
         # NLOS scenario
         gains_nlos = np.array([[[1.0 + 0j, 0.9 + 0j, 0.8 + 0j]]])
-        k_nlos = extractor._compute_k_factor(gains_nlos)
+        paths_nlos = MockPaths(gains_nlos, delays)
+        
+        features_nlos = extractor.extract(paths_nlos, batch_size=1, num_rx=1)
+        k_nlos = features_nlos.k_factor
         
         assert k_nlos[0, 0] < 5, "NLOS should have low K-factor"
     
+    def test_complex_conversion_robustness(self):
+        """Test robustness of complex() against Dr.Jit-like types."""
+        from src.data_generation.features import NumpyOps
+        ops = NumpyOps()
+        
+        class MockTensor:
+            def __init__(self, val):
+                self.val = np.array(val)
+            def numpy(self):
+                return self.val
+            def __add__(self, other):
+                 return NotImplemented
+            def __radd__(self, other):
+                # Simulate Dr.Jit failure when adding/multiplying with python complex
+                # Note: valid Dr.Jit arrays often fail on 'other + self' if 'other' is complex/float and self is array-like but restricted
+                if isinstance(other, complex):
+                     raise RuntimeError("MockDrJit: unsupported complex op")
+                return NotImplemented
+            def __mul__(self, other):
+                return NotImplemented
+            def __rmul__(self, other):
+                 if isinstance(other, complex):
+                     raise RuntimeError("MockDrJit: unsupported complex op")
+                 return NotImplemented
+
+        real = MockTensor([1.0, 2.0])
+        imag = MockTensor([0.5, 0.5])
+        
+        # This should succeed now because ops.complex converts to numpy first
+        res = ops.complex(real, imag)
+        
+        assert isinstance(res, np.ndarray)
+        assert np.iscomplexobj(res)
+        assert res[0] == 1.0 + 0.5j
+
     def test_to_dict_conversion(self):
         """Test conversion to dictionary for storage."""
         extractor = RTFeatureExtractor()
@@ -243,7 +315,8 @@ class TestRTFeatureExtractor:
         rt_dict = rt_features.to_dict()
         
         assert 'rt/rms_delay_spread' in rt_dict
-        assert 'rt/path_gains' not in rt_dict
+        assert 'rt/path_gains' in rt_dict
+        assert 'rt/path_delays' in rt_dict
         assert 'rt/num_paths' in rt_dict
         if extractor.compute_k_factor:
             assert 'rt/k_factor' in rt_dict

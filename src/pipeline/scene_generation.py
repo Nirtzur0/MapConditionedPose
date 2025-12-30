@@ -26,6 +26,13 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
     log_section_func("STEP 1: Generate Scenes")
 
     cmd = [sys.executable, "scripts/scene_generation/generate_scenes.py"]
+    
+    # Check for custom Overpass API URL in environment
+    import os
+    overpass_url = os.environ.get("OVERPASS_URL")
+    if overpass_url:
+        logger.info(f"Using custom Overpass API: {overpass_url}")
+        cmd.extend(["--osm-server", overpass_url])
 
     if args.scene_config:
         logger.info(f"Using scene config file: {args.scene_config}")

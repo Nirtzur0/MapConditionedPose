@@ -82,4 +82,12 @@ checkpoints/
 # Experiments objects
 lightning_logs/
 optuna_study.db
-configs/trial_*.yaml
+# LaTeX artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+*.blg
+*.bbl

@@ -116,7 +116,7 @@ class RadioMapGenerator:
         cell_sites: List[Dict],
         show_progress: bool = True,
         return_sionna_object: bool = False,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, Optional[any]]:
         """Generate radio map for a scene."""
         self.logger.info(f"Generating radio map for scene with {len(cell_sites)} cell sites")
         

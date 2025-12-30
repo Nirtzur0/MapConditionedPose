@@ -13,7 +13,7 @@ Components:
 """
 
 from .differentiable_lookup import differentiable_lookup, normalize_coords
-from .physics_loss import PhysicsLoss, compute_physics_loss, PhysicsLossConfig
+from .core import PhysicsLoss, compute_physics_loss, PhysicsLossConfig
 from .refinement import refine_position, RefineConfig
 
 __all__ = [

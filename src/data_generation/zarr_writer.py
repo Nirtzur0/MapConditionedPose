@@ -157,9 +157,29 @@ class ZarrDatasetWriter:
         # Positions
         if 'positions' in scene_data:
             pos = scene_data['positions']
-            self.store['positions/ue_x'][self.current_idx:end_idx] = pos[:, 0]
-            self.store['positions/ue_y'][self.current_idx:end_idx] = pos[:, 1]
-            self.store['positions/ue_z'][self.current_idx:end_idx] = pos[:, 2]
+            try:
+                self.store['positions/ue_x'][self.current_idx:end_idx] = pos[:, 0]
+                self.store['positions/ue_y'][self.current_idx:end_idx] = pos[:, 1]
+                self.store['positions/ue_z'][self.current_idx:end_idx] = pos[:, 2]
+            except KeyError:
+                logger.error(f"KeyError writing positions. Store keys: {list(self.store.keys())}")
+                if 'positions' in self.store:
+                     logger.error(f"Positions keys: {list(self.store['positions'].keys())}")
+                else:
+                     logger.error("Positions group missing entirely.")
+                # Attempt mitigation: Re-create?
+                logger.warning("Attempting to re-create positions array...")
+                try:
+                    self._create_array('positions/ue_x', dtype='float32', shape=(0,))
+                    self._create_array('positions/ue_y', dtype='float32', shape=(0,))
+                    self._create_array('positions/ue_z', dtype='float32', shape=(0,))
+                    self._resize_arrays(end_idx)
+                    self.store['positions/ue_x'][self.current_idx:end_idx] = pos[:, 0]
+                    self.store['positions/ue_y'][self.current_idx:end_idx] = pos[:, 1]
+                    self.store['positions/ue_z'][self.current_idx:end_idx] = pos[:, 2]
+                except Exception as e:
+                    logger.error(f"Recovery failed: {e}")
+                    raise 
         
         # Timestamps
         if 'timestamps' in scene_data:

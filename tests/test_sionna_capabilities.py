@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from src.data_generation.features import RTFeatureExtractor
-import src.data_generation.features as features_module
+import src.data_generation.features.rt_extractor as rt_extractor_module
 import src.data_generation.radio_map_generator as radio_map_generator
 
 
@@ -85,7 +85,7 @@ def _reduce_expected(arr):
 
 def test_rt_extractor_paths_reduction(monkeypatch):
     """Ensure RTFeatureExtractor reduces Sionna Paths to expected shapes/values."""
-    monkeypatch.setattr(features_module, "SIONNA_AVAILABLE", True)
+    monkeypatch.setattr(rt_extractor_module, "SIONNA_AVAILABLE", True)
     extractor = RTFeatureExtractor()
     paths = _make_paths(include_doppler=True)
 
@@ -104,7 +104,7 @@ def test_rt_extractor_paths_reduction(monkeypatch):
 
 def test_rt_extractor_missing_doppler(monkeypatch):
     """Verify missing doppler falls back to zeros."""
-    monkeypatch.setattr(features_module, "SIONNA_AVAILABLE", True)
+    monkeypatch.setattr(rt_extractor_module, "SIONNA_AVAILABLE", True)
     extractor = RTFeatureExtractor()
     paths = _make_paths(include_doppler=False)
 

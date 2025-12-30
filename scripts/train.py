@@ -11,6 +11,13 @@ View training:
 """
 
 import argparse
+
+# Import Comet before torch to avoid warning
+try:
+    import comet_ml
+except ImportError:
+    pass
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, DeviceStatsMonitor
 from pytorch_lightning.loggers import WandbLogger, CometLogger

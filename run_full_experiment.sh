@@ -8,6 +8,7 @@ set -e
 export COMET_API_KEY="1lc3SG8vCkNzrn5p9ZmZs328K"
 export COMET_WORKSPACE="nirtzur0"
 export COMET_PROJECT_NAME="ue-localization"
+export OVERPASS_URL="https://overpass.kumi.systems/api/interpreter"
 
 # Experiment Settings
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"

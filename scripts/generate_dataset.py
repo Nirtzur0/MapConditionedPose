@@ -12,6 +12,10 @@ import sys
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Setup clean logging BEFORE other imports
+from src.utils.logging_config import setup_clean_logging
+setup_clean_logging(level=logging.INFO)
+
 from src.data_generation.multi_layer_generator import (
     MultiLayerDataGenerator, DataGenerationConfig
 )

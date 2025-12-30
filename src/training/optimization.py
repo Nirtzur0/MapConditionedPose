@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Dict
 import yaml
 import gc
+
+# Import Comet before torch to avoid warning
+import comet_ml
 import torch
 
 from src.utils.logging_utils import setup_logging
@@ -18,13 +21,9 @@ from src.training import UELocalizationLightning
 logger = logging.getLogger(__name__)
 
 # Import Optuna and Comet integration if available
-try:
-    import optuna
-    from optuna_integration.comet import CometCallback
-    COMET_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Comet import failed: {e}")
-    COMET_AVAILABLE = False
+import optuna
+from optuna_integration.comet import CometCallback
+COMET_AVAILABLE = True
 
 # Debug
 logger.info(f"COMET_AVAILABLE: {COMET_AVAILABLE}")

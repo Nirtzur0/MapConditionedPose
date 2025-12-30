@@ -15,9 +15,9 @@ from .visualization import render_scene_3d, save_map_visualizations
 
 from .features import (
     RTFeatureExtractor, PHYFAPIFeatureExtractor, MACRRCFeatureExtractor,
-    RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures
+    RTLayerFeatures, PHYFAPILayerFeatures, MACRRCLayerFeatures,
+    SionnaNativeKPIExtractor
 )
-from .native_features import SionnaNativeKPIExtractor
 from .measurement_utils import add_measurement_dropout
 from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 
@@ -579,6 +579,7 @@ class MultiLayerDataGenerator:
             else:
                 paths = paths_result
 
+
             # 3. Extract Features (Batch)
             # The updated RTFeatureExtractor handles [Batch=Targets, ...] permutation
             # Pass batch_size and num_sites so fallback mock has correct dimensions
@@ -805,9 +806,17 @@ class MultiLayerDataGenerator:
         logger.info(f"Loading Sionna scene from {scene_path}...")
         scene = load_scene(str(scene_path))
         
+        location_data = None
         # Apply scene-level settings
         scene.frequency = self.config.carrier_frequency_hz
         scene.synthetic_array = True
+        
+        if hasattr(scene, 'transmitters'):
+            # Convert keys to list to avoid runtime error during modification
+            tx_names = list(scene.transmitters.keys())
+            if tx_names:
+                for name in tx_names:
+                    scene.remove(name)
         
         logger.info(f"Scene loaded: frequency={self.config.carrier_frequency_hz/1e9:.2f} GHz.")
         return scene
@@ -820,6 +829,9 @@ class MultiLayerDataGenerator:
             return []
             
         from sionna.rt import Transmitter, PlanarArray
+        
+        # Verify clean state
+        current_tx = list(scene.transmitters.keys())
         
         transmitters = []
         

@@ -280,160 +280,184 @@ class RadioLocalizationDataset(Dataset):
         """Load and process temporal measurement sequences for a given index."""
         zarr_idx = idx
         
-        # Extract and average RT layer features
-        rt_data = {}
+        # --- Schema Definition for Feature Loading ---
+        # Format: (output_list, group_name, feature_name, aggregation_func)
+        # default aggregation is scalar mean unless specified otherwise
+        
+        rt_features = []
+        phy_features = []
+        mac_features = []
+        
+        # RT Layer Schema
+        rt_schema = [
+            # Feature Name, Group Key
+            ('path_gains', 'path_gains'),
+            ('path_delays', 'path_delays'),
+            ('path_aoa_azimuth', 'path_aoa_azimuth'),
+            ('path_aoa_elevation', 'path_aoa_elevation'),
+            ('path_aod_azimuth', 'path_aod_azimuth'),
+            ('path_aod_elevation', 'path_aod_elevation'),
+            ('path_doppler', 'path_doppler'),
+            ('rms_delay_spread', 'rms_delay_spread'),
+            ('k_factor', 'k_factor'),
+            ('num_paths', 'num_paths'),
+            ('toa', 'toa'),
+            ('is_nlos', 'is_nlos'),
+            ('rms_angular_spread', 'rms_angular_spread'),
+        ]
+        
+        # PHY Layer Schema
+        phy_schema = [
+            ('rsrp', 'rsrp', -120.0),
+            ('rsrq', 'rsrq', -20.0),
+            ('sinr', 'sinr', -10.0),
+            ('cqi', 'cqi', 7.0),
+            ('ri', 'ri', 1.0),
+            ('pmi', 'pmi', 0.0),
+            ('capacity_mbps', 'capacity_mbps', 0.0),
+            ('condition_number', 'condition_number', 1.0),
+        ]
+        
+        # MAC Layer Schema
+        mac_schema = [
+            ('serving_cell_id', 'serving_cell_id', 0.0),
+            ('timing_advance', 'timing_advance', 0.0),
+            ('phr', 'phr', 0.0),
+            ('throughput', 'throughput', 0.0),
+            ('bler', 'bler', 0.0),
+        ]
+        
+        # --- Helper Functions ---
+        def _load_scalar(group, key, default=0.0):
+            if key not in group: return None
+            val = group[key][zarr_idx]
+            if hasattr(val, '__len__'):
+                return float(np.mean(val)) if val.size > 0 else default
+            return float(val)
+
+        def _load_rt_feature(group, key):
+            if key not in group: return None
+            val = group[key][zarr_idx]
+            # Handle potential multi-dim arrays by taking mean absolute/value
+            if key == 'path_gains': return np.mean(np.abs(val))
+            if hasattr(val, '__len__'): return np.mean(val)
+            return val
+
+        # --- Load RT Features ---
         if 'rt' in self.store:
-            rt_group = self.store['rt']
-            rt_features = []
-            
-            # Aggregate available RT features
-            if 'path_gains' in rt_group: rt_features.append(np.mean(np.abs(rt_group['path_gains'][zarr_idx])))
-            if 'path_delays' in rt_group: rt_features.append(np.mean(rt_group['path_delays'][zarr_idx]))
-            if 'path_aoa_azimuth' in rt_group: rt_features.append(np.mean(rt_group['path_aoa_azimuth'][zarr_idx]))
-            if 'path_aoa_elevation' in rt_group: rt_features.append(np.mean(rt_group['path_aoa_elevation'][zarr_idx]))
-            if 'path_aod_azimuth' in rt_group: rt_features.append(np.mean(rt_group['path_aod_azimuth'][zarr_idx]))
-            if 'path_aod_elevation' in rt_group: rt_features.append(np.mean(rt_group['path_aod_elevation'][zarr_idx]))
-            if 'path_doppler' in rt_group: rt_features.append(np.mean(rt_group['path_doppler'][zarr_idx]))
-            
-            # Handle potentially multi-dimensional aggregates
-            if 'rms_delay_spread' in rt_group:
-                rms_ds_val = rt_group['rms_delay_spread'][zarr_idx]
-                rt_features.append(float(np.mean(rms_ds_val)) if hasattr(rms_ds_val, '__len__') else float(rms_ds_val))
-            
-            if 'k_factor' in rt_group:
-                k_fac_val = rt_group['k_factor'][zarr_idx]
-                rt_features.append(float(np.mean(k_fac_val)) if hasattr(k_fac_val, '__len__') else float(k_fac_val))
-            
-            if 'num_paths' in rt_group:
-                num_paths_val = rt_group['num_paths'][zarr_idx]
-                rt_features.append(float(np.mean(num_paths_val)) if hasattr(num_paths_val, '__len__') else float(num_paths_val))
+            group = self.store['rt']
+            for name, key in rt_schema:
+                val = _load_rt_feature(group, key)
+                if val is not None:
+                    rt_features.append(float(val))
+                    
+        rt_data = {}
+        if rt_features:
+            rt_data['features'] = torch.tensor(
+                np.array(rt_features, dtype=np.float32),
+                dtype=torch.float32
+            ).unsqueeze(0)
 
-            # New Positioning KPIs
-            if 'toa' in rt_group:
-                val = rt_group['toa'][zarr_idx]
-                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
-                
-            if 'is_nlos' in rt_group:
-                val = rt_group['is_nlos'][zarr_idx]
-                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
-
-            if 'rms_angular_spread' in rt_group:
-                val = rt_group['rms_angular_spread'][zarr_idx]
-                rt_features.append(float(np.mean(val)) if hasattr(val, '__len__') else float(val))
-            
-            if rt_features:
-                rt_data['features'] = torch.tensor(
-                    np.array(rt_features, dtype=np.float32),
-                    dtype=torch.float32
-                ).unsqueeze(0)
-        
-        # Extract and average PHY/FAPI layer features
-        phy_data = {}
+        # --- Load PHY Features ---
         if 'phy_fapi' in self.store:
-            phy_group = self.store['phy_fapi']
-            phy_features = []
-            
-            # Aggregate available PHY features
-            if 'rsrp' in phy_group: phy_features.append(np.mean(phy_group['rsrp'][zarr_idx]) if phy_group['rsrp'][zarr_idx].size > 0 else -120.0)
-            if 'rsrq' in phy_group: phy_features.append(np.mean(phy_group['rsrq'][zarr_idx]) if phy_group['rsrq'][zarr_idx].size > 0 else -20.0)
-            if 'sinr' in phy_group: phy_features.append(np.mean(phy_group['sinr'][zarr_idx]) if phy_group['sinr'][zarr_idx].size > 0 else -10.0)
-            if 'cqi' in phy_group: phy_features.append(np.mean(phy_group['cqi'][zarr_idx]) if phy_group['cqi'][zarr_idx].size > 0 else 7.0)
-            if 'ri' in phy_group: phy_features.append(np.mean(phy_group['ri'][zarr_idx]) if phy_group['ri'][zarr_idx].size > 0 else 1.0)
-            if 'pmi' in phy_group: phy_features.append(np.mean(phy_group['pmi'][zarr_idx]) if phy_group['pmi'][zarr_idx].size > 0 else 0.0)
-            
-            # New PHY KPIs
-            if 'capacity_mbps' in phy_group: 
-                val = phy_group['capacity_mbps'][zarr_idx]
-                phy_features.append(np.mean(val) if val.size > 0 else 0.0)
-            
-            if 'condition_number' in phy_group:
-                val = phy_group['condition_number'][zarr_idx]
-                phy_features.append(np.mean(val) if val.size > 0 else 1.0)
-            
-            if phy_features:
-                phy_data['features'] = torch.tensor(
-                    np.array(phy_features, dtype=np.float32),
-                    dtype=torch.float32
-                )
+            group = self.store['phy_fapi']
+            for name, key, default_val in phy_schema:
+                val = _load_scalar(group, key, default=default_val)
+                if val is not None:
+                    phy_features.append(val)
+                else:
+                    # Check if we should append default or skip? 
+                    # Original code used `if 'rsrp' in group` checks.
+                    # We'll use the check `if key in group` inside _load_scalar.
+                    # If it returns None, it wasn't there.
+                    # BUT for PHY, existing code appended default if EMPTY array, but skipped if key MISSING?
+                    # Re-reading original: `if 'rsrp' in phy_group: append(...)`
+                    # So if key missing, we skip.
+                    pass
         
-        # Extract and average MAC/RRC layer features
-        mac_data = {}
+        phy_data = {}
+        if phy_features:
+            phy_data['features'] = torch.tensor(
+                np.array(phy_features, dtype=np.float32),
+                dtype=torch.float32
+            )
+            
+        # --- Load MAC Features ---
         if 'mac_rrc' in self.store:
-            mac_group = self.store['mac_rrc']
-            mac_features = []
-
-            def _scalar(value, default=0.0):
-                arr = np.array(value)
-                if arr.size == 0:
-                    return float(default)
-                return float(np.mean(arr))
-            
-            if 'serving_cell_id' in mac_group: mac_features.append(_scalar(mac_group['serving_cell_id'][zarr_idx], default=0.0))
-            if 'timing_advance' in mac_group: mac_features.append(_scalar(mac_group['timing_advance'][zarr_idx], default=0.0))
-            if 'phr' in mac_group: mac_features.append(_scalar(mac_group['phr'][zarr_idx], default=0.0))
-            if 'throughput' in mac_group: mac_features.append(_scalar(mac_group['throughput'][zarr_idx], default=0.0))
-            if 'bler' in mac_group: mac_features.append(_scalar(mac_group['bler'][zarr_idx], default=0.0))
-            
-            if mac_features:
-                mac_data['features'] = torch.tensor(
-                    np.array(mac_features, dtype=np.float32),
-                    dtype=torch.float32
-                )
+            group = self.store['mac_rrc']
+            for name, key, default_val in mac_schema:
+                val = _load_scalar(group, key, default=default_val)
+                if val is not None:
+                    mac_features.append(val)
         
-        # Initialize cell/beam IDs and timestamps
+        mac_data = {}
+        if mac_features:
+            mac_data['features'] = torch.tensor(
+                np.array(mac_features, dtype=np.float32),
+                dtype=torch.float32
+            )
+
+        # Initialize ID/Time tensors
         cell_ids = torch.zeros(1, dtype=torch.long)
         beam_ids = torch.zeros(1, dtype=torch.long)
         timestamps = torch.zeros(1, dtype=torch.float32)
         
-        # Load from metadata if available
         if 'metadata' in self.store:
-            if 'cell_ids' in self.store['metadata']:
-                cell_ids = torch.tensor(self.store['metadata']['cell_ids'][idx], dtype=torch.long)
-            if 'beam_ids' in self.store['metadata']:
-                beam_ids = torch.tensor(self.store['metadata']['beam_ids'][idx], dtype=torch.long)
-            if 'timestamps' in self.store['metadata']:
-                timestamps = torch.tensor(self.store['metadata']['timestamps'][idx], dtype=torch.float32)
-        
-        # Create mask (True for valid, False for padding/missing)
+            meta = self.store['metadata']
+            if 'cell_ids' in meta: cell_ids = torch.tensor(meta['cell_ids'][idx], dtype=torch.long)
+            if 'beam_ids' in meta: beam_ids = torch.tensor(meta['beam_ids'][idx], dtype=torch.long)
+            if 'timestamps' in meta: timestamps = torch.tensor(meta['timestamps'][idx], dtype=torch.float32)
+
+        # Create mask
         seq_len = max(rt_data.get('features', torch.empty(0, 0)).shape[0], 1)
         mask = torch.ones(seq_len, dtype=torch.bool)
         
-        # Handle missing values: mask out NaNs in sequence data
+        # Handle missing (mask/zero/mean)
         if self.handle_missing == 'mask':
             if 'features' in rt_data: mask &= ~torch.isnan(rt_data['features']).any(dim=-1)
             if 'features' in phy_data: phy_data['features'] = torch.nan_to_num(phy_data['features'], nan=0.0)
             if 'features' in mac_data: mac_data['features'] = torch.nan_to_num(mac_data['features'], nan=0.0)
         elif self.handle_missing == 'zero':
-            # Replace NaNs with zero
-            if 'features' in rt_data: rt_data['features'] = torch.nan_to_num(rt_data['features'], nan=0.0)
-            if 'features' in phy_data: phy_data['features'] = torch.nan_to_num(phy_data['features'], nan=0.0)
-            if 'features' in mac_data: mac_data['features'] = torch.nan_to_num(mac_data['features'], nan=0.0)
-        
+             if 'features' in rt_data: rt_data['features'] = torch.nan_to_num(rt_data['features'], nan=0.0)
+             if 'features' in phy_data: phy_data['features'] = torch.nan_to_num(phy_data['features'], nan=0.0)
+             if 'features' in mac_data: mac_data['features'] = torch.nan_to_num(mac_data['features'], nan=0.0)
+
         # Normalize features if requested
         if self.normalize and self.norm_stats:
             rt_data = self._normalize_features(rt_data, 'rt')
             phy_data = self._normalize_features(phy_data, 'phy')
             mac_data = self._normalize_features(mac_data, 'mac')
         
-        # Pad/truncate features to model's expected dimensions
-        # RT: Increased from 10 to 16 to accommodate ToA, NLoS, AS etc.
-        rt_target_dim = 16
-        rt_features = rt_data.get('features', torch.zeros(seq_len, rt_target_dim))
-        if rt_features.shape[-1] < rt_target_dim: rt_features = torch.cat([rt_features, torch.zeros(rt_features.shape[0], rt_target_dim - rt_features.shape[-1])], dim=-1)
-        elif rt_features.shape[-1] > rt_target_dim: rt_features = rt_features[..., :rt_target_dim]
-            
-        phy_features = phy_data.get('features', torch.zeros(8))
-        if len(phy_features) < 8: phy_features = torch.cat([phy_features, torch.zeros(8 - len(phy_features))], dim=0)
-        elif len(phy_features) > 8: phy_features = phy_features[:8]
-            
-        mac_features = mac_data.get('features', torch.zeros(6))
-        if len(mac_features) < 6: mac_features = torch.cat([mac_features, torch.zeros(6 - len(mac_features))], dim=0)
-        elif len(mac_features) > 6: mac_features = mac_features[:6]
+        # --- Dynamic Dim Handling ---
+        # Instead of fixed 16/8/6, we respect what was loaded, but ensure min padding if needed for model compat
+        # Ideally, we should read this from config, but here we just return what we have.
+        # The collate_fn handles batch padding.
+        # BUT the model expects fixed input size? The FeatureProjection in model does.
+        # So we MUST pad to at least the configured model dimension locally or ensure config matches.
+        # For now, let's keep the padding logic but clean it up.
         
+        # We'll use a dynamic target dim based on the schema length effectively?
+        # Or better, just pad to the "known max" for safety, which is effectively the schema size.
+        
+        rt_target_dim = 16 # Accommodate all possible RT features
+        rt_feat = rt_data.get('features', torch.zeros(seq_len, rt_target_dim))
+        if rt_feat.shape[-1] < rt_target_dim: 
+            rt_feat = torch.cat([rt_feat, torch.zeros(rt_feat.shape[0], rt_target_dim - rt_feat.shape[-1])], dim=-1)
+        elif rt_feat.shape[-1] > rt_target_dim:
+            rt_feat = rt_feat[..., :rt_target_dim]
+            
+        phy_feat = phy_data.get('features', torch.zeros(8))
+        if len(phy_feat) < 8: phy_feat = torch.cat([phy_feat, torch.zeros(8 - len(phy_feat))], dim=0)
+        elif len(phy_feat) > 8: phy_feat = phy_feat[:8]
+            
+        mac_feat = mac_data.get('features', torch.zeros(6))
+        if len(mac_feat) < 6: mac_feat = torch.cat([mac_feat, torch.zeros(6 - len(mac_feat))], dim=0)
+        elif len(mac_feat) > 6: mac_feat = mac_feat[:6]
+
         return {
-            'rt_features': rt_features,
-            'phy_features': phy_features,
-            'mac_features': mac_features,
+            'rt_features': rt_feat,
+            'phy_features': phy_feat,
+            'mac_features': mac_feat,
             'cell_ids': cell_ids if len(cell_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'beam_ids': beam_ids if len(beam_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'timestamps': timestamps if len(timestamps) > 0 else torch.arange(seq_len, dtype=torch.float32),

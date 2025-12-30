@@ -95,6 +95,7 @@ class SceneGenerator:
         materials: Optional[Dict[str, str]] = None,
         site_config: Optional[Dict] = None,
         terrain_config: Optional[Dict] = None,
+        osm_server_addr: Optional[str] = None,
     ) -> Dict:
         """
         Generate a complete scene with buildings, terrain, and sites.
@@ -105,6 +106,7 @@ class SceneGenerator:
             materials: Dict with 'ground', 'rooftop', 'wall' material IDs
             site_config: Site placement configuration
             terrain_config: Terrain generation configuration
+            osm_server_addr: Custom Overpass API endpoint
             
         Returns:
             Scene metadata dictionary
@@ -132,7 +134,7 @@ class SceneGenerator:
             points=polygon_points,
             data_dir=str(scene_dir),
             hag_tiff_path=hag_tiff_path,
-            osm_server_addr="https://overpass-api.de/api/interpreter",
+            osm_server_addr=osm_server_addr or "https://overpass-api.de/api/interpreter",
             lidar_calibration=use_lidar,
             generate_building_map=True,
             ground_material_type=materials['ground'],

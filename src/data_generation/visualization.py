@@ -48,6 +48,7 @@ def render_scene_3d(
         logger.info(f"Rendering 3D visualizations for {scene_id}...")
         
         # Create output directory
+        output_dir = output_dir.resolve()
         viz_dir = output_dir / "3d_visualizations"
         viz_dir.mkdir(parents=True, exist_ok=True)
         safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
