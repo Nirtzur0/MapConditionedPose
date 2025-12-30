@@ -60,7 +60,15 @@ class RadioLocalizationDataset(Dataset):
         self.augmentor = RadioAugmentation(augmentation if split == 'train' else None)
         
         # Open Zarr store (read-only)
-        self.store = zarr.open(str(self.zarr_path), mode='r')
+        if not zarr_path or str(zarr_path) == '.':
+            raise ValueError(f"Invalid zarr_path provided to RadioLocalizationDataset: '{zarr_path}'")
+        
+        logger.debug(f"Opening Zarr store at: {self.zarr_path}")
+        try:
+            self.store = zarr.open(str(self.zarr_path), mode='r')
+        except Exception as e:
+            logger.error(f"Failed to open Zarr store at {self.zarr_path}: {e}")
+            raise
         
         # Get split indices
         self.indices = self._get_split_indices()
@@ -81,7 +89,7 @@ class RadioLocalizationDataset(Dataset):
             return self.store['metadata'][f'{self.split}_indices'][:]
         
         # Otherwise, create split based on total samples
-        total_samples = len(self.store['positions/ue_x'])
+        total_samples = self.store['positions/ue_x'].shape[0]
         indices = np.arange(total_samples)
         
         # Default split: 70% train, 15% val, 15% test
@@ -472,10 +480,10 @@ class RadioLocalizationDataset(Dataset):
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
         
         if 'radio_maps' not in self.store:
-            # Return dummy map if not available, padded to 10 channels
-            # Channels: rsrp, rsrq, sinr, cqi, throughput, path_gain, snr, rms_ds, mean_delay, k_factor
+            # Return dummy map if not available, padded to 5 channels
+            # Channels: rsrp, rsrq, sinr, cqi, throughput
             H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(10, H, W, dtype=torch.float32)
+            return torch.zeros(5, H, W, dtype=torch.float32)
         
         # Load radio map for the specific scene
         # Handle shape [NumScenes, C, H, W] or [NumScenes, H, W, C]
@@ -487,13 +495,13 @@ class RadioLocalizationDataset(Dataset):
              if radio_map.shape[-1] < radio_map.shape[0]: 
                  radio_map = radio_map.permute(2, 0, 1)
         
-        # Pad or slice to ensure 10 channels
+        # Pad or slice to ensure 5 channels
         current_channels = radio_map.shape[0]
-        if current_channels < 10:
-            padding = torch.zeros(10 - current_channels, radio_map.shape[1], radio_map.shape[2], dtype=radio_map.dtype)
+        if current_channels < 5:
+            padding = torch.zeros(5 - current_channels, radio_map.shape[1], radio_map.shape[2], dtype=radio_map.dtype)
             radio_map = torch.cat([radio_map, padding], dim=0)
         
-        return radio_map[:10]
+        return radio_map[:5]
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
         """Load and process an OSM building/geometry map."""

@@ -73,6 +73,8 @@ class MultiLayerDataGenerator:
             carrier_frequency_hz=config.carrier_frequency_hz,
             bandwidth_hz=config.bandwidth_hz,
             compute_k_factor=config.enable_k_factor,
+            max_stored_paths=config.max_stored_paths,
+            max_stored_sites=config.max_stored_sites,
         )
         
         self.phy_extractor = PHYFAPIFeatureExtractor(
@@ -265,10 +267,14 @@ class MultiLayerDataGenerator:
         bbox = scene_metadata.get('bbox', {})
         if 'x_min' in bbox and 'x_max' in bbox:
             # Simulation Frame: 
-            # We use UTM (Global) because M1 meshes contain UTM coordinates.
-            # Shifting here would move UEs/Sites away from the mesh!
-            sim_offset_x = 0.0 
-            sim_offset_y = 0.0
+            # Detect if the scene is centered at (0,0) or uses UTM coordinates.
+            # Most M1 scenes are centered at (0,0) for Mitsuba/Sionna compatibility.
+            # We use the bbox center as the offset if the scene is centered.
+            # (Heuristic: if bbox min/max are huge but scene bbox is small, we need an offset)
+            sim_offset_x = (bbox['x_min'] + bbox['x_max']) / 2
+            sim_offset_y = (bbox['y_min'] + bbox['y_max']) / 2
+            
+            logger.info(f"Using auto-detected simulation center offset: ({sim_offset_x:.2f}, {sim_offset_y:.2f})")
             
             # Storage Frame: Bottom-Left Logic (Standard Image Coords [0, W])
             store_offset_x = bbox['x_min']
@@ -669,7 +675,12 @@ class MultiLayerDataGenerator:
                 # Permute: [Targets, Sources, RxAnt, TxAnt, Freq]
                 # [1, 0, 2, 3, 4]
                 
-                channel_matrix = tf.transpose(h_freq, perm=[1, 0, 2, 3, 4])
+                # h_freq: [Sources(Sites), Targets(Batch), RxAnt, TxAnt, F]
+                # We want: [Batch, 1(Rx), RxAnt, Sources(Sites), TxAnt, F]
+                # Step 1: Permute [Targets, RxAnt, Sources, TxAnt, F]
+                channel_matrix = tf.transpose(h_freq, perm=[1, 2, 0, 3, 4])
+                # Step 2: Expand Rx dim at 1
+                channel_matrix = tf.expand_dims(channel_matrix, 1)
                 
                 # Verify shape: We expect [Batch, ...] (Batch=Targets)
                 # If for some reason broadcasting or ordering flipped (e.g. S, T), fix it.
@@ -1073,16 +1084,26 @@ class MultiLayerDataGenerator:
                              fill_val = -150.0 if 'rsrp' in key else -1
                              val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=fill_val)
 
-                        # PHY Features: [Batch, Rx, Cells] -> Pad Last Dim
+                        # PHY Features: [Batch, Rx, Cells] -> Pad BOTH Rx and Cells to MAX_CELLS
                         elif key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
                                 'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
                             fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
+                            # 1. Pad last dimension (Cells)
                             val = pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
+                            # 2. Pad axis 1 (Rx/Sites)
+                            val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=fill_val)
                         
-                        # MAC Features: [Batch, UE, Neighbors] -> Pad Last Dim
+                        # MAC Features: [Batch, Rx] or [Batch, Rx, K] -> Pad axis 1
+                        elif key in ['mac_rrc/serving_cell_id', 'mac_rrc/timing_advance', 
+                                   'mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
+                            val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=0)
+
+                        # MAC Features: [Batch, Rx, Neighbors] -> Pad Both
                         elif key == 'mac_rrc/neighbor_cell_ids':
-                            # Pad to max_neighbors (configured)
+                            # Pad to max_neighbors (last)
                             val = pad_cell_dim(val, target_size=self.config.max_neighbors, fill_value=-1)
+                            # Pad to MAX_CELLS (axis 1)
+                            val = pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=-1)
                             
                         elif key in ['mac_rrc/dl_throughput_mbps', 'mac_rrc/bler']:
                             # [Batch, Rx] - no padding needed usually unless Multi-Cell?
@@ -1196,32 +1217,41 @@ class MultiLayerDataGenerator:
         logger.info("Radio Map Gen: Starting generation...")
 
         try:
-             # Configure Radio Map Generator using UTM coordinates
+             # Configure Radio Map Generator using LOCAL coordinates
              bbox = scene_metadata.get('bbox', {})
-             x_min = bbox.get('x_min', -250)
-             x_max = bbox.get('x_max', 250)
-             y_min = bbox.get('y_min', -250)
-             y_max = bbox.get('y_max', 250)
+             x_min, x_max = bbox.get('x_min', -250), bbox.get('x_max', 250)
+             y_min, y_max = bbox.get('y_min', -250), bbox.get('y_max', 250)
              
-             map_extent = (x_min, y_min, x_max, y_max)
-             logger.info(f"Radio Map Gen: Extent={map_extent}")
+             # Compute offsets (must match generate_scene_data)
+             sim_offset_x = (x_min + x_max) / 2
+             sim_offset_y = (y_min + y_max) / 2
+             
+             # Shift extent to local frame
+             local_extent = (
+                 x_min - sim_offset_x,
+                 y_min - sim_offset_y,
+                 x_max - sim_offset_x,
+                 y_max - sim_offset_y
+             )
+             logger.info(f"Radio Map Gen: Local Extent={local_extent}")
              
              map_config = RadioMapConfig(
                  resolution=1.0, 
                  map_size=(256, 256),
-                 map_extent=map_extent,
+                 map_extent=local_extent,
                  output_dir=Path("/tmp"),
              )
              
-             # Extract cell sites (use UTM positions)
+             # Extract cell sites and shift to local frame
              sites = scene_metadata.get('sites', [])
              valid_sites = [s for s in sites if s.get('cell_id') is not None]
              site_positions = [s['position'] for s in valid_sites]
              if not site_positions:
-                 # UTM center fallback
-                 cx = (x_min + x_max) / 2
-                 cy = (y_min + y_max) / 2
-                 site_positions = [[cx, cy, 30.0]]
+                 # Local center fallback
+                 site_positions = [[0.0, 0.0, 30.0]]
+             else:
+                 # Shift to local coordinates
+                 site_positions = [[p[0] - sim_offset_x, p[1] - sim_offset_y, p[2]] for p in site_positions]
              
              cell_sites_for_gen = []
              for p in site_positions:

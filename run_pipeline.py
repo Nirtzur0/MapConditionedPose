@@ -34,7 +34,7 @@ from easydict import EasyDict
 
 from src.utils.logging_utils import setup_logging
 from src.training import UELocalizationLightning
-from src.optuna_optimizer import run_optimization
+from src.training.optimization import run_optimization
 from src.pipeline.scene_generation import generate_scenes
 from src.pipeline.data_generation import generate_dataset
 from src.pipeline.training import train_model, _apply_optuna_params, _create_training_config

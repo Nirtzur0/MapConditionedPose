@@ -156,6 +156,12 @@ def render_scene_3d(
             except Exception as e:
                 logger.warning(f"Isometric coverage render failed: {e}")
         
+        # --- View 3: Interactive HTML ---
+        # --- View 3: Interactive HTML (Not supported in Sionna 1.2.1) ---
+        # scene.render_to_html does not exist.
+        # We rely on the PNG renders above which correctly use scene.render(radio_map=...)
+        logger.info("Skipping Interactive HTML render (not supported in current Sionna version)")
+            
         logger.info(f"Saved 3D renders -> {viz_dir}")
 
     except Exception as e:

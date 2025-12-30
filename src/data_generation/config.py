@@ -59,6 +59,8 @@ class DataGenerationConfig:
     quantization_enabled: bool = True
     output_dir: Path = Path('data/synthetic')
     zarr_chunk_size: int = 100
+    max_stored_paths: int = 256
+    max_stored_sites: int = 16
     
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'DataGenerationConfig':

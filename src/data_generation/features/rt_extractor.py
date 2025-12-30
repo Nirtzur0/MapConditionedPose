@@ -30,10 +30,16 @@ class RTFeatureExtractor:
     def __init__(self, 
                  carrier_frequency_hz: float = 3.5e9,
                  bandwidth_hz: float = 100e6,
-                 compute_k_factor: bool = False):
+                 compute_k_factor: bool = False,
+                 max_stored_paths: int = 256,
+                 max_stored_sites: int = 16):
         self.carrier_frequency_hz = carrier_frequency_hz
         self.bandwidth_hz = bandwidth_hz
         self.compute_k_factor = compute_k_factor
+        
+        self.max_stored_paths = max_stored_paths
+        self.max_stored_sites = max_stored_sites
+        self.logger = logging.getLogger(__name__)
         
         logger.info(f"RTFeatureExtractor initialized: fc={carrier_frequency_hz/1e9:.2f} GHz, "
                    f"BW={bandwidth_hz/1e6:.1f} MHz")
@@ -156,29 +162,48 @@ class RTFeatureExtractor:
              else:
                   dop_fin = np.zeros_like(tau_fin)
 
-        # 5. Robust Alignment (Slice to common min dims)
-        tensors = [mag_a_fin, tau_fin, ang_r_az, ang_r_el, ang_t_az, ang_t_el, dop_fin]
-        
-        # Calculate min dimensions for Rx (dim 1) and Path (dim 2)
-        min_rx = ops.shape(mag_a_fin)[1]
-        min_path = ops.shape(mag_a_fin)[2]
-        
-        for t in tensors:
-             sh = ops.shape(t)
-             if len(sh) >= 2: min_rx = min(min_rx, sh[1])
-             if len(sh) >= 3: min_path = min(min_path, sh[2])
-             
-        def _slice(t):
-             # Python slicing works for both TF/Numpy tensors usually
-             return t[:, :min_rx, :min_path]
-             
-        mag_a_fin = _slice(mag_a_fin)
-        tau_fin = _slice(tau_fin)
-        ang_r_az = _slice(ang_r_az)
-        ang_r_el = _slice(ang_r_el)
-        ang_t_az = _slice(ang_t_az)
-        ang_t_el = _slice(ang_t_el)
-        dop_fin = _slice(dop_fin)
+        # 5. Robust Alignment (Pad/Truncate to Max Dimensions)
+        def _enforce_shape(t, num_sites=self.max_stored_sites, num_paths=self.max_stored_paths):
+            if t is None: return None
+            
+            shape = ops.shape(t)
+            curr_sites = shape[1] if len(shape) > 1 else 1
+            curr_paths = shape[2] if len(shape) > 2 else 1
+            
+            # --- Sites (Dim 1) ---
+            if curr_sites > num_sites:
+                t = t[:, :num_sites, ...] # Truncate
+            elif curr_sites < num_sites:
+                # Pad
+                pad_amt = num_sites - curr_sites
+                paddings = [[0,0]] * len(shape)
+                paddings[1] = [0, pad_amt]
+                t = ops.pad(t, paddings, mode='CONSTANT', constant_values=0)
+                
+            # --- Paths (Dim 2) ---
+            # Recheck shape after dim 1 change
+            shape = ops.shape(t)
+            if len(shape) > 2:
+                if curr_paths > num_paths:
+                    t = t[:, :, :num_paths, ...]
+                elif curr_paths < num_paths:
+                    pad_amt = num_paths - curr_paths
+                    paddings = [[0,0]] * len(shape)
+                    paddings[2] = [0, pad_amt]
+                    
+                    # Special case for delays/angles: pad with 0? 
+                    # Yes, 0 gain/delay usually indicates no path.
+                    t = ops.pad(t, paddings, mode='CONSTANT', constant_values=0)
+                    
+            return t
+
+        mag_a_fin = _enforce_shape(mag_a_fin)
+        tau_fin = _enforce_shape(tau_fin)
+        ang_r_az = _enforce_shape(ang_r_az)
+        ang_r_el = _enforce_shape(ang_r_el)
+        ang_t_az = _enforce_shape(ang_t_az)
+        ang_t_el = _enforce_shape(ang_t_el)
+        dop_fin = _enforce_shape(dop_fin)
 
         # 6. Aggregate Stats
         

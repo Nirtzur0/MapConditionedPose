@@ -72,14 +72,24 @@ def compute_rsrp(h: Union[np.ndarray, Any],
         # We sum over rx_ant (coherent/non-coherent combination depending on receiver)
         # We sum over tx_ant (total cell power)
         
-        # Sum over tx_ant (last axis of power_avg_pilots)
-        p_tx_sum = tf.reduce_sum(power_avg_pilots, axis=-1)
+        # Auto-detect antenna axes based on shape
+        # Standard: [batch, ..., rx_ant, [tx], tx_ant, pilots/freq]
+        # We need to sum over rx_ant and tx_ant
+        rank = len(power_avg_pilots.shape)
+        if rank == 4:
+            # [batch, sites, rx_ant, tx_ant]
+            rsrp = tf.reduce_sum(power_avg_pilots, axis=[2, 3])
+        elif rank == 5:
+            # [batch, rx, rx_ant, sites, tx_ant]
+            rsrp = tf.reduce_sum(power_avg_pilots, axis=[2, 4])
+        else:
+            # Fallback to last and last-but-two if rank >= 3
+            rsrp = tf.reduce_sum(power_avg_pilots, axis=[-1, -3])
         
-        # Sum over rx_ant (now last axis)
-        p_rx_sum = tf.reduce_sum(p_tx_sum, axis=-1)
-        
-        # Result typically: [batch, num_rx, num_tx] (where num_tx is num_cells)
-        rsrp = p_rx_sum
+        # Result: [batch, num_rx, num_tx] (depending on input)
+        # If result is 2D, make it 3D [batch, 1, sites] for consistency
+        if len(rsrp.shape) == 2:
+            rsrp = tf.expand_dims(rsrp, 1)
         
         # Quantize to 1 dB (0.1 dBm steps in 3GPP range -156 to -44 dBm)
         # Avoid log(0)
@@ -90,15 +100,20 @@ def compute_rsrp(h: Union[np.ndarray, Any],
     else:
         # NumPy implementation
         h_pilots = h[..., pilot_re_indices]
-        # |h|^2
         power = np.abs(h_pilots)**2
-        # Avg over pilots
         power_avg_pilots = np.mean(power, axis=-1)
-        # Sum over Tx ant
-        p_tx_sum = np.sum(power_avg_pilots, axis=-1)
-        # Sum over Rx ant
-        rsrp = np.sum(p_tx_sum, axis=-1)
         
+        rank = power_avg_pilots.ndim
+        if rank == 4:
+            rsrp = np.sum(power_avg_pilots, axis=(2, 3))
+        elif rank == 5:
+            rsrp = np.sum(power_avg_pilots, axis=(2, 4))
+        else:
+            rsrp = np.sum(power_avg_pilots, axis=(-1, -3))
+            
+        if rsrp.ndim == 2:
+            rsrp = rsrp[:, np.newaxis, :]
+            
         # Convert to dBm and quantize
         rsrp_dbm = 10 * np.log10(rsrp + 1e-10) + 30
         rsrp_quantized = np.round(rsrp_dbm * 10) / 10
@@ -157,31 +172,43 @@ def compute_sinr(h: Union[np.ndarray, Any],
     """
     if _is_tensor(h):
         h = tf.convert_to_tensor(h)
-        # Signal Power: Sum |h|^2 over spatial dims (-3, -2, -1 usually [rx_ant, tx_ant, subcarriers])
-        # Assumption: Input h is channel matrix/response
-        # If h is [..., rx_ant, tx_ant], sum over both.
-        # If h has subcarriers, sum over them too? Usually SINR is per-RB or wideband avg.
-        # We'll assume summing over all last 3 dims as per original numpy code (rx_ant, tx_ant, carriers?)
-        # Original: axis=(-3, -2, -1)
-        
         power = tf.square(tf.abs(h))
-        signal_power = tf.reduce_sum(power, axis=[-3, -2, -1])
+        # Standard: [batch, num_rx, rx_ant, [tx], tx_ant, freq]
+        # We want to sum over rx_ant, tx_ant, and freq/pilots
+        rank = len(h.shape)
+        if rank == 5:
+            # [batch, num_rx, rx_ant, tx_ant, freq]
+            signal_power = tf.reduce_sum(power, axis=[2, 3, 4])
+        elif rank == 6:
+            # [batch, num_rx, rx_ant, sites, tx_ant, freq]
+            signal_power = tf.reduce_sum(power, axis=[2, 4, 5])
+        else:
+            signal_power = tf.reduce_sum(power, axis=[-3, -2, -1])
         
         interference_power = 0.0
         if interference_cells is not None and len(interference_cells) > 0:
             for h_int in interference_cells:
-                p_int = tf.reduce_sum(tf.square(tf.abs(h_int)), axis=[-3, -2, -1])
+                p_int = tf.reduce_sum(tf.square(tf.abs(h_int)), axis=[-3, -2, -1]) # Fallback
                 interference_power += p_int
         
         sinr_linear = signal_power / (interference_power + noise_power + 1e-10)
-        
-        # dB
         sinr_db = 10.0 * (tf.math.log(sinr_linear + 1e-10) / tf.math.log(10.0))
+        
+        # Consistent 3D output [batch, 1, sites] if rank 6
+        if len(sinr_db.shape) == 2:
+            sinr_db = tf.expand_dims(sinr_db, 1)
+            
         return sinr_db
 
     else:
         # Signal power from serving cell
-        signal_power = np.sum(np.abs(h)**2, axis=(-3, -2, -1))
+        rank = h.ndim
+        if rank == 5:
+            signal_power = np.sum(np.abs(h)**2, axis=(2, 3, 4))
+        elif rank == 6:
+            signal_power = np.sum(np.abs(h)**2, axis=(2, 4, 5))
+        else:
+            signal_power = np.sum(np.abs(h)**2, axis=(-3, -2, -1))
         
         # Interference power from neighbor cells
         if interference_cells is not None and len(interference_cells) > 0:
@@ -191,11 +218,13 @@ def compute_sinr(h: Union[np.ndarray, Any],
             )
         else:
             interference_power = 0
-        
-        # SINR = Signal / (Interference + Noise)
+            
         sinr_linear = signal_power / (interference_power + noise_power + 1e-10)
         sinr_db = 10 * np.log10(sinr_linear + 1e-10)
         
+        if sinr_db.ndim == 2:
+            sinr_db = sinr_db[:, np.newaxis, :]
+            
         return sinr_db
 
 

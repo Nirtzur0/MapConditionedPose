@@ -173,9 +173,10 @@ class RadioMapGenerator:
             center_ground_z = self._get_ground_level(scene, [center_x, center_y])
             ue_z = center_ground_z + self.config.ue_height
             
-            center = [center_x, center_y, ue_z]
-            size = [size_x, size_y]
-            cell_size = [size_x/width, size_y/height]
+            # Ensure float32 or python float compatibility for Mitsuba
+            center = [float(center_x), float(center_y), float(ue_z)]
+            size = [float(size_x), float(size_y)]
+            cell_size = [float(size_x/width), float(size_y/height)]
             
             self.logger.info(f"Running RadioMapSolver...")
             rm = solver(

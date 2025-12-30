@@ -14,9 +14,15 @@ def setup_clean_logging(level=logging.INFO):
         level: Logging level for project logs
     """
     # Suppress third-party warnings
+    # Suppress third-party warnings
     warnings.filterwarnings('ignore', category=FutureWarning)
     warnings.filterwarnings('ignore', category=UserWarning)
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', module='optuna') # Optuna experimental warnings
     warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
+    warnings.filterwarnings('ignore', message='.*Visual Studio Code.*')
+    warnings.filterwarnings('ignore', message='.*Leftover.*')
+    warnings.filterwarnings('ignore', message='.*enable_nested_tensor.*') # PyTorch Transformer warning
     
     # Configure logging format
     log_format = '%(levelname)-5s | %(name)-25s | %(message)s'
@@ -46,6 +52,10 @@ def setup_clean_logging(level=logging.INFO):
     logging.getLogger('matplotlib').setLevel(logging.ERROR)
     logging.getLogger('PIL').setLevel(logging.ERROR)
     logging.getLogger('trimesh').setLevel(logging.ERROR)
+    logging.getLogger('urllib3').setLevel(logging.ERROR)
+    logging.getLogger('comet_ml').setLevel(logging.ERROR)
+    logging.getLogger('fiona').setLevel(logging.ERROR)
+    logging.getLogger('shapely').setLevel(logging.ERROR)
     
     # Sionna/Mitsuba uses print statements for warnings, harder to suppress
     # Could redirect stderr but risky

@@ -63,6 +63,9 @@ class TensorOps:
         
     def clip(self, x: Any, min_val: float, max_val: float) -> Any:
         raise NotImplementedError
+        
+    def pad(self, x: Any, paddings: List[List[int]], mode: str, constant_values: Any) -> Any:
+        raise NotImplementedError
 
 class NumpyOps(TensorOps):
     def is_tensor(self, x: Any) -> bool: return False
@@ -83,6 +86,10 @@ class NumpyOps(TensorOps):
     def complex(self, real: Any, imag: Any) -> Any: return self.to_numpy(real) + 1j * self.to_numpy(imag)
     def shape(self, x: Any) -> Tuple[int, ...]: return x.shape if hasattr(x, 'shape') else (len(x),)
     def clip(self, x: Any, min_val: float, max_val: float) -> Any: return np.clip(x, min_val, max_val)
+    def pad(self, x: Any, paddings: List[List[int]], mode: str, constant_values: Any) -> Any:
+        # np.pad expects tuple of tuples
+        pad_width = [(p[0], p[1]) for p in paddings]
+        return np.pad(x, pad_width, mode=mode.lower(), constant_values=constant_values)
 
 
 class TFOps(TensorOps):
@@ -101,6 +108,8 @@ class TFOps(TensorOps):
     def complex(self, real: Any, imag: Any) -> Any: return tf.complex(real, imag)
     def shape(self, x: Any) -> Tuple[int, ...]: return tuple(x.shape)
     def clip(self, x: Any, min_val: float, max_val: float) -> Any: return tf.clip_by_value(x, min_val, max_val)
+    def pad(self, x: Any, paddings: List[List[int]], mode: str, constant_values: Any) -> Any:
+        return tf.pad(x, paddings, mode=mode, constant_values=constant_values)
 
 def get_ops(data: Any) -> TensorOps:
     """Factory to get the correct operations backend."""

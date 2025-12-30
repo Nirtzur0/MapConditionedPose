@@ -11,8 +11,13 @@ from typing import Dict
 import yaml
 import gc
 
-# Import Comet before torch to avoid warning
-import comet_ml
+# Import Comet before torch to avoid warning if possible
+try:
+    import comet_ml
+    COMET_AVAILABLE = True
+except ImportError:
+    COMET_AVAILABLE = False
+
 import torch
 
 from src.utils.logging_utils import setup_logging
@@ -22,8 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Import Optuna and Comet integration if available
 import optuna
-from optuna_integration.comet import CometCallback
-COMET_AVAILABLE = True
+if COMET_AVAILABLE:
+    try:
+        from optuna_integration.comet import CometCallback
+    except ImportError:
+        COMET_AVAILABLE = False
+else:
+    CometCallback = None
 
 # Debug
 logger.info(f"COMET_AVAILABLE: {COMET_AVAILABLE}")
@@ -45,20 +55,20 @@ def objective(trial, args, base_config_path: Path):
 
     # 2. Suggest hyperparameters
     # Radio Encoder
-    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [128, 256, 384, 512])
-    config['model']['radio_encoder']['nhead'] = trial.suggest_categorical('radio_nhead', [4, 8])
+    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [64, 128, 256])
+    config['model']['radio_encoder']['nhead'] = trial.suggest_categorical('radio_nhead', [2, 4, 8])
     config['model']['radio_encoder']['num_layers'] = trial.suggest_int('radio_num_layers', 2, 6)
     config['model']['radio_encoder']['dropout'] = trial.suggest_float('radio_dropout', 0.1, 0.3)
 
     # Map Encoder
-    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [256, 384, 512])
-    config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8, 16])
-    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 4, 10)
+    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [128, 256, 384])
+    config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8])
+    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 2, 6)
     config['model']['map_encoder']['dropout'] = trial.suggest_float('map_dropout', 0.1, 0.3)
     config['model']['map_encoder']['patch_size'] = trial.suggest_categorical('map_patch_size', [8, 16])
 
     # Fusion
-    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [256, 384, 512])
+    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [128, 256, 384])
     config['model']['fusion']['nhead'] = trial.suggest_categorical('fusion_nhead', [4, 8])
     config['model']['fusion']['dropout'] = trial.suggest_float('fusion_dropout', 0.1, 0.3)
     
@@ -109,24 +119,29 @@ def objective(trial, args, base_config_path: Path):
 
     comet_logger = None
     if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
+        project_name = os.environ.get('COMET_PROJECT_NAME') or args.study_name or "ue-localization"
         comet_logger = CometLogger(
             api_key=os.environ.get('COMET_API_KEY'),
-            project_name=args.study_name,
+            project_name=project_name,
             workspace=os.environ.get('COMET_WORKSPACE'),
         )
-        comet_logger.experiment.set_name(f"trial_{trial.number}")
+        # Use study name prefix for better organization
+        exp_name = f"{args.study_name}_trial_{trial.number}"
+        comet_logger.experiment.set_name(exp_name)
         comet_logger.experiment.log_parameters(trial.params)
 
 
     trainer = pl.Trainer(
-        max_epochs=config['training']['num_epochs'],
-        accelerator=config['infrastructure']['accelerator'],
-        devices=config['infrastructure']['devices'],
-        precision=config['infrastructure']['precision'],
+        max_epochs=config['training'].get('num_epochs', 10),
+        accelerator=config['infrastructure'].get('accelerator', 'auto'),
+        devices=config['infrastructure'].get('devices', 1),
+        precision=config['infrastructure'].get('precision', '32-true'),
         callbacks=callbacks,
         logger=comet_logger,
+        log_every_n_steps=config['infrastructure'].get('logging', {}).get('log_every_n_steps', 10),
+        gradient_clip_val=config['training'].get('gradient_clip_val', 1.0),
         enable_progress_bar=True,
-        enable_model_summary=True,
+        enable_model_summary=False,
     )
 
     # 7. Train
@@ -186,13 +201,14 @@ def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
     comet_callback = None
     if COMET_AVAILABLE and os.environ.get('COMET_API_KEY'):
         try:
+            project_name = os.environ.get('COMET_PROJECT_NAME') or args.study_name or "ue-localization"
             comet_callback = CometCallback(
                 study,
                 metric_names=["val_median_error"],
-                project_name=args.study_name,
+                project_name=project_name,
                 workspace=os.environ.get('COMET_WORKSPACE')
             )
-            logger.info("Comet ML integration enabled.")
+            logger.info(f"Comet ML integration enabled. Project: {project_name}")
         except Exception as e:
             logger.warning(f"Failed to initialize CometCallback: {e}")
     else:

@@ -124,16 +124,21 @@ def main():
     if config['infrastructure']['logging'].get('use_comet', False):
         comet_api_key = os.environ.get('COMET_API_KEY')
         if comet_api_key:
-            project = os.environ.get('COMET_PROJECT_NAME') or config['infrastructure']['logging'].get('project', 'ue-localization')
+            from datetime import datetime
+            
+            project_name = os.environ.get('COMET_PROJECT_NAME') or config['infrastructure']['logging'].get('project', 'ue-localization')
             comet_logger = CometLogger(
                 api_key=comet_api_key,
-                project=project,
+                project=project_name,
                 workspace=os.environ.get('COMET_WORKSPACE'),
             )
+            
+            # Use explicit run name if provided, otherwise auto-generate a descriptive one
             if args.run_name:
                 comet_logger.experiment.set_name(args.run_name)
             else:
-                # Auto-generate experiment name with scene/model info
+                # Auto-generate experiment name with timestamp and scene/model info
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 dataset_path = config.get('dataset', {}).get('zarr_path', '')
                 
                 # Extract scene name more intelligently from dataset path
@@ -165,8 +170,8 @@ def main():
                         scene_name = part_lower.replace('_dataset', '').replace('_', '')
                         break
                 
-                model_name = config.get('model', {}).get('name', 'unknown')
-                exp_name = f"{model_name}_{scene_name}_{Path(args.config).stem}"
+                model_name = config.get('model', {}).get('name', 'ueloc')
+                exp_name = f"{model_name}_{scene_name}_{timestamp}"
                 comet_logger.experiment.set_name(exp_name)
             loggers.append(comet_logger)
             logger.info(f"\n📊 Comet ML logging enabled")

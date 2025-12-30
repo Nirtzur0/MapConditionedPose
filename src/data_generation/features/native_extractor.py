@@ -150,43 +150,42 @@ class SionnaNativeKPIExtractor:
         a = paths.a # [S, T, P, RxA, TxA, 1, 1]
         tau = paths.tau # [S, T, P]
         
-        if isinstance(a, tuple):
+        # In Sionna 1.2+, these are usually tensors, but let's be safe
+        if isinstance(a, (list, tuple)): a = a[0]
+        if isinstance(tau, (list, tuple)): tau = tau[0]
 
-            if len(a) > 0: a = a[0]
-            else: a = tf.zeros([]) # Should not happen
-
-        if isinstance(tau, tuple):
-
-            if len(tau) > 0: tau = tau[0]
-            else: tau = tf.zeros([])
-
-        # Debug shapes
-        
-        # Helper to unwrap and sanitize
-        def _sanitize_path_tensor(tensor, ref_shape_a):
-            # args: tensor (from paths), ref_shape_a (shape of a)
-            if isinstance(tensor, tuple):
-                 tensor = tensor[0] if len(tensor) > 0 else tf.zeros([])
+        def _align_tensor(tensor, target_shape):
+            """Brute-force align tensor to target_shape [S, T, P]"""
+            if isinstance(tensor, (list, tuple)): tensor = tensor[0]
             
-            # Check for missing T dimension
-            # Expected: [S, T, P]
-            # Found: [S, P, 1] or [S, P]
-            # Ref: [S, T, P, Rx, Tx]
-            if len(tensor.shape) == 3 and len(ref_shape_a) >= 3:
-                S_a, T_a, P_a = ref_shape_a[0], ref_shape_a[1], ref_shape_a[2]
-                if tensor.shape[0] == S_a and tensor.shape[1] == P_a:
-                     # Reshape [S, P, 1] -> [S, 1, P]
-                     # Or [S, P] -> [S, 1, P]
-                     # If last dim is 1 and rank 3
-                     base_tensor = tf.reshape(tensor, [S_a, 1, P_a])
-                     return tf.tile(base_tensor, [1, T_a, 1])
-            return tensor
+            # Handle rank 2 [S*T, P] or similar
+            if len(tensor.shape) == 2:
+                if tensor.shape[0] == target_shape[0] * target_shape[1]:
+                    tensor = tf.reshape(tensor, [target_shape[0], target_shape[1], -1])
+            
+            # Now at least rank 3
+            if len(tensor.shape) >= 3:
+                # Slice or Pad to match target_shape
+                curr = tensor
+                for i in range(3):
+                    ti = target_shape[i]
+                    ci = curr.shape[i]
+                    if ci > ti:
+                        # Slice
+                        if i == 0: curr = curr[:ti, :, :]
+                        elif i == 1: curr = curr[:, :ti, :]
+                        elif i == 2: curr = curr[:, :, :ti]
+                    elif ci < ti:
+                        # Pad with zeros
+                        paddings = [[0, 0] for _ in range(len(curr.shape))]
+                        paddings[i] = [0, ti - ci]
+                        curr = tf.pad(curr, paddings)
+                return curr
+            return tf.broadcast_to(tensor, target_shape) if len(tensor.shape) == 0 else tensor
 
-        tau = _sanitize_path_tensor(tau, a.shape)
-        
-        # Also sanitize phi_r (and others if used)
-        phi_r = paths.phi_r
-        phi_r = _sanitize_path_tensor(phi_r, a.shape)
+        target_stp = a.shape[:3] # [S, T, P]
+        tau = _align_tensor(tau, target_stp)
+        phi_r = _align_tensor(paths.phi_r, target_stp)
         
 
 

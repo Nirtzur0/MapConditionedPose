@@ -4,6 +4,11 @@ PyTorch Lightning Training Module
 Wraps UELocalizationModel for Lightning training.
 """
 
+try:
+    import comet_ml
+except ImportError:
+    pass
+
 import torch
 import pytorch_lightning as pl
 import logging
@@ -276,10 +281,10 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Log losses
         self.log('train_loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
-        # self.log('train_coarse_loss', losses['coarse_loss'], on_step=False, on_epoch=True)
-        # self.log('train_fine_loss', losses['fine_loss'], on_step=False, on_epoch=True)
+        self.log('train_coarse_loss', losses['coarse_loss'], on_step=True, on_epoch=True)
+        self.log('train_fine_loss', losses['fine_loss'], on_step=True, on_epoch=True)
         if self.use_physics_loss:
-            self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=False, on_epoch=True)
+            self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=True, on_epoch=True)
         
         return losses['loss']
     
@@ -366,15 +371,15 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Log metrics
         self.log('val_loss', avg_loss, prog_bar=True)
-        # self.log('val_coarse_loss', avg_coarse)
-        # self.log('val_fine_loss', avg_fine)
+        self.log('val_coarse_loss', avg_coarse)
+        self.log('val_fine_loss', avg_fine)
         self.log('val_median_error', median_error, prog_bar=True)
-        # self.log('val_rmse', rmse)
-        # self.log('val_p67', percentile_67)
-        # self.log('val_p90', percentile_90)
-        # self.log('val_p95', percentile_95)
-        # self.log('val_success_5m', success_5m)
-        # self.log('val_success_10m', success_10m)
+        self.log('val_rmse', rmse)
+        self.log('val_p67', percentile_67)
+        self.log('val_p90', percentile_90)
+        self.log('val_p95', percentile_95)
+        self.log('val_success_5m', success_5m)
+        self.log('val_success_10m', success_10m)
 
         self._log_comet_visuals('val')
         
@@ -568,7 +573,8 @@ class UELocalizationLightning(pl.LightningModule):
 
         # Instantiate Dataset
         if paths:
-            valid_paths = [p for p in paths if p]
+            # Filter out empty paths (including Path('') or '.')
+            valid_paths = [p for p in paths if p and str(p) not in ['', '.']]
             if not valid_paths:
                 raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
             
@@ -606,13 +612,18 @@ class UELocalizationLightning(pl.LightningModule):
         )
         logger.info(f"Training samples: {len(dataset)} ({num_batches} batches)")
         
+        # Disable pin_memory on MPS to avoid warnings
+        use_pin_memory = True
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            use_pin_memory = False
+            
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
             num_workers=self.config['infrastructure']['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=True,
+            pin_memory=use_pin_memory,
         )
     
     def val_dataloader(self):
@@ -626,13 +637,18 @@ class UELocalizationLightning(pl.LightningModule):
         )
         logger.info(f"Validation samples: {len(dataset)} ({num_batches} batches)")
         
+        # Disable pin_memory on MPS to avoid warnings
+        use_pin_memory = True
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            use_pin_memory = False
+            
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
             num_workers=self.config['infrastructure']['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=True,
+            pin_memory=use_pin_memory,
         )
     
     def test_dataloader(self):

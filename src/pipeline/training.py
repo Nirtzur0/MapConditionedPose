@@ -4,6 +4,7 @@ Model Training Pipeline Module
 Handles the training of the transformer model.
 """
 
+import os
 import sys
 import logging
 from pathlib import Path
@@ -135,10 +136,10 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
                 'patience': 10,
             },
             'logging': {
-                'use_comet': args.comet,
+                'use_comet': args.comet or bool(os.environ.get('COMET_API_KEY')),
                 'use_wandb': args.wandb,
                 'project': 'ue-localization',
-                'log_every_n_steps': 50,
+                'log_every_n_steps': 10,
             },
         },
         'model': {
@@ -147,9 +148,9 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
                 'type': 'SetTransformer',
                 'num_cells': num_tx,
                 'num_beams': 64,
-                'd_model': 512,
-                'nhead': 8,
-                'num_layers': 8,
+                'd_model': 128,
+                'nhead': 4,
+                'num_layers': 4,
                 'dropout': 0.1,
                 'max_seq_len': 20,
                 'rt_features_dim': 16,  # Updated to match dataset loader (radio_dataset.py line 420)
@@ -168,15 +169,15 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
                 'img_size': 256,
                 'patch_size': 16,
                 'in_channels': 10,
-                'd_model': 768,
-                'nhead': 8,
-                'num_layers': 6,
+                'd_model': 256,
+                'nhead': 4,
+                'num_layers': 4,
                 'dropout': 0.1,
                 'radio_map_channels': 5,
                 'osm_map_channels': 5,
             },
             'fusion': {
-                'd_fusion': 512,
+                'd_fusion': 128,
                 'nhead': 8,
                 'dropout': 0.1,
             },
@@ -223,7 +224,7 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
     Train the transformer model.
     """
     import yaml
-    from ..optuna_optimizer import run_optimization
+    from ..training.optimization import run_optimization
 
     if args.skip_training:
         logger.info("Skipping training (--skip-training)")
