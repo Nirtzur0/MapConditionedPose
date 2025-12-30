@@ -110,8 +110,25 @@ class ZarrDatasetWriter:
             'scene_map_indices': {}, # Map scene_id -> index in maps array
         }
         
+        # Track maximum dimensions for variable-length arrays
+        self.max_dims = {}  # key -> max shape tuple (e.g., 'rt/path_gains' -> (2, 150))
+        self.actual_dims = []  # List of dicts, one per sample, tracking actual dimensions
+        
         logger.info(f"ZarrDatasetWriter initialized: {self.store_path}")
         logger.info(f"  Chunk size: {chunk_size}, Compression: {compression}")
+    
+    def set_max_dimensions(self, max_dims: Dict[str, tuple]):
+        """
+        Set maximum dimensions for variable-length arrays before creating arrays.
+        
+        Args:
+            max_dims: Dictionary mapping array keys to max shape tuples
+                     e.g., {'rt/path_gains': (2, 150), 'rt/path_delays': (2, 150)}
+        """
+        self.max_dims = max_dims
+        logger.info(f"Set max dimensions for {len(max_dims)} arrays")
+        for key, shape in max_dims.items():
+            logger.debug(f"  {key}: {shape}")
     
     def append(self, scene_data: Dict[str, np.ndarray], scene_id: str, scene_metadata: Optional[Dict] = None):
         """
@@ -208,6 +225,29 @@ class ZarrDatasetWriter:
         # Scene Indices
         self.store['metadata/scene_indices'][self.current_idx:end_idx] = np.full(num_samples, current_scene_idx, dtype=np.int16)
 
+        # Track actual dimensions for variable-length arrays
+        actual_num_cells = 0
+        actual_num_paths = 0
+        
+        # Extract actual dimensions from RT data
+        if 'rt/path_gains' in scene_data:
+            path_gains_shape = scene_data['rt/path_gains'].shape
+            if len(path_gains_shape) >= 2:
+                actual_num_cells = path_gains_shape[1]  # Second dimension is num_cells
+            if len(path_gains_shape) >= 3:
+                actual_num_paths = path_gains_shape[2]  # Third dimension is num_paths (for 3D)
+            elif len(path_gains_shape) == 2:
+                actual_num_paths = path_gains_shape[1]  # For 2D, second dim is paths
+        elif 'rt/path_delays' in scene_data:
+            path_delays_shape = scene_data['rt/path_delays'].shape
+            if len(path_delays_shape) >= 2:
+                actual_num_cells = path_delays_shape[1]
+                if len(path_delays_shape) >= 3:
+                    actual_num_paths = path_delays_shape[2]
+        
+        # Store actual dimensions for all samples in this batch
+        self.store['metadata/actual_num_cells'][self.current_idx:end_idx] = np.full(num_samples, actual_num_cells, dtype=np.int16)
+        self.store['metadata/actual_num_paths'][self.current_idx:end_idx] = np.full(num_samples, actual_num_paths, dtype=np.int16)
         
         # Update index and stats
         self.current_idx = end_idx
@@ -250,6 +290,11 @@ class ZarrDatasetWriter:
         self._create_array('metadata/ue_ids', dtype='int32', shape=(0,))
         self._create_array('metadata/scene_indices', dtype='int16', shape=(0,))
         
+        # Dimension metadata for variable-length arrays
+        self._create_array('metadata/actual_num_cells', dtype='int16', shape=(0,))
+        self._create_array('metadata/actual_num_paths', dtype='int16', shape=(0,))
+        
+        
         # Maps (growable by scene)
         if 'radio_maps' not in self.store:
             self._create_array('radio_maps', dtype='float32', shape=(0, 5, 256, 256)) 
@@ -285,15 +330,22 @@ class ZarrDatasetWriter:
             # Debug: check dtype
             logger.info(f"Creating array {key}: shape={value.shape}, dtype={value.dtype}")
             
-            # Infer shape and dtype
-            if value.ndim == 1:
-                shape = (0,)
-            elif value.ndim == 2:
-                shape = (0, value.shape[1])
-            elif value.ndim == 3:
-                shape = (0, value.shape[1], value.shape[2])
+            # Determine shape: use max_dims if available, otherwise infer from sample
+            if key in self.max_dims:
+                # Use pre-set max dimensions
+                max_shape = self.max_dims[key]
+                shape = tuple([0] + list(max_shape))
+                logger.info(f"  Using max dimensions: {shape}")
             else:
-                shape = tuple([0] + list(value.shape[1:]))
+                # Infer shape from sample (backward compatibility)
+                if value.ndim == 1:
+                    shape = (0,)
+                elif value.ndim == 2:
+                    shape = (0, value.shape[1])
+                elif value.ndim == 3:
+                    shape = (0, value.shape[1], value.shape[2])
+                else:
+                    shape = tuple([0] + list(value.shape[1:]))
             
             dtype = value.dtype
             if dtype == np.complex128:
@@ -430,12 +482,29 @@ class ZarrDatasetWriter:
                 required_shape[0] = end_idx
                 if current_shape[0] < end_idx:
                     target_array.resize(required_shape)
-                # Enforce strict shape matching for path_gains and path_delays
-                if key in ['rt/path_gains', 'rt/path_delays']:
-                    if value.shape != target_array.shape[(slice(self.current_idx, end_idx),) + tuple(slice(None) for _ in range(len(target_array.shape)-1))].shape:
+                # Handle potential shape mismatches in other dimensions (e.g., number of cells)
+                if value.shape[1:] != target_array.shape[1:]:
+                    # Check if this is an expected variable-length array
+                    is_variable_length = key in self.max_dims
+                    
+                    if is_variable_length:
+                        # Expected mismatch - log at debug level only
+                        logger.debug(f"Variable-length array {key}: Incoming {value.shape}, Target {target_array.shape}")
+                    else:
+                        # Unexpected mismatch - raise ValueError as per remote branch intentions
+                        # but still allow padding if we want to be robust? 
+                        # The remote clearly wants an error here to catch data generation bugs.
                         raise ValueError(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape[1:]}. Aborting write.")
-                elif value.shape[1:] != target_array.shape[1:]:
-                    raise ValueError(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape[1:]}. Aborting write.")
+                    
+                    # Create a buffer of the correct shape and dtype
+                    # Use the same dtype as the Zarr array
+                    buffer_shape = (value.shape[0],) + target_array.shape[1:]
+                    buffer = np.zeros(buffer_shape, dtype=target_array.dtype)
+                    
+                    # Fill buffer with default background values for radio features
+                    if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
+                        buffer.fill(-150.0) # Weak signal floor
+                    elif any(x in key for x in ['cqi', 'ri', 'throughput', 'bler']):
                         buffer.fill(0)
                     elif 'neighbor_cell_ids' in key:
                         buffer.fill(-1)

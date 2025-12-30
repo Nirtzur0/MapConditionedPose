@@ -436,6 +436,27 @@ class RadioLocalizationDataset(Dataset):
         def _load_rt_feature(group, key):
             if key not in group: return None
             val = group[key][zarr_idx]
+            
+            # Slice to actual dimensions if metadata available (for variable-length arrays)
+            if 'path' in key:  # path_gains, path_delays, etc.
+                # Check for dimension metadata
+                has_cell_metadata = 'metadata' in self.store and 'actual_num_cells' in self.store['metadata']
+                has_path_metadata = 'metadata' in self.store and 'actual_num_paths' in self.store['metadata']
+                
+                if has_cell_metadata or has_path_metadata:
+                    # Get actual dimensions for this sample
+                    actual_num_cells = int(self.store['metadata']['actual_num_cells'][zarr_idx]) if has_cell_metadata else None
+                    actual_num_paths = int(self.store['metadata']['actual_num_paths'][zarr_idx]) if has_path_metadata else None
+                    
+                    # Slice based on array dimensionality
+                    if val.ndim >= 2 and actual_num_cells is not None and actual_num_cells > 0:
+                        # Slice cells dimension (usually dim 0 or 1)
+                        val = val[:actual_num_cells, ...]
+                    
+                    if val.ndim >= 2 and actual_num_paths is not None and actual_num_paths > 0:
+                        # Slice paths dimension (usually last dimension)
+                        val = val[..., :actual_num_paths]
+            
             # Handle potential multi-dim arrays by taking mean absolute/value
             if key == 'path_gains': return np.mean(np.abs(val))
             if hasattr(val, '__len__'): return np.mean(val)
