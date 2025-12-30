@@ -1,5 +1,5 @@
 from pathlib import Path
-from .USGS1mLocator_parallel import *
+from .usgs_1m_locator_parallel import *
 from .dem_utils import *
 from importlib_resources import files
 from .dem_gpkg_data import get_fesm_paths

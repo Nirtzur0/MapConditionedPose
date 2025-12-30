@@ -565,6 +565,11 @@ class UELocalizationLightning(pl.LightningModule):
                 # Val on training datasets (20% split)
                 paths = train_paths
                 target_split = 'val_20'
+            elif split == 'test':
+                 # Fallback: Use validation set as test set if no explicit test set provided
+                 paths = train_paths
+                 target_split = 'val_20' 
+                 logger.warning("No test set configured. Using val_20 split for testing.")
         else:
             # Legacy fallback
             split_key = f"{split}_zarr_paths"

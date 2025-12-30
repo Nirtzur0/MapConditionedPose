@@ -297,7 +297,7 @@ class Scene:
             if lidar_terrain or lidar_calibration:
                 if not laz_file_path.exists() or not tif_file_path.exists():
                     
-                    from .USGS_LiDAR_HAG import generate_hag
+                    from .usgs_lidar_hag import generate_hag
                     
                     generate_hag(affinity.scale(ground_polygon_4326, xfact=ground_scale, yfact=ground_scale, origin='centroid'), data_dir, projection_UTM_EPSG_code)
                 

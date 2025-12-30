@@ -57,6 +57,9 @@ try:
 except ImportError:
     def tqdm(iterable, **kwargs): return iterable
 
+from .radio_map_generator import RadioMapGenerator, RadioMapConfig
+from .osm_rasterizer import OSMRasterizer
+
 
 class MultiLayerDataGenerator:
     """
@@ -141,6 +144,25 @@ class MultiLayerDataGenerator:
         else:
             logger.warning("Zarr writer unavailable; install 'zarr' for dataset writing.")
         
+        # Initialize Map Generators
+        self.radio_map_generator = None
+        self.osm_rasterizer = None
+
+        if SIONNA_AVAILABLE:
+            rm_config = RadioMapConfig(
+                resolution=1.0,
+                map_size=(512, 512),
+                map_extent=(0, 0, 512, 512), # Will be updated per scene
+                ue_height=1.5,
+                carrier_frequency=config.carrier_frequency_hz,
+                bandwidth=config.bandwidth_hz,
+                tx_power=config.tx_power_dbm,
+                noise_figure=config.noise_figure_db,
+                output_dir=config.output_dir / "../radio_maps" # Just a default
+            )
+            self.radio_map_generator = RadioMapGenerator(rm_config)
+            self.osm_rasterizer = OSMRasterizer(map_size=(512, 512)) # Extent updated later
+        
         logger.info(f"DataGenerator initialized for scene directory: {config.scene_dir}")
         logger.info(f"  Carrier freq: {config.carrier_frequency_hz/1e9:.2f} GHz")
         logger.info(f"  UEs per tile: {config.num_ue_per_tile}")
@@ -209,6 +231,14 @@ class MultiLayerDataGenerator:
                 # Write to Zarr
                 if ZARR_AVAILABLE and scene_data:
                     self.zarr_writer.append(scene_data, scene_id=scene_id)
+                    
+                    # Write Maps if available
+                    if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                        self.zarr_writer.write_scene_maps(
+                            scene_id=scene_id,
+                            radio_map=scene_data['radio_map'],
+                            osm_map=scene_data['osm_map']
+                        )
                     
             except Exception as e:
                 logger.error(f"Failed to process scene {scene_id}: {e}")
@@ -300,6 +330,52 @@ class MultiLayerDataGenerator:
         if total > 0:
             logger.info(f"Sionna RT summary: {stats['sionna_ok']}/{total} successful, {stats['sionna_fail']} mock fallbacks")
         
+        # --- Generate Maps ---
+        if SIONNA_AVAILABLE and scene is not None:
+            # Update configs based on actual scene bbox (if available) or config
+            bbox = scene_metadata.get('bbox', {})
+            x_min = bbox.get('x_min', 0)
+            y_min = bbox.get('y_min', 0)
+            x_max = bbox.get('x_max', 512)
+            y_max = bbox.get('y_max', 512)
+            
+            # Update Radio Map Config
+            self.radio_map_generator.config.map_extent = (x_min, y_min, x_max, y_max)
+            # Default to 512x512 pixels or derived from resolution
+            # Let's fix resolution to 1m/px -> size = (WxH)
+            width = int(np.ceil((x_max - x_min)))
+            height = int(np.ceil((y_max - y_min)))
+            self.radio_map_generator.config.map_size = (width, height)
+            
+            # Generate Radio Map
+            # Need cell sites from processing
+            # We have 'sites' list from _extract_site_info
+            
+            # Re-extract sites as they might have been transformed? No, use original metadata sites.
+            sites = scene_metadata.get('sites', [])
+            
+            logger.info(f"Generating Radio Map for {scene_id} ({width}x{height})...")
+            radio_map = self.radio_map_generator.generate_for_scene(scene, sites)
+            scene_data['radio_map'] = radio_map
+            
+            # Generate OSM Map
+            # Update Rasterizer
+            self.osm_rasterizer.width = width
+            self.osm_rasterizer.height = height
+            self.osm_rasterizer.x_min = x_min
+            self.osm_rasterizer.y_min = y_min
+            self.osm_rasterizer.x_max = x_max
+            self.osm_rasterizer.y_max = y_max
+            # Recompute scale/offset
+            self.osm_rasterizer.resolution_x = (x_max - x_min) / width
+            self.osm_rasterizer.resolution_y = (y_max - y_min) / height
+            self.osm_rasterizer.scale = np.array([1.0 / self.osm_rasterizer.resolution_x, 1.0 / self.osm_rasterizer.resolution_y])
+            self.osm_rasterizer.offset = np.array([-x_min, -y_min])
+            
+            logger.info(f"Generating OSM Map for {scene_id}...")
+            osm_map = self.osm_rasterizer.rasterize(scene)
+            scene_data['osm_map'] = osm_map
+
         return scene_data
     
     def _extract_site_info(self, scene_metadata: Dict) -> Tuple[np.ndarray, np.ndarray, List]:
