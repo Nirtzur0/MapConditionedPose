@@ -440,7 +440,8 @@ class ZarrDatasetWriter:
                     
                     # Create a buffer of the correct shape and dtype
                     # Use the same dtype as the Zarr array
-                    buffer = np.zeros((value.shape[0],) + target_array.shape[1:], dtype=target_array.dtype)
+                    buffer_shape = (value.shape[0],) + target_array.shape[1:]
+                    buffer = np.zeros(buffer_shape, dtype=target_array.dtype)
                     
                     # Fill buffer with default background values for radio features
                     if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
@@ -450,9 +451,17 @@ class ZarrDatasetWriter:
                     elif 'neighbor_cell_ids' in key:
                         buffer.fill(-1)
                         
-                    # Calculate copy slices (min of each dimension)
-                    slices = [slice(0, min(value.shape[i], buffer.shape[i])) for i in range(value.ndim)]
-                    buffer[tuple(slices)] = value[tuple(slices)]
+                    # Calculate copy region (min of each dimension)
+                    # Build slices for both source and destination
+                    src_slices = []
+                    dst_slices = []
+                    for i in range(value.ndim):
+                        copy_size = min(value.shape[i], buffer.shape[i])
+                        src_slices.append(slice(0, copy_size))
+                        dst_slices.append(slice(0, copy_size))
+                    
+                    # Copy data into buffer
+                    buffer[tuple(dst_slices)] = value[tuple(src_slices)]
                     value_to_write = buffer
                 else:
                     value_to_write = value
@@ -462,7 +471,8 @@ class ZarrDatasetWriter:
                     target_array[start_idx:end_idx] = value_to_write
                 except Exception as e:
                     logger.error(f"Error writing {key}: {e}")
-                    logger.debug(f"  Value Shape: {value_to_write.shape}, Target Shape: {target_array.shape}")
+                    logger.error(f"  Value Shape: {value_to_write.shape}, Target Shape: {target_array.shape}, Start: {start_idx}, End: {end_idx}")
+                    raise
 
     def write_scene_maps(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
         """

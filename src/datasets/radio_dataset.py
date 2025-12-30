@@ -174,6 +174,10 @@ class RadioLocalizationDataset(Dataset):
                 return np.where(mask)[0]
         
         # --- FALLBACK: RANDOM SPLIT (Single scene or no metadata) ---
+        if 'positions/ue_x' not in self.store:
+            logger.warning(f"No 'positions/ue_x' found in Zarr store. Keys: {list(self.store.keys())}")
+            return np.array([], dtype=np.int64)
+            
         total_samples = self.store['positions/ue_x'].shape[0]
         indices = np.arange(total_samples)
         

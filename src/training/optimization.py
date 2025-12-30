@@ -237,6 +237,10 @@ def run_optimization(args, base_config_path: Path) -> Dict[str, float]:
     logger.info(f"  Pruned trials: {len(pruned_trials)}")
     logger.info(f"  Complete trials: {len(complete_trials)}")
 
+    if len(complete_trials) == 0:
+        logger.error("No trials completed successfully.")
+        return {}
+    
     logger.info("Best trial:")
     trial = study.best_trial
 

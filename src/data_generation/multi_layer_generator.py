@@ -151,17 +151,17 @@ class MultiLayerDataGenerator:
         if SIONNA_AVAILABLE:
             rm_config = RadioMapConfig(
                 resolution=1.0,
-                map_size=(512, 512),
+                map_size=(256, 256),
                 map_extent=(0, 0, 512, 512), # Will be updated per scene
                 ue_height=1.5,
                 carrier_frequency=config.carrier_frequency_hz,
                 bandwidth=config.bandwidth_hz,
                 tx_power=config.tx_power_dbm,
                 noise_figure=config.noise_figure_db,
-                output_dir=config.output_dir / "../radio_maps" # Just a default
+                output_dir=config.output_dir / "radio_maps"
             )
             self.radio_map_generator = RadioMapGenerator(rm_config)
-            self.osm_rasterizer = OSMRasterizer(map_size=(512, 512)) # Extent updated later
+            self.osm_rasterizer = OSMRasterizer(map_size=(256, 256)) # Extent updated later
         
         logger.info(f"DataGenerator initialized for scene directory: {config.scene_dir}")
         logger.info(f"  Carrier freq: {config.carrier_frequency_hz/1e9:.2f} GHz")
@@ -209,8 +209,16 @@ class MultiLayerDataGenerator:
         """
         # Discover scenes
         if scene_ids is None:
-            scene_dirs = [d for d in self.config.scene_dir.iterdir() if d.is_dir()]
-            scene_ids = [d.name for d in scene_dirs if (d / 'scene.xml').exists()]
+            # Find all scene.xml files recursively
+            scene_xmls = sorted(list(self.config.scene_dir.rglob('scene.xml')))
+            scene_ids = []
+            for xml_path in scene_xmls:
+                try:
+                    # Use relative path from root scene_dir as scene_id
+                    rel_path = xml_path.parent.relative_to(self.config.scene_dir)
+                    scene_ids.append(str(rel_path))
+                except ValueError:
+                    continue
         
         if num_scenes:
             scene_ids = scene_ids[:num_scenes]
@@ -339,13 +347,9 @@ class MultiLayerDataGenerator:
             x_max = bbox.get('x_max', 512)
             y_max = bbox.get('y_max', 512)
             
-            # Update Radio Map Config
+            # Update Radio Map Config: use fixed 256x256 for model compatibility
             self.radio_map_generator.config.map_extent = (x_min, y_min, x_max, y_max)
-            # Default to 512x512 pixels or derived from resolution
-            # Let's fix resolution to 1m/px -> size = (WxH)
-            width = int(np.ceil((x_max - x_min)))
-            height = int(np.ceil((y_max - y_min)))
-            self.radio_map_generator.config.map_size = (width, height)
+            self.radio_map_generator.config.map_size = (256, 256)
             
             # Generate Radio Map
             # Need cell sites from processing
@@ -354,21 +358,26 @@ class MultiLayerDataGenerator:
             # Re-extract sites as they might have been transformed? No, use original metadata sites.
             sites = scene_metadata.get('sites', [])
             
-            logger.info(f"Generating Radio Map for {scene_id} ({width}x{height})...")
+            logger.info(f"Generating Radio Map for {scene_id} (256x256)...")
             radio_map = self.radio_map_generator.generate_for_scene(scene, sites)
+            
+            # Model expects 5 channels: rsrp, rsrq, sinr, cqi, throughput
+            if radio_map.shape[0] > 5:
+                radio_map = radio_map[:5]
+            
             scene_data['radio_map'] = radio_map
             
             # Generate OSM Map
-            # Update Rasterizer
-            self.osm_rasterizer.width = width
-            self.osm_rasterizer.height = height
+            # Update Rasterizer to use 256x256
+            self.osm_rasterizer.width = 256
+            self.osm_rasterizer.height = 256
             self.osm_rasterizer.x_min = x_min
             self.osm_rasterizer.y_min = y_min
             self.osm_rasterizer.x_max = x_max
             self.osm_rasterizer.y_max = y_max
-            # Recompute scale/offset
-            self.osm_rasterizer.resolution_x = (x_max - x_min) / width
-            self.osm_rasterizer.resolution_y = (y_max - y_min) / height
+            # Recompute scale/offset for 256x256 grid
+            self.osm_rasterizer.resolution_x = (x_max - x_min) / 256
+            self.osm_rasterizer.resolution_y = (y_max - y_min) / 256
             self.osm_rasterizer.scale = np.array([1.0 / self.osm_rasterizer.resolution_x, 1.0 / self.osm_rasterizer.resolution_y])
             self.osm_rasterizer.offset = np.array([-x_min, -y_min])
             

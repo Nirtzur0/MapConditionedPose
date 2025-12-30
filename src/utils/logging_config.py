@@ -23,6 +23,16 @@ def setup_clean_logging(level=logging.INFO):
     warnings.filterwarnings('ignore', message='.*Visual Studio Code.*')
     warnings.filterwarnings('ignore', message='.*Leftover.*')
     warnings.filterwarnings('ignore', message='.*enable_nested_tensor.*') # PyTorch Transformer warning
+    warnings.filterwarnings('ignore', message='Mean of empty slice')
+    warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+    warnings.filterwarnings('ignore', message='invalid value encountered in true_divide')
+
+    # Try to silence Mitsuba (Sionna backend) C++ warnings
+    try:
+        import mitsuba as mi
+        mi.set_log_level(mi.LogLevel.Error)
+    except ImportError:
+        pass
     
     # Configure logging format
     log_format = '%(levelname)-5s | %(name)-25s | %(message)s'

@@ -101,7 +101,11 @@ class RTFeatureExtractor:
             # Loop safely
             while len(ops.shape(curr_x)) > 3:
                 # Reduce the LAST dimension
-                curr_x = ops.mean(curr_x, axis=-1)
+                # Check for zero size to avoid RuntimeWarning (Mean of empty slice)
+                if ops.shape(curr_x)[-1] == 0:
+                    curr_x = ops.sum(curr_x, axis=-1)
+                else:
+                    curr_x = ops.mean(curr_x, axis=-1)
             return curr_x
 
         mag_a_red = _reduce_to_3d(mag_a)
