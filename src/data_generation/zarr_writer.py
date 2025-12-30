@@ -425,28 +425,17 @@ class ZarrDatasetWriter:
             # Write to Zarr
             if key in self.store:
                 target_array = self.store[key]
-                
-                # Resize if needed (for total sample count)
                 current_shape = target_array.shape
                 required_shape = list(current_shape)
                 required_shape[0] = end_idx
-                
                 if current_shape[0] < end_idx:
                     target_array.resize(required_shape)
-                
-                # Handle potential shape mismatches in other dimensions (e.g., number of cells)
-                if value.shape[1:] != target_array.shape[1:]:
-                    logger.warning(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape}. PADDING/TRUNCATING.")
-                    
-                    # Create a buffer of the correct shape and dtype
-                    # Use the same dtype as the Zarr array
-                    buffer_shape = (value.shape[0],) + target_array.shape[1:]
-                    buffer = np.zeros(buffer_shape, dtype=target_array.dtype)
-                    
-                    # Fill buffer with default background values for radio features
-                    if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
-                        buffer.fill(-150.0) # Weak signal floor
-                    elif any(x in key for x in ['cqi', 'ri', 'throughput', 'bler']):
+                # Enforce strict shape matching for path_gains and path_delays
+                if key in ['rt/path_gains', 'rt/path_delays']:
+                    if value.shape != target_array.shape[(slice(self.current_idx, end_idx),) + tuple(slice(None) for _ in range(len(target_array.shape)-1))].shape:
+                        raise ValueError(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape[1:]}. Aborting write.")
+                elif value.shape[1:] != target_array.shape[1:]:
+                    raise ValueError(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape[1:]}. Aborting write.")
                         buffer.fill(0)
                     elif 'neighbor_cell_ids' in key:
                         buffer.fill(-1)

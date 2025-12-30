@@ -19,8 +19,8 @@ class RTLayerFeatures:
     Direct outputs from Sionna RT propagation simulation
     """
     # Path-level features (per ray/path)
-    path_gains: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] complex amplitudes
-    path_delays: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] time-of-arrival (seconds)
+    path_gains: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] complex amplitudes (canonical shape)
+    path_delays: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] time-of-arrival (seconds, canonical shape)
     path_aoa_azimuth: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-arrival azimuth (radians)
     path_aoa_elevation: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-arrival elevation (radians)
     path_aod_azimuth: Union[np.ndarray, Any]  # [batch, num_rx, num_paths] angle-of-departure azimuth (radians)

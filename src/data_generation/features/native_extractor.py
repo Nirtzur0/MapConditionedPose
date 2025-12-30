@@ -301,7 +301,7 @@ class SionnaNativeKPIExtractor:
             'is_nlos': is_nlos,      # [B, C] bool
             'path_powers': path_powers, # [B, C, P] (Raw PDP)
             'path_delays': tau_batch,   # [B, C, P]
-            'path_gains': a_batch       # [B, C, P, Rx, Tx]
+            'path_gains': tf.reduce_mean(a_batch, axis=[3, 4]) if len(a_batch.shape) >= 5 else a_batch  # [B, C, P]
         }
 
     def extract_phy(self, 
