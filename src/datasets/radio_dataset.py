@@ -38,6 +38,42 @@ class RadioLocalizationDataset(Dataset):
         handle_missing: How to handle missing values: 'mask', 'zero', 'mean'
     """
     
+    # --- Feature Schemas ---
+    RT_SCHEMA = [
+        ('path_gains', 'path_gains'),
+        ('path_delays', 'path_delays'),
+        ('path_aoa_azimuth', 'path_aoa_azimuth'),
+        ('path_aoa_elevation', 'path_aoa_elevation'),
+        ('path_aod_azimuth', 'path_aod_azimuth'),
+        ('path_aod_elevation', 'path_aod_elevation'),
+        ('path_doppler', 'path_doppler'),
+        ('rms_delay_spread', 'rms_delay_spread'),
+        ('k_factor', 'k_factor'),
+        ('num_paths', 'num_paths'),
+        ('toa', 'toa'),
+        ('is_nlos', 'is_nlos'),
+        ('rms_angular_spread', 'rms_angular_spread'),
+    ]
+    
+    PHY_SCHEMA = [
+        ('rsrp', 'rsrp', -120.0),
+        ('rsrq', 'rsrq', -20.0),
+        ('sinr', 'sinr', -10.0),
+        ('cqi', 'cqi', 7.0),
+        ('ri', 'ri', 1.0),
+        ('pmi', 'pmi', 0.0),
+        ('capacity_mbps', 'capacity_mbps', 0.0),
+        ('condition_number', 'condition_number', 1.0),
+    ]
+    
+    MAC_SCHEMA = [
+        ('serving_cell_id', 'serving_cell_id', 0.0),
+        ('timing_advance', 'timing_advance', 0.0),
+        ('phr', 'phr', 0.0),
+        ('throughput', 'throughput', 0.0),
+        ('bler', 'bler', 0.0),
+    ]
+
     def __init__(
         self,
         zarr_path: str,
@@ -59,6 +95,7 @@ class RadioLocalizationDataset(Dataset):
         # Augmentation (only applied during training)
         self.augmentor = RadioAugmentation(augmentation if split == 'train' else None)
         
+
         # Open Zarr store (read-only)
         if not zarr_path or str(zarr_path) == '.':
             raise ValueError(f"Invalid zarr_path provided to RadioLocalizationDataset: '{zarr_path}'")
@@ -88,7 +125,55 @@ class RadioLocalizationDataset(Dataset):
         if 'metadata' in self.store and f'{self.split}_indices' in self.store['metadata']:
             return self.store['metadata'][f'{self.split}_indices'][:]
         
-        # Otherwise, create split based on total samples
+        # --- SCENE-BASED SPLIT (Prevents Leakage) ---
+        if 'metadata' in self.store and 'scene_ids' in self.store['metadata']:
+            all_scene_ids = self.store['metadata/scene_ids'][:]
+            unique_scenes = np.unique(all_scene_ids)
+            n_scenes = len(unique_scenes)
+            
+            # If multi-scene, split by scene ID
+            if n_scenes > 1:
+                # Deterministic shuffle of SCENES
+                rng = np.random.RandomState(42)
+                shuffled_scenes = np.sort(unique_scenes) # Sort first for stability
+                rng.shuffle(shuffled_scenes)
+                
+                n_train = int(0.7 * n_scenes)
+                n_val = int(0.15 * n_scenes)
+                
+                train_scenes = set(shuffled_scenes[:n_train])
+                val_scenes = set(shuffled_scenes[n_train:n_train+n_val])
+                test_scenes = set(shuffled_scenes[n_train+n_val:])
+                
+                # Assign target set
+                if self.split in ['train', 'train_80']:
+                    target_scenes = train_scenes
+                    # For train_80, we just take 80% logic, basically train + half val? 
+                    # Simpler to stick to standard 70/15/15 for now or adapt if specific split requested
+                    if self.split == 'train_80': # Legacy adaption
+                         n_tr_80 = int(0.8 * n_scenes)
+                         target_scenes = set(shuffled_scenes[:n_tr_80])
+
+                elif self.split in ['val', 'val_20']:
+                    target_scenes = val_scenes
+                    if self.split == 'val_20':
+                         n_tr_80 = int(0.8 * n_scenes)
+                         target_scenes = set(shuffled_scenes[n_tr_80:])
+
+                elif self.split == 'test':
+                    target_scenes = test_scenes
+                else:
+                    return np.arange(len(all_scene_ids)) # 'all'
+
+                # Find indices belonging to target scenes
+                # Verify performance: np.isin is okay for millions of items?
+                # scene_ids is object array of strings. 
+                # Faster: convert unique list to dictionary map?
+                # Or just use np.isin
+                mask = np.isin(all_scene_ids, list(target_scenes))
+                return np.where(mask)[0]
+        
+        # --- FALLBACK: RANDOM SPLIT (Single scene or no metadata) ---
         total_samples = self.store['positions/ue_x'].shape[0]
         indices = np.arange(total_samples)
         
@@ -131,15 +216,51 @@ class RadioLocalizationDataset(Dataset):
         if not self.normalize:
             return None
         
-        if 'metadata' in self.store and 'normalization' in self.store['metadata']:
-            return {
-                key: {
-                    'mean': self.store['metadata']['normalization'][key]['mean'][:],
-                    'std': self.store['metadata']['normalization'][key]['std'][:],
-                }
-                for key in self.store['metadata']['normalization'].keys()
-            }
-        return None
+        if 'metadata' not in self.store or 'normalization' not in self.store['metadata']:
+            return None
+            
+        norm_grp = self.store['metadata']['normalization']
+        stats = {}
+        
+        # Helper to extract scalar mean/std for a key
+        def get_stat(layer_grp, key):
+            # Check nested key "layer/key" first (Zarr v2 style if flattened?)
+            # But the structure is likely: norm_grp[layer][key]['mean']
+            try:
+                if layer_grp in norm_grp and key in norm_grp[layer_grp]:
+                    feat_stats = norm_grp[layer_grp][key]
+                    return float(feat_stats['mean'][0]), float(feat_stats['std'][0])
+            except Exception:
+                pass
+            return 0.0, 1.0
+
+        # Build vectors for each layer based on schema order
+        
+        # RT
+        rt_means, rt_stds = [], []
+        for _, key in RadioLocalizationDataset.RT_SCHEMA:
+            m, s = get_stat('rt', key)
+            rt_means.append(m)
+            rt_stds.append(s)
+        stats['rt'] = {'mean': rt_means, 'std': rt_stds}
+        
+        # PHY
+        phy_means, phy_stds = [], []
+        for _, key, _ in RadioLocalizationDataset.PHY_SCHEMA:
+            m, s = get_stat('phy_fapi', key)
+            phy_means.append(m)
+            phy_stds.append(s)
+        stats['phy'] = {'mean': phy_means, 'std': phy_stds}
+        
+        # MAC
+        mac_means, mac_stds = [], []
+        for _, key, _ in RadioLocalizationDataset.MAC_SCHEMA:
+            m, s = get_stat('mac_rrc', key)
+            mac_means.append(m)
+            mac_stds.append(s)
+        stats['mac'] = {'mean': mac_means, 'std': mac_stds}
+            
+        return stats
 
     def _infer_dataset_origin(self) -> Optional[Tuple[float, float]]:
         if 'positions' not in self.store:
@@ -296,44 +417,9 @@ class RadioLocalizationDataset(Dataset):
         phy_features = []
         mac_features = []
         
-        # RT Layer Schema
-        rt_schema = [
-            # Feature Name, Group Key
-            ('path_gains', 'path_gains'),
-            ('path_delays', 'path_delays'),
-            ('path_aoa_azimuth', 'path_aoa_azimuth'),
-            ('path_aoa_elevation', 'path_aoa_elevation'),
-            ('path_aod_azimuth', 'path_aod_azimuth'),
-            ('path_aod_elevation', 'path_aod_elevation'),
-            ('path_doppler', 'path_doppler'),
-            ('rms_delay_spread', 'rms_delay_spread'),
-            ('k_factor', 'k_factor'),
-            ('num_paths', 'num_paths'),
-            ('toa', 'toa'),
-            ('is_nlos', 'is_nlos'),
-            ('rms_angular_spread', 'rms_angular_spread'),
-        ]
-        
-        # PHY Layer Schema
-        phy_schema = [
-            ('rsrp', 'rsrp', -120.0),
-            ('rsrq', 'rsrq', -20.0),
-            ('sinr', 'sinr', -10.0),
-            ('cqi', 'cqi', 7.0),
-            ('ri', 'ri', 1.0),
-            ('pmi', 'pmi', 0.0),
-            ('capacity_mbps', 'capacity_mbps', 0.0),
-            ('condition_number', 'condition_number', 1.0),
-        ]
-        
-        # MAC Layer Schema
-        mac_schema = [
-            ('serving_cell_id', 'serving_cell_id', 0.0),
-            ('timing_advance', 'timing_advance', 0.0),
-            ('phr', 'phr', 0.0),
-            ('throughput', 'throughput', 0.0),
-            ('bler', 'bler', 0.0),
-        ]
+        rt_schema = RadioLocalizationDataset.RT_SCHEMA
+        phy_schema = RadioLocalizationDataset.PHY_SCHEMA
+        mac_schema = RadioLocalizationDataset.MAC_SCHEMA
         
         # --- Helper Functions ---
         def _load_scalar(group, key, default=0.0):
@@ -356,8 +442,9 @@ class RadioLocalizationDataset(Dataset):
             group = self.store['rt']
             for name, key in rt_schema:
                 val = _load_rt_feature(group, key)
-                if val is not None:
-                    rt_features.append(float(val))
+                rt_features.append(float(val) if val is not None else 0.0)
+        else:
+             rt_features = [0.0] * len(rt_schema)
                     
         rt_data = {}
         if rt_features:
@@ -371,17 +458,9 @@ class RadioLocalizationDataset(Dataset):
             group = self.store['phy_fapi']
             for name, key, default_val in phy_schema:
                 val = _load_scalar(group, key, default=default_val)
-                if val is not None:
-                    phy_features.append(val)
-                else:
-                    # Check if we should append default or skip? 
-                    # Original code used `if 'rsrp' in group` checks.
-                    # We'll use the check `if key in group` inside _load_scalar.
-                    # If it returns None, it wasn't there.
-                    # BUT for PHY, existing code appended default if EMPTY array, but skipped if key MISSING?
-                    # Re-reading original: `if 'rsrp' in phy_group: append(...)`
-                    # So if key missing, we skip.
-                    pass
+                phy_features.append(val if val is not None else default_val)
+        else:
+             phy_features = [default_val for _, _, default_val in phy_schema]
         
         phy_data = {}
         if phy_features:
@@ -395,8 +474,9 @@ class RadioLocalizationDataset(Dataset):
             group = self.store['mac_rrc']
             for name, key, default_val in mac_schema:
                 val = _load_scalar(group, key, default=default_val)
-                if val is not None:
-                    mac_features.append(val)
+                mac_features.append(val if val is not None else default_val)
+        else:
+             mac_features = [default_val for _, _, default_val in mac_schema]
         
         mac_data = {}
         if mac_features:

@@ -23,14 +23,14 @@ A compact status tracker for all major implementation milestones.
 **Purpose**: Generate synthetic 5G NR scenes from OpenStreetMap data.
 
 **Key Components**:
-- `SceneGenerator`: Deep Geo2SigMap integration via importlib
+- `SceneGenerator`: Deep Scene Builder integration via importlib
 - `MaterialRandomizer`: ITU-R P.2040 materials (ε_r, σ randomization)
 - `SitePlacer`: Grid, random, ISD, custom placement strategies
 - `TileGenerator`: WGS84 ↔ UTM coordinate transforms
 
 **Output**: `data/scenes/{scene_id}/scene.xml` + meshes + `metadata.json`
 
-**What We Add to Geo2SigMap**:
+**What We Add to Scene Builder**:
 - Material domain randomization for diverse training
 - Multi-strategy site placement with 3GPP antenna patterns
 - Comprehensive metadata for downstream M2 pipeline

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scene Generation Example Script (M1)
-Demonstrates deep Geo2SigMap integration for UE localization
+M1: Scene Generation with Scene Builder Integration
+Demonstrates deep Scene Builder integration for UE localization
 
 Usage:
     # Single scene
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate 3D scenes with deep Geo2SigMap integration",
+        description="Generate 3D scenes with deep Scene Builder integration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     
@@ -142,10 +142,10 @@ def parse_args():
     
     # Paths
     parser.add_argument(
-        "--geo2sigmap-path",
+        "--scene-builder-path",
         type=Path,
-        default="/home/ubuntu/projects/geo2sigmap/package/src",
-        help="Path to geo2sigmap package src",
+        default="/home/ubuntu/projects/scene_builder/package/src",
+        help="Path to scene_builder package src",
     )
     # Overpass API
     parser.add_argument(
@@ -219,7 +219,7 @@ def main():
     args = parse_args()
     
     logger.info("=" * 60)
-    logger.info("M1 Scene Generation - Deep Geo2SigMap Integration")
+    logger.info("M1 Scene Generation - Deep Scene Builder Integration")
     logger.info("=" * 60)
     
     # Determine polygon
@@ -284,7 +284,7 @@ def main():
         logger.info(f"Generating single scene for area: {scene_id} (Full Bounding Box)")
         
         scene_gen = SceneGenerator(
-            geo2sigmap_path=str(args.geo2sigmap_path),
+            scene_builder_path=str(args.scene_builder_path),
             material_randomizer=material_randomizer,
             site_placer=site_placer,
             output_dir=args.output,

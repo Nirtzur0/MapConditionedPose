@@ -69,7 +69,7 @@ pytest tests/ -v
 ## Architecture (High-Level)
 
 ```
-M1: OSM -> Geo2SigMap -> Mitsuba scenes
+M1: OSM -> Scene Builder -> Mitsuba scenes
 M2: Sionna RT -> RT/PHY/MAC features -> Zarr
 M3: Transformer (radio + map encoders -> fusion -> position)
 M4: Training + evaluation (+ optional physics loss)

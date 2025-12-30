@@ -1,5 +1,5 @@
 """
-Tests for src/geo2sigmap module.
+Tests for src/scene_builder module.
 """
 
 import os
@@ -15,36 +15,36 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from unittest.mock import MagicMock
 sys.modules["plyfile"] = MagicMock() # Mock missing dependency
 
-# Skip if shapely is not installed (required by geo2sigmap)
+# Skip if shapely is not installed (required by scene_builder)
 pytest.importorskip("shapely")
 
-# Skip entire module if open3d is not installed (required by geo2sigmap)
+# Skip entire module if open3d is not installed (required by scene_builder)
 try:
     import open3d
 except ImportError:
     pytest.skip("open3d not installed", allow_module_level=True)
 
-from geo2sigmap import lidar_terrain_mesh
+from scene_builder import lidar_terrain_mesh
 
 @pytest.fixture
 def mock_transformer():
-    with patch("geo2sigmap.lidar_terrain_mesh.Transformer") as mock:
+    with patch("scene_builder.lidar_terrain_mesh.Transformer") as mock:
         yield mock
 
 
 @pytest.fixture
 def mock_laspy():
-    with patch("geo2sigmap.lidar_terrain_mesh.laspy") as mock:
+    with patch("scene_builder.lidar_terrain_mesh.laspy") as mock:
         yield mock
 
 @pytest.fixture
 def mock_pyvista():
-    with patch("geo2sigmap.lidar_terrain_mesh.pv") as mock:
+    with patch("scene_builder.lidar_terrain_mesh.pv") as mock:
         yield mock
 
 @pytest.fixture
 def mock_plyfile():
-    with patch("geo2sigmap.lidar_terrain_mesh.PlyData") as mock:
+    with patch("scene_builder.lidar_terrain_mesh.PlyData") as mock:
         yield mock
 
 def test_generate_terrain_mesh_structure(mock_laspy, mock_pyvista, mock_plyfile, mock_transformer, tmp_path):

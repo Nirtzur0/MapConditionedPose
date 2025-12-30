@@ -479,21 +479,26 @@ We use a multi-channel map tensor with $C_r$ radio channels and $C_o$ semantic c
 
 \begin{table}[t]
 \centering
-\caption{Typical architecture and training hyperparameters used in our implementation.}
+\caption{Model architecture and training hyperparameters. We choose a lightweight radio encoder as signal sequences are low-dimensional but require high temporal resolution, while the map encoder is deeper to capture complex spatial geometries. The fusion layer projects map features to the implementation-appropriate latent dimension.}
 \label{tab:hyperparams}
-\begin{tabular}{@{}ll@{}}
+\begin{tabular}{@{}llp{6.5cm}@{}}
 \toprule
-Component & Setting (typical) \\
+\textbf{Component} & \textbf{Specification} & \textbf{ intuition / Rationale} \\
 \midrule
-Map resolution & $H=W=256$ pixels \\
-ViT patch size & $P=16$ (tokens $N=256$) \\
-Coarse grid & $G=32$ ($G^2=1024$ cells) \\
-Mixture components & top-$K=5$ \\
-Max sequence length & $T\le 20$ measurement events \\
-Radio encoder width & $d_r=256$ \\
-Map encoder width & $d_m=256$ \\
-Fusion width & $d_f=256$ \\
-Refinement steps & $S=5$ (optional) \\
+\multicolumn{3}{l}{\textit{Data \& Context}} \\
+Map resolution & $256\times 256$ & Covers $\sim$1\,km$^2$ urban area at $\sim$4\,m/px precision. \\
+Coarse grid & $32\times 32$ & $1024$ hypotheses; balances classification difficulty with spatial resolution. \\
+Max sequence & $T=20$ & Sufficient to capture movement trends without high memory cost. \\
+\midrule
+\multicolumn{3}{l}{\textit{Neural Architecture}} \\
+Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=128$, $L=4$, $H=4$\end{tabular} & \textbf{Lightweight:} Radio features are low-dim sets. Set-attention is sufficient to capture temporal/beam correlations. \\
+Map Encoder & \begin{tabular}[t]{@{}l@{}}$d_m=256$, $L=4$, $H=4$\\\texttt{patch}=16\end{tabular} & \textbf{Capacity-heavy:} Vision backbone (ViT) needed to parse complex urban geometry (occlusions, canyons). \\
+Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=128$, $L=1$, $H=8$\end{tabular} & \textbf{Bottleneck:} Projects rich map context into the signal-focused latent space for efficient querying. \\
+Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: $512\to G^2$\\Fine: $512\to 256 \to 2K$\end{tabular} & \textbf{Hierarchical:} Deep MLP for coarse ambiguity resolution; shallow head for local Gaussian refinement. \\
+\midrule
+\multicolumn{3}{l}{\textit{Training}} \\
+Mixture size & Top-$K=5$ & Covers primary ambiguous modes (e.g., street canyon reflections) while suppressing noise. \\
+Weights & $\lambda_{\text{phys}}=0.1$ & Regularizes without overriding data evidence. \\
 \bottomrule
 \end{tabular}
 \end{table}

@@ -150,7 +150,7 @@ Where $R_f(\hat{\mathbf{x}})$ is bilinear interpolation from the radio map at pr
 
 ```
 M1: Scene Generation
-    OSM → Geo2SigMap → scene.xml + meshes
+    OSM → Scene Builder → scene.xml + meshes
          + Material randomization (ITU-R P.2040)
          + Site placement (grid/random/ISD)
                     ↓

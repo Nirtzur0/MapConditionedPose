@@ -1,6 +1,6 @@
 """
 Core Scene Generator
-Extended from Geo2SigMap Scene class with UE localization requirements
+Extended from Scene Builder with UE localization requirements
 """
 
 import logging
@@ -14,20 +14,20 @@ from pyproj import Transformer
 logger = logging.getLogger(__name__)
 
 
-def _import_geo2sigmap(geo2sigmap_path: str):
+def _import_scene_builder(scene_builder_path: str):
     """
-    Import geo2sigmap Scene class.
+    Import scene_builder Scene class.
     
     Args:
-        geo2sigmap_path: Path to geo2sigmap/package/src (unused, kept for API compat)
+        scene_builder_path: Path to scene_builder module (unused, kept for API compat)
         
     Returns:
         Tuple of (Scene class, ITU_MATERIALS)
     """
-    # Import from migrated geo2sigmap module
+    # Import from migrated scene_builder module
     try:
         # Try relative import first (when running as package)
-        from ..geo2sigmap import Scene, ITU_MATERIALS
+        from ..scene_builder import Scene, ITU_MATERIALS
     except ImportError:
         # Fallback to absolute import (when running tests)
         import sys
@@ -36,12 +36,12 @@ def _import_geo2sigmap(geo2sigmap_path: str):
         src_path = Path(__file__).parent.parent
         if str(src_path) not in sys.path:
             sys.path.insert(0, str(src_path))
-        from geo2sigmap import Scene, ITU_MATERIALS
+        from scene_builder import Scene, ITU_MATERIALS
     return Scene, ITU_MATERIALS
 
 
 # Will be set during SceneGenerator initialization
-Geo2SigMapScene = None
+SceneBuilderScene = None
 ITU_MATERIALS = None
 
 
@@ -49,12 +49,12 @@ ITU_MATERIALS = None
 class SceneGenerator:
     """
     Scene generator with material randomization and site placement.
-    Extends Geo2SigMap functionality for UE localization training.
+    Extends Scene Builder functionality for UE localization training.
     """
     
     def __init__(
         self,
-        geo2sigmap_path: str,
+        scene_builder_path: str,
         material_randomizer: Optional['MaterialRandomizer'] = None,
         site_placer: Optional['SitePlacer'] = None,
         output_dir: Optional[Path] = None,
@@ -63,30 +63,30 @@ class SceneGenerator:
         Initialize scene generator.
         
         Args:
-            geo2sigmap_path: Path to geo2sigmap/package/src
+            scene_builder_path: Path to scene_builder module
             material_randomizer: MaterialRandomizer instance (creates default if None)
             site_placer: SitePlacer instance (creates default if None)
             output_dir: Base output directory for scenes (defaults to ./data/scenes)
         """
-        # Import geo2sigmap components
-        global Geo2SigMapScene, ITU_MATERIALS
-        if Geo2SigMapScene is None:
-            logger.info(f"Loading Geo2SigMap from {geo2sigmap_path}")
-            Geo2SigMapScene, ITU_MATERIALS = _import_geo2sigmap(geo2sigmap_path)
+        # Import scene_builder components
+        global SceneBuilderScene, ITU_MATERIALS
+        if SceneBuilderScene is None:
+            logger.info(f"Loading Scene Builder from {scene_builder_path}")
+            SceneBuilderScene, ITU_MATERIALS = _import_scene_builder(scene_builder_path)
         
-        # Import after geo2sigmap to avoid circular dependency
+        # Import after scene_builder to avoid circular dependency
         from .materials import MaterialRandomizer as _MaterialRandomizer
         from .sites import SitePlacer as _SitePlacer
         
-        # Use geo2sigmap Scene directly
-        self.scene = Geo2SigMapScene()
+        # Use scene_builder Scene directly
+        self.scene = SceneBuilderScene()
         
         # Initialize components
         self.material_randomizer = material_randomizer or _MaterialRandomizer()
         self.site_placer = site_placer or _SitePlacer()
         self.output_dir = output_dir or Path("./data/scenes")
         
-        logger.info("SceneGenerator initialized with deep Geo2SigMap integration")
+        logger.info("SceneGenerator initialized with Scene Builder integration")
     
     def generate(
         self,
@@ -129,7 +129,7 @@ class SceneGenerator:
         use_dem = terrain_cfg.get('use_dem', False)
         hag_tiff_path = terrain_cfg.get('hag_tiff_path', None)
         
-        # Generate base scene using geo2sigmap
+        # Generate base scene using scene_builder
         self.scene(
             points=polygon_points,
             data_dir=str(scene_dir),
@@ -331,9 +331,9 @@ class SceneGenerator:
 
 
 def _get_utm_epsg_code(lon: float, lat: float):
-    """Resolve UTM CRS using local copy of geo2sigmap utils (avoids external dependency)."""
+    """Resolve UTM CRS using local copy of scene_builder utils (avoids external dependency)."""
     try:
-        from geo2sigmap.utils import get_utm_epsg_code_from_gps
+        from scene_builder.utils import get_utm_epsg_code_from_gps
         return get_utm_epsg_code_from_gps(lon, lat)
     except Exception:
         # Fallback: derive UTM zone manually

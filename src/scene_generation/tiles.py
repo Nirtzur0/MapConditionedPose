@@ -62,7 +62,7 @@ class TileGenerator:
         """Lazy-load scene generator."""
         if self._scene_generator is None:
             self._scene_generator = SceneGenerator(
-                geo2sigmap_path=self.config['geo2sigmap']['package_path'],
+                scene_builder_path=self.config['scene_builder']['package_path'],
                 material_randomizer=self.material_randomizer,
                 site_placer=self.site_placer,
                 output_dir=Path(self.config['output']['base_dir']),
@@ -72,9 +72,9 @@ class TileGenerator:
     def _default_config(self) -> Dict:
         """Default configuration if no config file provided."""
         return {
-            'geo2sigmap': {
-                # Use in-repo fork to avoid external dependency
-                'package_path': str(Path(__file__).resolve().parents[1] / "geo2sigmap"),
+            'scene_builder': {
+                # Use in-repo module
+                'package_path': str(Path(__file__).resolve().parents[1] / "scene_builder"),
             },
             'tiling': {
                 'tile_size_meters': 500,

@@ -512,6 +512,51 @@ class ZarrDatasetWriter:
             store_path: Path to completed Zarr store
         """
         # Write dataset-level metadata
+        # Compute normalization stats
+        try:
+            from scripts.compute_dataset_stats import compute_stats
+            print("Computing normalization stats via internal call...")
+            # We can reuse the logic via external call or reimplement. 
+            # Reimplementing lightweight version here to avoid circular depends or just call logic.
+            # Actually, let's just implement the stats computation loop here, it's safer.
+            
+            stats_groups = ['rt', 'phy_fapi', 'mac_rrc']
+            normalization = {}
+            for grp_name in stats_groups:
+                if grp_name in self.store:
+                    grp = self.store[grp_name]
+                    normalization[grp_name] = {}
+                    for k in grp.keys():
+                        if isinstance(grp[k], zarr.Group): continue
+                        data = grp[k][:] # Load all
+                        if not np.issubdtype(data.dtype, np.number): continue
+                        if np.iscomplexobj(data): data = np.abs(data)
+                        
+                        valid = data[np.isfinite(data)]
+                        if valid.size == 0: m, s = 0.0, 1.0
+                        else: m, s = float(np.mean(valid)), float(np.std(valid))
+                        if s < 1e-9: s = 1.0
+                        normalization[grp_name][k] = {'mean': m, 'std': s}
+            
+            # Save to metadata
+            if 'metadata' not in self.store: self.store.create_group('metadata')
+            meta_grp = self.store['metadata']
+            if 'normalization' not in meta_grp: norm_grp = meta_grp.create_group('normalization')
+            else: norm_grp = meta_grp['normalization']
+            
+            for grp_k, feats in normalization.items():
+                for f_k, st in feats.items():
+                    full_k = f"{grp_k}/{f_k}"
+                    if full_k in norm_grp: del norm_grp[full_k]
+                    fg = norm_grp.create_group(full_k)
+                    fg.create_dataset('mean', shape=(1,), chunks=(1,), dtype=np.float32, data=np.array([st['mean']], dtype=np.float32))
+                    fg.create_dataset('std',  shape=(1,), chunks=(1,), dtype=np.float32, data=np.array([st['std']], dtype=np.float32))
+            logger.info("Normalization stats computed and saved.")
+
+        except Exception as e:
+            logger.warning(f"Failed to compute normalization stats: {e}")
+
+        # Write dataset-level metadata
         metadata = {
             'version': '1.0',
             'created': datetime.now().isoformat(),

@@ -1,6 +1,6 @@
 """
 Pytest Test Suite for M1 Scene Generation
-Validates deep integration with Geo2SigMap
+Validates deep integration with Scene Builder
 """
 
 import sys
@@ -76,9 +76,9 @@ def tile_generator(seed):
 
 
 @pytest.fixture
-def geo2sigmap_path():
-    """Path to geo2sigmap package."""
-    return "/home/ubuntu/projects/geo2sigmap/package/src"
+def scene_builder_path():
+    """Path to scene_builder package."""
+    return "/home/ubuntu/projects/scene_builder/package/src"
 
 
 @pytest.fixture
@@ -345,43 +345,41 @@ class TestTileGenerator:
 class TestSceneGenerator:
     """Test suite for SceneGenerator."""
     
-    def test_init_without_geo2sigmap(self):
-        """Test that geo2sigmap_path is ignored when module is installed."""
-        pytest.importorskip("geo2sigmap")
+    def test_init_without_scene_builder(self, tmp_path):
+        """Test that scene_builder_path is ignored when module is installed."""
+        pytest.importorskip("scene_builder")
         material_randomizer = MaterialRandomizer()
         site_placer = SitePlacer()
 
         scene_gen = SceneGenerator(
-            geo2sigmap_path="/invalid/path",
-            material_randomizer=material_randomizer,
-            site_placer=site_placer,
+            scene_builder_path="/invalid/path",
+            output_dir=tmp_path,
         )
 
         assert scene_gen.scene is not None
     
     @pytest.mark.skipif(
-        not Path("/home/ubuntu/projects/geo2sigmap/package/src").exists(),
-        reason="Geo2SigMap not installed"
+        not Path("/home/ubuntu/projects/scene_builder/package/src").exists(),
+        reason="Scene Builder not installed"
     )
-    def test_init_with_geo2sigmap(self, geo2sigmap_path):
-        """Test SceneGenerator initialization with valid geo2sigmap."""
+    def test_init_with_scene_builder(self, scene_builder_path, tmp_path):
+        """Test SceneGenerator initialization with valid scene_builder."""
         try:
             import shapely
         except ImportError:
-            pytest.skip("Shapely not installed (required by geo2sigmap)")
+            pytest.skip("Shapely not installed (required by scene_builder)")
         
         material_randomizer = MaterialRandomizer(seed=42)
         site_placer = SitePlacer(strategy="grid", seed=42)
         
         scene_gen = SceneGenerator(
-            geo2sigmap_path=geo2sigmap_path,
-            material_randomizer=material_randomizer,
-            site_placer=site_placer,
+            scene_builder_path=scene_builder_path,
+            output_dir=tmp_path,
         )
         
         assert scene_gen.material_randomizer is not None
         assert scene_gen.site_placer is not None
-        assert scene_gen.scene is not None  # Geo2SigMap Scene loaded
+        assert scene_gen.scene is not None  # Scene Builder Scene loaded
 
 
 # ============================================================================
@@ -392,7 +390,7 @@ class TestIntegration:
     """Integration tests for complete workflows."""
     
     def test_full_m1_pipeline_structure(self, material_randomizer, site_placer_grid, test_bounds):
-        """Test the complete M1 pipeline structure (without Geo2SigMap)."""
+        """Test the complete M1 pipeline structure (without Scene Builder)."""
         # Step 1: Sample materials
         materials = material_randomizer.sample()
         assert 'ground' in materials

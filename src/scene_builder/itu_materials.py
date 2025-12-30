@@ -148,11 +148,11 @@ def wet_ground_ITU_P527_callback(f_hz):
 
     
     # Read and process conductivity, permittivity data extracted from PDF
-    with files('geo2sigmap.data').joinpath("B_wet_ground_con.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("B_wet_ground_con.csv").open("r") as f:
         df_con = pd.read_csv(f, header=None, names=["x", "y"])
     df_con = df_con.sort_values(by="x")
     
-    with files('geo2sigmap.data').joinpath("B_wet_ground_per.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("B_wet_ground_per.csv").open("r") as f:
         df_per = pd.read_csv(f, header=None, names=["x", "y"])
     df_per = df_per.sort_values(by="x")
 
@@ -176,11 +176,11 @@ def medium_dry_ground_ITU_P527_callback(f_hz):
 
     
     # Read and process conductivity, permittivity data extracted from PDF
-    with files('geo2sigmap.data').joinpath("D_medium_dry_ground_con.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("D_medium_dry_ground_con.csv").open("r") as f:
         df_con = pd.read_csv(f, header=None, names=["x", "y"])
     df_con = df_con.sort_values(by="x")
     
-    with files('geo2sigmap.data').joinpath("D_medium_dry_ground_per.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("D_medium_dry_ground_per.csv").open("r") as f:
         df_per = pd.read_csv(f, header=None, names=["x", "y"])
     df_per = df_per.sort_values(by="x")
 
@@ -201,11 +201,11 @@ def very_dry_ground_ITU_P527_callback(f_hz):
 
     
     # Read and process conductivity, permittivity data extracted from PDF
-    with files('geo2sigmap.data').joinpath("E_very_dry_ground_con.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("E_very_dry_ground_con.csv").open("r") as f:
         df_con = pd.read_csv(f, header=None, names=["x", "y"])
     df_con = df_con.sort_values(by="x")
     
-    with files('geo2sigmap.data').joinpath("E_very_dry_ground_per.csv").open("r") as f:
+    with files('scene_builder.data').joinpath("E_very_dry_ground_per.csv").open("r") as f:
         df_per = pd.read_csv(f, header=None, names=["x", "y"])
     df_per = df_per.sort_values(by="x")
 

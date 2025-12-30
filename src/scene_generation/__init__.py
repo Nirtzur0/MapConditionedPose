@@ -1,6 +1,6 @@
 """
 Scene Generation Module
-Direct integration of Geo2SigMap with extensions for UE localization
+Direct integration of Scene Builder with extensions for UE localization
 """
 
 from .core import SceneGenerator
