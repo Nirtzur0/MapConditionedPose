@@ -20,6 +20,7 @@ from pathlib import Path
 from ..models.ue_localization_model import UELocalizationModel
 from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
 from ..datasets.combined_dataset import CombinedRadioLocalizationDataset
+from ..datasets.augmentations import RadioAugmentation
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ class UELocalizationLightning(pl.LightningModule):
             'coarse_weight': self.config['training']['loss']['coarse_weight'],
             'fine_weight': self.config['training']['loss']['fine_weight'],
         }
+
+        # Augmentation (GPU)
+        augmentation_config = self.config['training'].get('augmentation', None)
+        self.augmentor = RadioAugmentation(augmentation_config)
         
         # Physics loss (if enabled)
         self.use_physics_loss = self.config['training']['loss'].get('use_physics_loss', False)
@@ -257,6 +262,24 @@ class UELocalizationLightning(pl.LightningModule):
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         """Run a single training step."""
+        # Apply GPU Augmentations
+        if self.augmentor.enabled:
+            # Position is needed for map transforms to stay consistent
+            if 'position' in batch:
+                batch['measurements'], batch['radio_map'], batch['osm_map'], augmented_pos = self.augmentor(
+                    batch['measurements'], 
+                    batch['radio_map'], 
+                    batch['osm_map'],
+                    position=batch['position']
+                )
+                
+                if augmented_pos is not None:
+                    batch['position'] = augmented_pos
+            else:
+                 batch['measurements'], batch['radio_map'], batch['osm_map'], _ = self.augmentor(
+                    batch['measurements'], batch['radio_map'], batch['osm_map']
+                )
+
         outputs = self.forward(batch)
         
         targets = {

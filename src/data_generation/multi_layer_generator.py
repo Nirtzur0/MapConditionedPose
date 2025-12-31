@@ -604,7 +604,7 @@ class MultiLayerDataGenerator:
             for t_step, ue_pos_global in enumerate(traj_global):
                 all_points.append((t_step, ue_pos_global))
         
-        batch_size = 32
+        batch_size = 128  # Increased from 32 for better GPU utilization
         total_reports = 0
         
         # Process in batches

@@ -92,9 +92,13 @@ class RadioLocalizationDataset(Dataset):
         self.handle_missing = handle_missing
         self._dataset_origin = None
         
-        # Augmentation (only applied during training)
-        self.augmentor = RadioAugmentation(augmentation if split == 'train' else None)
+        self.handle_missing = handle_missing
+        self._dataset_origin = None
         
+        # Caching for maps (significant speedup)
+        self._radio_map_cache = {}
+        self._osm_map_cache = {}
+
 
         # Open Zarr store (read-only)
         if not zarr_path or str(zarr_path) == '.':
@@ -114,8 +118,7 @@ class RadioLocalizationDataset(Dataset):
         self.norm_stats = self._load_normalization_stats()
         self._dataset_origin = self._infer_dataset_origin()
         
-        if self.augmentor.enabled:
-            logger.info(f"Augmentation enabled for training: {list(self.augmentor.config.keys())}")
+        self._dataset_origin = self._infer_dataset_origin()
         
         logger.info(f"Loaded {len(self)} samples for {split} split from {zarr_path}")
     
@@ -264,6 +267,12 @@ class RadioLocalizationDataset(Dataset):
             mac_stds.append(s)
         stats['mac'] = {'mean': mac_means, 'std': mac_stds}
             
+        # Pre-convert to tensors for performance
+        for layer in stats:
+            stats[layer]['mean'] = torch.tensor(stats[layer]['mean'], dtype=torch.float32)
+            stats[layer]['std'] = torch.tensor(stats[layer]['std'], dtype=torch.float32)
+            stats[layer]['std'] = torch.clamp(stats[layer]['std'], min=1e-8)
+
         return stats
 
     def _infer_dataset_origin(self) -> Optional[Tuple[float, float]]:
@@ -338,6 +347,7 @@ class RadioLocalizationDataset(Dataset):
              bbox_height = scene_bbox[3] - scene_bbox[1] if bbox_valid else self.scene_extent
              local_y += (bbox_height / 2.0)
 
+        # Prepare position and grid calculation
         position = torch.tensor([local_x, local_y], dtype=torch.float32)
         
         # Determine sample-specific extent for grid calculation
@@ -371,30 +381,9 @@ class RadioLocalizationDataset(Dataset):
         # Load measurement sequence
         measurements = self._load_measurements(zarr_idx)
         
-        # Load maps and resize to model's expected dimensions (256x256)
+        # Load maps (cached and resized)
         radio_map = self._load_radio_map(zarr_idx)
         osm_map = self._load_osm_map(zarr_idx)
-        
-        # Resize maps if needed (model expects 256x256)
-        target_size = 256
-        if radio_map.shape[1] != target_size or radio_map.shape[2] != target_size:
-            radio_map = torch.nn.functional.interpolate(
-                radio_map.unsqueeze(0),
-                size=(target_size, target_size),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze(0)
-        
-        if osm_map.shape[1] != target_size or osm_map.shape[2] != target_size:
-            osm_map = torch.nn.functional.interpolate(
-                osm_map.unsqueeze(0),
-                size=(target_size, target_size),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze(0)
-        
-        # Apply augmentations (training only)
-        measurements, radio_map, osm_map = self.augmentor(measurements, radio_map, osm_map)
         
         # Prepare normalized position [0, 1]
         norm_position = position / sample_extent
@@ -584,6 +573,10 @@ class RadioLocalizationDataset(Dataset):
         if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
         
+        # Check cache first
+        if scene_idx in self._radio_map_cache:
+            return self._radio_map_cache[scene_idx]
+
         if 'radio_maps' not in self.store or self.store['radio_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
             # Channels: rsrp, rsrq, sinr, cqi, throughput
@@ -606,13 +599,30 @@ class RadioLocalizationDataset(Dataset):
             padding = torch.zeros(5 - current_channels, radio_map.shape[1], radio_map.shape[2], dtype=radio_map.dtype)
             radio_map = torch.cat([radio_map, padding], dim=0)
         
-        return radio_map[:5]
+        radio_map = radio_map[:5]
+        
+        # Resize to model's expected dimensions (256x256)
+        target_size = 256
+        if radio_map.shape[1] != target_size or radio_map.shape[2] != target_size:
+            radio_map = torch.nn.functional.interpolate(
+                radio_map.unsqueeze(0),
+                size=(target_size, target_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+
+        self._radio_map_cache[scene_idx] = radio_map
+        return radio_map
     
     def _load_osm_map(self, idx: int) -> torch.Tensor:
         """Load and process an OSM building/geometry map."""
         scene_idx = 0
         if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
+
+        # Check cache first
+        if scene_idx in self._osm_map_cache:
+            return self._osm_map_cache[scene_idx]
 
         if 'osm_maps' not in self.store or self.store['osm_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
@@ -632,7 +642,20 @@ class RadioLocalizationDataset(Dataset):
             padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
             osm_map = torch.cat([osm_map, padding], dim=0)
         
-        return osm_map[:5]
+        osm_map = osm_map[:5]
+        
+        # Resize to model's expected dimensions (256x256)
+        target_size = 256
+        if osm_map.shape[1] != target_size or osm_map.shape[2] != target_size:
+            osm_map = torch.nn.functional.interpolate(
+                osm_map.unsqueeze(0),
+                size=(target_size, target_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+
+        self._osm_map_cache[scene_idx] = osm_map
+        return osm_map
     
     def _normalize_features(
         self,
@@ -644,10 +667,15 @@ class RadioLocalizationDataset(Dataset):
             return data
         
         if layer in self.norm_stats:
-            mean = torch.tensor(self.norm_stats[layer]['mean'], dtype=torch.float32)
-            std = torch.tensor(self.norm_stats[layer]['std'], dtype=torch.float32)
-            std = torch.clamp(std, min=1e-8)  # Avoid division by zero
+            # Stats are already tensors (converted in _load_normalization_stats)
+            mean = self.norm_stats[layer]['mean']
+            std = self.norm_stats[layer]['std']
             
+            # Ensure matches data dimensions (usually [seq_len, dim] or [dim])
+            if data['features'].ndim == 2:
+                mean = mean.unsqueeze(0)
+                std = std.unsqueeze(0)
+                
             data['features'] = (data['features'] - mean) / std
         
         return data
@@ -681,73 +709,85 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'cell_grid': [],
     }
     
-    for sample in batch:
+    # Pre-allocate output tensors
+    # Batch size
+    B = len(batch)
+    
+    # Feature dimensions
+    dims = {
+        'rt_features': batch[0]['measurements']['rt_features'].shape[-1],
+        'phy_features': batch[0]['measurements']['phy_features'].shape[-1],
+        'mac_features': batch[0]['measurements']['mac_features'].shape[-1],
+    }
+    
+    padded_batch['measurements']['rt_features'] = torch.zeros(B, max_seq_len, dims['rt_features'], dtype=torch.float32)
+    padded_batch['measurements']['phy_features'] = torch.zeros(B, max_seq_len, dims['phy_features'], dtype=torch.float32)
+    padded_batch['measurements']['mac_features'] = torch.zeros(B, max_seq_len, dims['mac_features'], dtype=torch.float32)
+    
+    padded_batch['measurements']['cell_ids'] = torch.zeros(B, max_seq_len, dtype=torch.long)
+    padded_batch['measurements']['beam_ids'] = torch.zeros(B, max_seq_len, dtype=torch.long)
+    padded_batch['measurements']['timestamps'] = torch.zeros(B, max_seq_len, dtype=torch.float32)
+    padded_batch['measurements']['mask'] = torch.zeros(B, max_seq_len, dtype=torch.bool)
+    
+    # Fill batch
+    for i, sample in enumerate(batch):
         meas = sample['measurements']
         seq_len = meas['rt_features'].shape[0]
         
-        # Pad features to max_seq_len
-        if seq_len < max_seq_len:
-            pad_len = max_seq_len - seq_len
-            
-            padded_batch['measurements']['rt_features'].append(
-                torch.cat([
-                    meas['rt_features'],
-                    torch.zeros(pad_len, meas['rt_features'].shape[1])
-                ])
-            )
-            padded_batch['measurements']['phy_features'].append(
-                torch.cat([
-                    meas['phy_features'].unsqueeze(0).expand(seq_len, -1),
-                    torch.zeros(pad_len, meas['phy_features'].shape[0])
-                ])
-            )
-            padded_batch['measurements']['mac_features'].append(
-                torch.cat([
-                    meas['mac_features'].unsqueeze(0).expand(seq_len, -1),
-                    torch.zeros(pad_len, meas['mac_features'].shape[0])
-                ])
-            )
-            
-            # Pad IDs and timestamps
-            padded_batch['measurements']['cell_ids'].append(
-                torch.cat([meas['cell_ids'], torch.zeros(pad_len, dtype=torch.long)])
-            )
-            padded_batch['measurements']['beam_ids'].append(
-                torch.cat([meas['beam_ids'], torch.zeros(pad_len, dtype=torch.long)])
-            )
-            padded_batch['measurements']['timestamps'].append(
-                torch.cat([meas['timestamps'], torch.zeros(pad_len)])
-            )
-            
-            # Pad mask (False for padded values)
-            padded_batch['measurements']['mask'].append(
-                torch.cat([meas['mask'], torch.zeros(pad_len, dtype=torch.bool)])
-            )
-        else: # No padding needed
-            padded_batch['measurements']['rt_features'].append(meas['rt_features'])
-            padded_batch['measurements']['phy_features'].append(
-                meas['phy_features'].unsqueeze(0).expand(seq_len, -1)
-            )
-            padded_batch['measurements']['mac_features'].append(
-                meas['mac_features'].unsqueeze(0).expand(seq_len, -1)
-            )
-            padded_batch['measurements']['cell_ids'].append(meas['cell_ids'])
-            padded_batch['measurements']['beam_ids'].append(meas['beam_ids'])
-            padded_batch['measurements']['timestamps'].append(meas['timestamps'])
-            padded_batch['measurements']['mask'].append(meas['mask'])
+        # Copy logic
+        padded_batch['measurements']['rt_features'][i, :seq_len] = meas['rt_features']
         
-        # Stack maps and targets
+        # Expand scalar features if needed (phy/mac often [seq_len, dim], but check if they need expansion)
+        # In _load_measurements, they are appended as scalars -> [dim]. 
+        # Wait, previous code had .unsqueeze(0).expand(seq_len, -1). 
+        # This implies standard loading returned 1D tensor [dim] for the whole sequence?
+        # Let's check _load_measurements output.
+        # rt_features: list of floats -> logic seems to be append(float). 
+        # _load_measurements returns lists of floats. 
+        # BUT __getitem__ probably converts them? 
+        # Wait, __getitem__ returns 'measurements' dict. 
+        # Let's check __getitem__ for conversion. It was not visible previously.
+        # Assuming typical PyTorch Dataset behavior where __getitem__ returns Tensors.
+        
+        # If the original code did `meas['phy_features'].unsqueeze(0).expand(seq_len, -1)`
+        # It means `phy_features` was [dim] (static for trace) and needed to be repeated for seq_len?
+        # OR it means `phy_features` was [seq_len, dim] and unsqueeze(0) is adding batch dim?
+        # In collate_fn, we process ONE sample `meas`. `meas['phy_features']` is a Tensor.
+        # If seq_len comes from `rt_features.shape[0]`, RT features are temporal.
+        # If PHY features are static per sample?
+        
+        # Let's be safe and replicate original logic's dimensionality.
+        # Original: meas['phy_features'].unsqueeze(0).expand(seq_len, -1)
+        # This implies meas['phy_features'] is 1D [dim], and we repeat it for each timestep.
+        
+        if meas['phy_features'].ndim == 1:
+             padded_batch['measurements']['phy_features'][i, :seq_len] = meas['phy_features'].unsqueeze(0).expand(seq_len, -1)
+        else:
+             padded_batch['measurements']['phy_features'][i, :seq_len] = meas['phy_features']
+             
+        if meas['mac_features'].ndim == 1:
+             padded_batch['measurements']['mac_features'][i, :seq_len] = meas['mac_features'].unsqueeze(0).expand(seq_len, -1)
+        else:
+             padded_batch['measurements']['mac_features'][i, :seq_len] = meas['mac_features']
+
+        padded_batch['measurements']['cell_ids'][i, :seq_len] = meas['cell_ids']
+        padded_batch['measurements']['beam_ids'][i, :seq_len] = meas['beam_ids']
+        padded_batch['measurements']['timestamps'][i, :seq_len] = meas['timestamps']
+        padded_batch['measurements']['mask'][i, :seq_len] = meas['mask']
+        
+        # Maps and non-temporal items
         padded_batch['radio_map'].append(sample['radio_map'])
         padded_batch['osm_map'].append(sample['osm_map'])
         padded_batch['position'].append(sample['position'])
         padded_batch['cell_grid'].append(sample['cell_grid'])
-        padded_batch.setdefault('sample_extent', []).append(sample.get('sample_extent', torch.tensor(512.0)))
-    
-    # Stack all tensors
+        
+        # Handle sample_extent which might be missing in older caches
+        extent = sample.get('sample_extent', torch.tensor(512.0))
+        padded_batch.setdefault('sample_extent', []).append(extent)
+
+    # Stack all list-based tensors
     return {
-        'measurements': {
-            k: torch.stack(v) for k, v in padded_batch['measurements'].items()
-        },
+        'measurements': padded_batch['measurements'],
         'radio_map': torch.stack(padded_batch['radio_map']),
         'osm_map': torch.stack(padded_batch['osm_map']),
         'position': torch.stack(padded_batch['position']),
