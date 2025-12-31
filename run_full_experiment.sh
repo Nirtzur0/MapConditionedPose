@@ -18,6 +18,7 @@ TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 STUDY_NAME="ue-localization-${TIMESTAMP}"
 N_TRIALS=10
 RUN_NAME="multi_city_optuna_${TIMESTAMP}"
+STORAGE="sqlite:///optuna_studies.db"
 
 # Datasets
 # Define explicit Evaluation Dataset (Strictly held-out)
@@ -27,6 +28,7 @@ EVAL_DATASET="data/processed/sionna_dataset_eval/dataset_eval.zarr"
 echo "🚀 Starting Full Multi-City Optuna Pipeline"
 echo "   Study: $STUDY_NAME"
 echo "   Trials: $N_TRIALS"
+echo "   Storage: $STORAGE"
 echo "   Run Name: $RUN_NAME"
 echo "   Test Set: $EVAL_DATASET"
 
@@ -45,6 +47,7 @@ python run_pipeline.py \
   --optimize \
   --n-trials "$N_TRIALS" \
   --study-name "$STUDY_NAME" \
+  --storage "$STORAGE" \
   --eval-dataset "$EVAL_DATASET" \
   --run-name "$RUN_NAME" \
   --clean \
