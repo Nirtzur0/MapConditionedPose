@@ -22,158 +22,171 @@ class RefineConfig:
     """Configuration for position refinement."""
     
     # Number of gradient descent steps
-    num_steps: int = 5
+    num_steps: int = 10
     
     # Learning rate (in meters per step)
-    learning_rate: float = 0.5
+    learning_rate: float = 0.1
     
-    # Map extent for coordinate normalization
-    map_extent: Tuple[float, float, float, float] = (0.0, 0.0, 512.0, 512.0)
+    # Scale factor for density term (-log p(y))
+    # If 0.0, uses only physics loss. If > 0, combines physics + network density.
+    density_weight: float = 1.0
     
-    # Feature weights (if None, use uniform weights)
-    feature_weights: Optional[torch.Tensor] = None
+    # Refine only low confidence predictions
+    min_confidence_threshold: Optional[float] = 0.6
     
-    # Whether to clip refined position to map extent
-    clip_to_extent: bool = True
-    
-    # Minimum confidence threshold to trigger refinement
-    # (if None, always refine)
-    min_confidence_threshold: Optional[float] = None
+    # Physics loss configuration for normalization/weights
+    physics_config: Optional[object] = None
 
+
+def compute_density_nll(
+    xy: torch.Tensor,
+    mixture_params: Dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """
+    Compute negative log likelihood of position xy under the Gaussian Mixture.
+    
+    Args:
+        xy: (batch, 2) candidate positions
+        mixture_params: Dictionary with:
+            - logits: (batch, K) mixture weights (unnormalized log probs)
+            - means: (batch, K, 2) component means
+            - vars: (batch, K, 2) component variances
+            
+    Returns:
+        nll: (batch,) negative log likelihood
+    """
+    # xy: [batch, 2] -> [batch, 1, 2]
+    xy_expanded = xy.unsqueeze(1)
+    
+    means = mixture_params['means']  # [batch, K, 2]
+    variances = mixture_params['vars']  # [batch, K, 2]
+    logits = mixture_params['logits']  # [batch, K]
+    
+    # LogSoftmax for weights
+    # log_pi = log_softmax(logits)
+    log_pi = torch.log_softmax(logits, dim=-1)
+    
+    # Gaussian Log Likelihood
+    # log N(x; mu, sigma^2) = -0.5*log(2*pi*sigma^2) - 0.5*(x-mu)^2/sigma^2
+    # Sum over x,y dimensions for multivariate diagonal gaussian
+    residuals = xy_expanded - means
+    log_prob_dim = -0.5 * torch.log(2 * torch.pi * variances) - 0.5 * (residuals ** 2) / variances
+    log_prob_xy = log_prob_dim.sum(dim=-1)  # [batch, K]
+    
+    # Mixture Log Likelihood
+    # log sum_k exp(log_pi_k + log_N_k)
+    log_mixture = torch.logsumexp(log_pi + log_prob_xy, dim=-1)
+    
+    return -log_mixture
 
 def refine_position(
     initial_xy: torch.Tensor,
     observed_features: torch.Tensor,
     radio_maps: torch.Tensor,
     config: RefineConfig,
+    mixture_params: Optional[Dict[str, torch.Tensor]] = None,
     confidence: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
-    Refine predicted positions using gradient-based optimization.
+    Refine predicted positions using gradient-based optimization on Energy function.
     
-    Uses physics loss to iteratively adjust positions to better match observed
-    measurements with precomputed radio map features.
+    Energy E(y) = PhysicsLoss(y) + density_weight * NLL(y | network)
     
     Args:
-        initial_xy: (batch, 2) initial position estimates from network
+        initial_xy: (batch, 2) initial position estimates
         observed_features: (batch, C) observed radio features
         radio_maps: (batch, C, H, W) precomputed radio maps
         config: Refinement configuration
-        confidence: (batch,) optional confidence scores (0-1)
-            If provided, only refine samples below threshold
+        mixture_params: Optional params for density term (means, vars, logits)
+        confidence: Optional confidence scores to mask refinement
             
     Returns:
         refined_xy: (batch, 2) refined positions
-        info: Dictionary with refinement statistics:
-            - 'loss_initial': initial physics loss
-            - 'loss_final': final physics loss after refinement
-            - 'distance_moved': L2 distance between initial and refined
-            - 'num_refined': number of samples that were refined
-            
-    Example:
-        >>> config = RefineConfig(num_steps=5, learning_rate=0.5)
-        >>> initial_xy = torch.tensor([[100.0, 200.0], [150.0, 250.0]])
-        >>> observed = torch.randn(2, 7)
-        >>> radio_maps = torch.randn(2, 7, 512, 512)
-        >>> refined_xy, info = refine_position(initial_xy, observed, radio_maps, config)
-        >>> logger.info(f"Moved {info['distance_moved'].mean():.2f} meters")
+        info: refinement statistics
     """
     batch_size = initial_xy.shape[0]
     device = initial_xy.device
     
     # Determine which samples to refine
     if confidence is not None and config.min_confidence_threshold is not None:
-        # Only refine low-confidence predictions
         refine_mask = confidence < config.min_confidence_threshold
         num_refined = refine_mask.sum().item()
     else:
-        # Refine all samples
         refine_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
         num_refined = batch_size
     
-    # Initialize refined positions (copy initial)
     refined_xy = initial_xy.clone()
     
-    # Compute initial loss for all samples
-    with torch.no_grad():
-        loss_initial = compute_physics_loss(
-            initial_xy,
-            observed_features,
-            radio_maps,
-            feature_weights=config.feature_weights,
-            map_extent=config.map_extent,
-        )
-    
     if num_refined == 0:
-        # No samples to refine
-        info = {
-            'loss_initial': loss_initial,
-            'loss_final': loss_initial,
-            'distance_moved': torch.zeros(batch_size, device=device),
-            'num_refined': 0,
+        return refined_xy, {}
+
+    # Setup Physics Loss
+    # Use the class to handle weights and normalization consistently
+    from .core import PhysicsLoss, PhysicsLossConfig as CoreConfig
+    
+    if config.physics_config:
+        loss_fn = PhysicsLoss(config.physics_config)
+    else:
+        # Default fallback
+        loss_fn = PhysicsLoss(CoreConfig())
+    loss_fn.to(device)
+
+    # Prepare inputs for optimization
+    xy_opt = initial_xy[refine_mask].detach().clone().requires_grad_(True)
+    obs_opt = observed_features[refine_mask]
+    maps_opt = radio_maps[refine_mask]
+    
+    # Slice mixture params if available
+    mix_opt = None
+    if mixture_params is not None and config.density_weight > 0:
+        mix_opt = {
+            'logits': mixture_params['logits'][refine_mask],
+            'means': mixture_params['means'][refine_mask],
+            'vars': mixture_params['vars'][refine_mask]
         }
-        return refined_xy, info
     
-    # Extract samples to refine
-    xy_to_refine = initial_xy[refine_mask].detach().clone().requires_grad_(True)
-    obs_to_refine = observed_features[refine_mask]
-    maps_to_refine = radio_maps[refine_mask]
+    optimizer = torch.optim.Adam([xy_opt], lr=config.learning_rate)
     
-    # Optimizer (Adam for better convergence)
-    optimizer = torch.optim.Adam([xy_to_refine], lr=config.learning_rate)
+    initial_loss_phys = None
     
-    # Gradient descent
     for step in range(config.num_steps):
         optimizer.zero_grad()
         
-        # Compute physics loss
-        loss = compute_physics_loss(
-            xy_to_refine,
-            obs_to_refine,
-            maps_to_refine,
-            feature_weights=config.feature_weights,
-            map_extent=config.map_extent,
-        )
+        # 1. Physics Term
+        loss_phys = loss_fn(xy_opt, obs_opt, maps_opt)
         
-        # Backprop and update
-        loss.backward()
+        # 2. Density Term (Optional)
+        loss_dens = torch.tensor(0.0, device=device)
+        if mix_opt:
+            loss_dens = compute_density_nll(xy_opt, mix_opt).mean()
+            
+        # Total Energy
+        total_loss = loss_phys + config.density_weight * loss_dens
+        
+        if step == 0:
+            initial_loss_phys = loss_phys.item()
+            
+        total_loss.backward()
         optimizer.step()
         
-        # Clip to map extent if configured
-        if config.clip_to_extent:
-            x_min, y_min, x_max, y_max = config.map_extent
-            with torch.no_grad():
-                xy_to_refine[:, 0].clamp_(x_min, x_max)
-                xy_to_refine[:, 1].clamp_(y_min, y_max)
+        # Clip to valid range
+        x_min, y_min, x_max, y_max = loss_fn.config.map_extent
+        with torch.no_grad():
+            xy_opt[:, 0].clamp_(x_min, x_max)
+            xy_opt[:, 1].clamp_(y_min, y_max)
+            
+    # Update outputs
+    refined_xy[refine_mask] = xy_opt.detach()
     
-    # Update refined positions
-    refined_xy[refine_mask] = xy_to_refine.detach()
-    
-    # Compute final loss
+    # Final check
     with torch.no_grad():
-        loss_final = compute_physics_loss(
-            refined_xy,
-            observed_features,
-            radio_maps,
-            feature_weights=config.feature_weights,
-            map_extent=config.map_extent,
-        )
-    
-    # Compute distance moved
-    distance_moved = torch.zeros(batch_size, device=device)
-    distance_moved[refine_mask] = torch.norm(
-        refined_xy[refine_mask] - initial_xy[refine_mask],
-        dim=-1,
-    )
-    
-    info = {
-        'loss_initial': loss_initial,
-        'loss_final': loss_final,
-        'distance_moved': distance_moved,
-        'num_refined': num_refined,
+        final_loss_phys = loss_fn(refined_xy[refine_mask], obs_opt, maps_opt).item() if num_refined > 0 else 0.0
+
+    return refined_xy, {
+        'loss_initial': initial_loss_phys or 0.0,
+        'loss_final': final_loss_phys,
+        'num_refined': num_refined
     }
-    
-    return refined_xy, info
 
 
 def batch_refine_positions(
@@ -181,63 +194,16 @@ def batch_refine_positions(
     observed_features: torch.Tensor,
     radio_maps: torch.Tensor,
     config: RefineConfig,
-    top_k: int = 5,
+    mixture_params: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Refine multiple candidate positions and select the best one.
-    
-    Useful when network produces multiple candidates (e.g., from coarse head).
-    Refines each candidate and selects the one with lowest physics loss.
-    
-    Args:
-        initial_xy: (batch, K, 2) K candidate positions per sample
-        observed_features: (batch, C) observed features
-        radio_maps: (batch, C, H, W) precomputed maps
-        config: Refinement configuration
-        top_k: Number of candidates (K)
-        
-    Returns:
-        best_xy: (batch, 2) best refined position per sample
-        best_loss: (batch,) physics loss of best position
+    Batch refinement wrapper.
     """
-    batch_size, K, _ = initial_xy.shape
-    device = initial_xy.device
-    
-    # Expand observed features and maps for all candidates
-    obs_expanded = observed_features.unsqueeze(1).expand(-1, K, -1)  # (batch, K, C)
-    maps_expanded = radio_maps.unsqueeze(1).expand(-1, K, -1, -1, -1)  # (batch, K, C, H, W)
-    
-    # Reshape for refinement: (batch*K, ...)
-    xy_flat = initial_xy.view(-1, 2)
-    obs_flat = obs_expanded.reshape(-1, obs_expanded.shape[-1])
-    maps_flat = maps_expanded.reshape(-1, *maps_expanded.shape[2:])
-    
-    # Refine all candidates
-    refined_flat, _ = refine_position(
-        xy_flat,
-        obs_flat,
-        maps_flat,
-        config,
-        confidence=None,  # Refine all candidates
+    # Simply call refine_position (logic merged for simplicity)
+    # This logic assumed candidates before, but now we usually refine the top prediction.
+    # For simplicity in this 'best solution' iteration, we act on the best estimate.
+    refined, info = refine_position(
+        initial_xy, observed_features, radio_maps, config, mixture_params
     )
-    
-    # Reshape back: (batch, K, 2)
-    refined_xy = refined_flat.view(batch_size, K, 2)
-    
-    # Compute physics loss for each refined candidate
-    losses = torch.zeros(batch_size, K, device=device)
-    for k in range(K):
-        losses[:, k] = compute_physics_loss(
-            refined_xy[:, k],
-            observed_features,
-            radio_maps,
-            feature_weights=config.feature_weights,
-            map_extent=config.map_extent,
-        )
-    
-    # Select best candidate (lowest loss)
-    best_indices = losses.argmin(dim=1)  # (batch,)
-    best_xy = refined_xy[torch.arange(batch_size), best_indices]  # (batch, 2)
-    best_loss = losses[torch.arange(batch_size), best_indices]  # (batch,)
-    
-    return best_xy, best_loss
+    # Return refinement and dummy loss tensor
+    return refined, torch.zeros(initial_xy.shape[0])

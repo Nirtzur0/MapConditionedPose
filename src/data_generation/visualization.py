@@ -77,46 +77,47 @@ def render_scene_3d(
         max_dim = max(width, height, 100.0)
         ground_z = z_min
         
-        # --- View 1: Top-Down ---
-        dist_z = max_dim * 1.5 
-        cam_height = ground_z + dist_z
-        
-        cam_top = Camera(
-            position=[float(cx + 0.1), float(cy + 0.1), float(cam_height)],
-            look_at=[float(cx), float(cy), float(ground_z)], 
-        )
+        # --- View 1: Top-Down (Disabled) ---
+        # User requested only isometric views
+        # dist_z = max_dim * 1.5 
+        # cam_height = ground_z + dist_z
+        # 
+        # cam_top = Camera(
+        #     position=[float(cx + 0.1), float(cy + 0.1), float(cam_height)],
+        #     look_at=[float(cx), float(cy), float(ground_z)], 
+        # )
         
         # Render with optional radio map overlay (Sionna native)
         # Only attempt if radio_map is a Sionna RadioMap object, not a numpy array
-        if radio_map is not None and not isinstance(radio_map, np.ndarray):
-            logger.info("Rendering Top-Down with radio map coverage (Sionna native)...")
-            try:
-                fig = scene.render(
-                    camera=cam_top,
-                    radio_map=radio_map,
-                    rm_metric='path_gain',
-                    rm_db_scale=True,
-                    rm_vmin=-120,
-                    rm_vmax=-50,
-                    rm_show_color_bar=True,
-                    show_devices=True,
-                    resolution=(1024, 768)
-                )
-                out_path_coverage = viz_dir / f"{safe_scene_id}_top_down_coverage.png"
-                fig.savefig(out_path_coverage, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Saved coverage map: {out_path_coverage}")
-            except Exception as e:
-                logger.warning(f"Sionna native coverage render failed: {e}")
+        # if radio_map is not None and not isinstance(radio_map, np.ndarray):
+            # logger.info("Rendering Top-Down with radio map coverage (Sionna native)...")
+            # try:
+            #     fig = scene.render(
+            #         camera=cam_top,
+            #         radio_map=radio_map,
+            #         rm_metric='path_gain',
+            #         rm_db_scale=True,
+            #         rm_vmin=-120,
+            #         rm_vmax=-50,
+            #         rm_show_color_bar=True,
+            #         show_devices=True,
+            #         resolution=(1024, 768)
+            #     )
+            #     out_path_coverage = viz_dir / f"{safe_scene_id}_top_down_coverage.png"
+            #     fig.savefig(out_path_coverage, dpi=150, bbox_inches='tight')
+            #     plt.close(fig)
+            #     logger.info(f"Saved coverage map: {out_path_coverage}")
+            # except Exception as e:
+            #     logger.warning(f"Sionna native coverage render failed: {e}")
         
         # Plain render (no radio map)
-        out_path_top = viz_dir / f"{safe_scene_id}_top_down.png"
-        logger.info(f"Rendering Top-Down plain to {out_path_top}")
-        scene.render_to_file(
-            camera=cam_top,
-            filename=str(out_path_top),
-            resolution=(1024, 768)
-        )
+        # out_path_top = viz_dir / f"{safe_scene_id}_top_down.png"
+        # logger.info(f"Rendering Top-Down plain to {out_path_top}")
+        # scene.render_to_file(
+        #     camera=cam_top,
+        #     filename=str(out_path_top),
+        #     resolution=(1024, 768)
+        # )
         
         # --- View 2: Isometric ---
         iso_dist = max_dim * 0.8

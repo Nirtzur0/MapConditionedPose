@@ -363,6 +363,10 @@ class UELocalizationLightning(pl.LightningModule):
                 'osm_map': batch['osm_map'][0].detach().cpu(),
                 'true_pos': true_pos[0].detach().cpu(),
                 'pred_pos': pred_pos[0].detach().cpu(),
+                'top_k_indices': outputs['top_k_indices'][0].detach().cpu(),
+                'top_k_probs': outputs['top_k_probs'][0].detach().cpu(),
+                'fine_offsets': outputs['fine_offsets'][0].detach().cpu(),
+                'fine_uncertainties': outputs['fine_uncertainties'][0].detach().cpu(),
             }
         
         # Store for epoch-end aggregation
@@ -449,9 +453,171 @@ class UELocalizationLightning(pl.LightningModule):
                 'osm_map': batch['osm_map'][0].detach().cpu(),
                 'true_pos': true_pos[0].detach().cpu(),
                 'pred_pos': pred_pos[0].detach().cpu(),
+                'top_k_indices': outputs['top_k_indices'][0].detach().cpu(),
+                'top_k_probs': outputs['top_k_probs'][0].detach().cpu(),
+                'fine_offsets': outputs['fine_offsets'][0].detach().cpu(),
+                'fine_uncertainties': outputs['fine_uncertainties'][0].detach().cpu(),
             }
         
         return errors
+
+    def _render_gmm_heatmap(self, h, w, top_k_indices, top_k_probs, fine_offsets, fine_uncertainties):
+        """Render Gaussian Mixture Model heatmap."""
+        import numpy as np
+        
+        # Create grid coordinates [0, 1]
+        x = np.linspace(0, 1, w)
+        y = np.linspace(0, 1, h)
+        X, Y = np.meshgrid(x, y)
+        pos = np.stack([X, Y], axis=-1) # [H, W, 2]
+        
+        # Get component parameters
+        # Centers
+        cell_size = self.model.cell_size
+        top_k_indices = top_k_indices.to(self.device).long()
+        # Use simple calculation if model helper difficult to access from CPU tensor context
+        grid_size = self.model.grid_size
+        # row = index // grid_size, col = index % grid_size
+        gy = top_k_indices // grid_size
+        gx = top_k_indices % grid_size
+        
+        # Center of cell in [0, 1] coords. 
+        # Cell (gx, gy) covers [gx*cell_size, (gx+1)*cell_size]
+        # Center is (gx + 0.5) * cell_size
+        center_x = (gx.float() + 0.5) * cell_size
+        center_y = (gy.float() + 0.5) * cell_size
+        centers = torch.stack([center_x, center_y], dim=-1).cpu().numpy() # [K, 2]
+        
+        # Add predicted offsets
+        centers = centers + fine_offsets.numpy() # [K, 2]
+        
+        variances = (fine_uncertainties.numpy() ** 2) # [K, 2]
+        probs = top_k_probs.numpy() # [K]
+        
+        # Normalize probs
+        probs = probs / (probs.sum() + 1e-6)
+        
+        # Compute heatmap
+        heatmap = np.zeros((h, w), dtype=np.float32)
+        
+        for k in range(len(probs)):
+            mu = centers[k]
+            var = variances[k]
+            pi = probs[k]
+            
+            # Evaluate Gaussian (simplified with diagonal covariance)
+            # 1 / (2pi * sigma_x * sigma_y) * exp(...)
+            # But just unnormalized exp is presumably fine for visualization scaling
+            
+            dx = (pos[..., 0] - mu[0]) ** 2 / (2 * var[0])
+            dy = (pos[..., 1] - mu[1]) ** 2 / (2 * var[1])
+            
+            # Add small epsilon to variance to avoid division by zero if extremely peaked
+            norm_const = 1.0 # Visualization scale
+            
+            component = pi * np.exp(-(dx + dy))
+            heatmap += component
+            
+        # Normalize heatmap to [0, 1]
+        if heatmap.max() > 0:
+            heatmap = heatmap / heatmap.max()
+            
+        return heatmap
+
+    def _log_comet_visuals(self, split: str, errors: Optional[torch.Tensor] = None):
+        experiment = self._get_comet_experiment()
+        if experiment is None or self._comet_logged.get(split):
+            return
+
+        sample = self._last_val_sample if split == 'val' else self._last_test_sample
+        if sample is None:
+            return
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        radio_map = sample['radio_map'].numpy()
+        osm_map = sample['osm_map'].numpy()
+        true_pos = sample['true_pos'].numpy()
+        pred_pos = sample['pred_pos'].numpy()
+
+        # Use adaptive percentile-based normalization for radio map (handles variable dB ranges)
+        radio_img = self._normalize_map(radio_map[0])
+
+        h, w = radio_img.shape
+
+        # OSM visualization: R=Height(0), G=Footprint(2), B=Road(3)+Terrain(4) combined
+        # This ensures road data shows when available in other datasets
+        osm_height = self._normalize_map(osm_map[0]) if osm_map.shape[0] > 0 else np.zeros((h, w), dtype=np.float32)
+        osm_footprint = self._normalize_map(osm_map[2]) if osm_map.shape[0] > 2 else np.zeros((h, w), dtype=np.float32)
+        # Combine road and terrain channels for blue (road takes precedence where it exists)
+        osm_road = osm_map[3] if osm_map.shape[0] > 3 else np.zeros((h, w), dtype=np.float32)
+        osm_terrain = osm_map[4] if osm_map.shape[0] > 4 else np.zeros((h, w), dtype=np.float32)
+        osm_blue = self._normalize_map(np.maximum(osm_road, osm_terrain * 0.3))  # Roads bright, terrain subtle
+        osm_rgb = np.stack([osm_height, osm_footprint, osm_blue], axis=-1)
+
+        true_px = true_pos[0] * (w - 1)
+        true_py = true_pos[1] * (h - 1)
+        pred_px = pred_pos[0] * (w - 1)
+        pred_py = pred_pos[1] * (h - 1)
+        
+        # Render GMM
+        gmm_heatmap = self._render_gmm_heatmap(
+            h, w, 
+            sample['top_k_indices'], 
+            sample['top_k_probs'], 
+            sample['fine_offsets'], 
+            sample['fine_uncertainties']
+        )
+        
+        # Apply colormap to GMM with adaptive transparency
+        # Use jet/turbo but ensure zero probability is fully transparent
+        gmm_colored = plt.cm.turbo(gmm_heatmap) # RGBA [H, W, 4]
+        
+        # Set alpha channel: 
+        # Low prob -> Transparent
+        # High prob -> More opaque but still see-through (max 0.7)
+        gmm_colored[..., 3] = np.clip(gmm_heatmap * 0.8, 0.0, 0.8)
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        axes[0].imshow(radio_img, cmap='inferno')
+        axes[0].set_title("Radio Map (Path Gain)")
+        axes[0].axis("off")
+        
+        axes[1].imshow(osm_rgb)
+        axes[1].set_title("OSM Map (R:Height G:Build B:Road/Terrain)")
+        axes[1].axis("off")
+        
+        # Overlay GMM + Points on top of OSM map for context
+        # 1. Base map
+        axes[2].imshow(osm_rgb) 
+        # 2. GMM overlay
+        axes[2].imshow(gmm_colored)
+        # 3. Points
+        axes[2].scatter([true_px], [true_py], c="lime", s=60, edgecolors='black', label="True", zorder=10)
+        # axes[2].scatter([pred_px], [pred_py], c="red", s=60, marker="x", label="Pred", zorder=10)
+        axes[2].set_title(f"{split.upper()} GMM Prediction + True Pos")
+        axes[2].legend(loc="lower right", fontsize=8)
+        axes[2].axis("off")
+        fig.tight_layout()
+
+        if hasattr(experiment, "log_figure"):
+            experiment.log_figure(figure=fig, figure_name=f"{split}_maps")
+        
+        # Also save as PNG asset for reliable viewing
+        import io
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        if hasattr(experiment, "log_asset"):
+            experiment.log_asset(buf, file_name=f"{split}_maps.png")
+        
+        plt.close(fig)
+
+        if errors is not None and hasattr(experiment, "log_histogram"):
+            experiment.log_histogram(errors.detach().cpu().numpy(), name=f"{split}_error_hist_m")
+
+        self._comet_logged[split] = True
     
     def on_test_epoch_end(self):
         """Aggregate test metrics at epoch end."""
