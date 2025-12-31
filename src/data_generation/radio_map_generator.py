@@ -179,6 +179,9 @@ class RadioMapGenerator:
             cell_size = [float(size_x/width), float(size_y/height)]
             
             self.logger.info(f"Running RadioMapSolver...")
+            import mitsuba as mi
+            mi.set_log_level(mi.LogLevel.Error)
+            
             rm = solver(
                 scene, center=center, size=size, cell_size=cell_size,
                 orientation=[0.,0.,0.], diffraction=True,

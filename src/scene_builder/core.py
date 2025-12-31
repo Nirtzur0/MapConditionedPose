@@ -262,6 +262,7 @@ class Scene:
         sampler = ET.SubElement(sensor, "sampler", type="independent")
         ET.SubElement(sampler, "integer", name="sample_count", value="$spp")
         film = ET.SubElement(sensor, "film", type="hdrfilm")
+        ET.SubElement(film, "string", name="pixel_format", value="luminance")
         ET.SubElement(film, "integer", name="width", value="$resx")
         ET.SubElement(film, "integer", name="height", value="$resy")
 

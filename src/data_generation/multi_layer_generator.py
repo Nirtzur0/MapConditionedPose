@@ -724,6 +724,7 @@ class MultiLayerDataGenerator:
         try:
             import drjit as dr
             import mitsuba as mi
+            mi.set_log_level(mi.LogLevel.Error)
             
             z_start = 30000.0
             batch_len = len(ue_positions_sim)
