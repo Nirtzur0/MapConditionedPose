@@ -265,23 +265,31 @@ class BatchSimulator:
         # Generate mock features for each UE and stack
         rts, phys, macs = [], [], []
         for i in range(batch_size):
-            # This would call the actual mock simulation method
-            # For now, create minimal mock features
+            # Generate mock features with all required fields
+            num_mock_paths = 64
             rt_m = RTLayerFeatures(
-                path_gains=np.random.randn(1, 10, 64) * 1e-8,
-                path_delays=np.random.rand(1, 10, 64) * 1e-6,
-                rms_delay_spread=np.random.rand(1) * 1e-7,
-                k_factor=np.random.rand(1) * 10,
-                num_paths=np.ones(1, dtype=np.int32) * 10
+                path_gains=np.random.randn(1, 1, num_mock_paths) * 1e-8,
+                path_delays=np.random.rand(1, 1, num_mock_paths) * 1e-6,
+                path_aoa_azimuth=np.random.rand(1, 1, num_mock_paths),
+                path_aoa_elevation=np.random.rand(1, 1, num_mock_paths),
+                path_aod_azimuth=np.random.rand(1, 1, num_mock_paths),
+                path_aod_elevation=np.random.rand(1, 1, num_mock_paths),
+                path_doppler=np.random.rand(1, 1, num_mock_paths),
+                rms_delay_spread=np.random.rand(1, 1) * 1e-7,
+                num_paths=np.ones((1, 1), dtype=np.int32) * num_mock_paths
             )
             phy_m = PHYFAPILayerFeatures(
-                rsrp=np.random.randn(1, 16) * 10 - 100,
-                rsrq=np.random.randn(1, 16) * 5 - 10,
-                sinr=np.random.randn(1, 16) * 10
+                rsrp=np.random.randn(1, 1, 16) * 10 - 100,
+                rsrq=np.random.randn(1, 1, 16) * 5 - 10,
+                sinr=np.random.randn(1, 1, 16) * 10,
+                cqi=np.random.randint(0, 16, size=(1, 1, 16)),
+                ri=np.ones((1, 1, 16), dtype=np.int32),
+                pmi=np.zeros((1, 1, 16), dtype=np.int32)
             )
             mac_m = MACRRCLayerFeatures(
-                serving_cell_id=np.zeros(1, dtype=np.int32),
-                timing_advance=np.random.randint(0, 100, size=1)
+                serving_cell_id=np.zeros((1, 1), dtype=np.int32),
+                neighbor_cell_ids=np.zeros((1, 1, 8), dtype=np.int32),
+                timing_advance=np.random.randint(0, 100, size=(1, 1))
             )
             rts.append(rt_m)
             phys.append(phy_m)

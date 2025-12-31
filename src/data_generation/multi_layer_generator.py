@@ -59,6 +59,7 @@ except ImportError:
 
 from .radio_map_generator import RadioMapGenerator, RadioMapConfig
 from .osm_rasterizer import OSMRasterizer
+from .visualization import save_map_visualizations, render_scene_3d
 
 
 class MultiLayerDataGenerator:
@@ -487,10 +488,21 @@ class MultiLayerDataGenerator:
         if SIONNA_AVAILABLE and scene is not None:
             # Update configs based on actual scene bbox (if available) or config
             bbox = scene_metadata.get('bbox', {})
-            x_min = bbox.get('x_min', 0)
-            y_min = bbox.get('y_min', 0)
-            x_max = bbox.get('x_max', 512)
-            y_max = bbox.get('y_max', 512)
+            x_min_glob = bbox.get('x_min', 0)
+            y_min_glob = bbox.get('y_min', 0)
+            x_max_glob = bbox.get('x_max', 512)
+            y_max_glob = bbox.get('y_max', 512)
+            
+            # Simulation runs in a local frame centered at (0,0) geometry
+            # The bbox width/height determines the extent
+            width = x_max_glob - x_min_glob
+            height = y_max_glob - y_min_glob
+            
+            # Center the map extent at 0,0
+            x_min = -width / 2.0
+            y_min = -height / 2.0
+            x_max = width / 2.0
+            y_max = height / 2.0
             
             # Update Radio Map Config: use fixed 256x256 for model compatibility
             self.radio_map_generator.config.map_extent = (x_min, y_min, x_max, y_max)
@@ -504,13 +516,34 @@ class MultiLayerDataGenerator:
             sites = scene_metadata.get('sites', [])
             
             logger.info(f"Generating Radio Map for {scene_id} (256x256)...")
-            radio_map = self.radio_map_generator.generate_for_scene(scene, sites)
+            radio_map, radio_map_obj = self.radio_map_generator.generate_for_scene(
+                scene, sites, return_sionna_object=True
+            )
             
             # Model expects 5 channels: rsrp, rsrq, sinr, cqi, throughput
+            # But we keep full map for visualization
             if radio_map.shape[0] > 5:
-                radio_map = radio_map[:5]
+                radio_map_model = radio_map[:5]
+            else:
+                radio_map_model = radio_map
             
-            scene_data['radio_map'] = radio_map
+            scene_data['radio_map'] = radio_map_model
+            
+            # Visualization Setup
+            viz_dir = self.config.output_dir / "visualizations"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 1. 3D Render (Radio Map)
+            try:
+                render_scene_3d(
+                    scene=scene,
+                    scene_id=scene_id,
+                    metadata=scene_metadata,
+                    output_dir=viz_dir / "3d",
+                    radio_map=radio_map_obj
+                )
+            except Exception as e:
+                logger.warning(f"3D Rendering failed: {e}")
             
             # Generate OSM Map
             # Update Rasterizer to use 256x256
@@ -529,6 +562,17 @@ class MultiLayerDataGenerator:
             logger.info(f"Generating OSM Map for {scene_id}...")
             osm_map = self.osm_rasterizer.rasterize(scene)
             scene_data['osm_map'] = osm_map
+
+            # 2. 2D Map Plots (Radio + OSM)
+            try:
+                save_map_visualizations(
+                    scene_id=scene_id,
+                    radio_map=radio_map, # Pass full map for detailed viz
+                    osm_map=osm_map,
+                    output_dir=viz_dir
+                )
+            except Exception as e:
+                logger.warning(f"2D Map Visualization failed: {e}")
 
         return scene_data
     
@@ -734,10 +778,135 @@ class MultiLayerDataGenerator:
     # Keep map generation methods (delegated to existing generators)
     def _generate_radio_map_for_scene(self, scene: Any, scene_path: Path, scene_metadata: Dict):
         """Generate radio map - delegates to RadioMapGenerator."""
-        # This method remains unchanged as it already uses RadioMapGenerator
-        pass
+        if self.radio_map_generator is None:
+            return
+            
+        try:
+            logger.info(f"Generating Radio Map for scene {scene_metadata.get('scene_id', 'unknown')}...")
+            
+            # Extract cell sites from metadata
+            sites = scene_metadata.get('sites', [])
+            
+            # Generate and internally save if configured
+            # RadioMapGenerator.generate_for_scene returns the Sionna RadioMap object if return_sionna_object=True.
+            # However, looking at the call signature in our earlier listing, it seems we need to explicitly ask for it.
+            # But wait, does generate_for_scene return the object by default? 
+            # The signature was: generate_for_scene(..., return_sionna_object=False) -> Optional[Any]
+            
+            # Let's request the object so we can use it for visualization overlay
+            radio_map_obj = self.radio_map_generator.generate_for_scene(
+                scene=scene,
+                cell_sites=sites,
+                show_progress=True,
+                return_sionna_object=True
+            )
+            
+            # Visualization
+            scene_id = scene_metadata.get('scene_id', 'unknown')
+            viz_dir = self.config.output_dir / "visualizations"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 1. 3D Renders (Top-Down, ISO) with optional coverage overlay
+            logger.info(f"Rendering 3D visualizations for {scene_id}...")
+            render_scene_3d(
+                scene=scene,
+                scene_id=scene_id,
+                metadata=scene_metadata,
+                output_dir=viz_dir / "3d",
+                radio_map=radio_map_obj
+            )
+            
+            # 2. 2D Map Plots (if we have the raw map data array easily)
+            # The radio_map_obj from Sionna might be complex. 
+            # Ideally we'd pass the numpy array to save_map_visualizations.
+            # The RadioMapGenerator saves to Zarr, but does it return the numpy array easily?
+            # If radio_map_obj is a Sionna object, we can extract it.
+            # Or we can rely on render_scene_3d doing the heavy lifting for radio maps.
+            
+            # Let's try to extract the numpy array from the radio map object for save_map_visualizations
+            # if available, otherwise just skip the 2D plot of radio content here (as render_scene_3d covers it).
+            # But save_map_visualizations handles both radio and OSM.
+            
+            if radio_map_obj is not None:
+                # Extract radio map data for 2D visualization
+                # Sionna CoverageMap stores data in .as_tensor() or we can access it if converted
+                # Our RadioMapGenerator wraps Sionna's CoverageMap.
+                # If return_sionna_object=True, we get the Sionna object.
+                
+                # Check for common attributes to get the data as numpy
+                radio_data = None
+                try:
+                    if hasattr(radio_map_obj, 'as_tensor'):
+                        # typical Sionna CoverageMap
+                        tensor = radio_map_obj.as_tensor()
+                        if hasattr(tensor, 'cpu'):
+                            radio_data = tensor.cpu().numpy()
+                        else:
+                            radio_data = tensor.numpy()
+                    elif hasattr(radio_map_obj, 'rssi'):
+                         # Maybe raw RSSI tensor
+                         tensor = radio_map_obj.rssi
+                         if hasattr(tensor, 'cpu'):
+                            radio_data = tensor.cpu().numpy()
+                         else:
+                            radio_data = tensor.numpy()
+                    
+                    if radio_data is not None:
+                        # radio_data shape typically [num_tx, num_rx_h, num_rx_w]
+                        # save_map_visualizations expects [C, H, W]
+                        logger.info(f"Saving 2D Radio Map plots for {scene_id}...")
+                        save_map_visualizations(
+                            scene_id=scene_id,
+                            radio_map=radio_data,
+                            osm_map=None, # Already handled in OSM generation or handled separately
+                            output_dir=viz_dir
+                        )
+                except Exception as viz_e:
+                    logger.warning(f"Could not extract radio data for 2D plot: {viz_e}")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate radio map: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def _generate_osm_map_for_scene(self, scene: Any, metadata: Dict):
         """Generate OSM map - delegates to OSMRasterizer."""
-        # This method remains unchanged as it already uses OSMRasterizer
-        pass
+        if self.osm_rasterizer is None:
+            return
+            
+        try:
+            scene_id = metadata.get('scene_id', 'unknown')
+            logger.info(f"Generating OSM Map for scene {scene_id}...")
+            
+            # Rasterize
+            osm_map = self.osm_rasterizer.rasterize(scene)
+            
+            # Save to disk
+            # Ensure osm_maps directory exists
+            osm_dir = self.config.output_dir / "osm_maps"
+            osm_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_path = osm_dir / f"{scene_id}.npy"
+            np.save(output_path, osm_map)
+            logger.info(f"Saved OSM map to {output_path}")
+            
+            # Visualization
+            viz_dir = self.config.output_dir / "visualizations"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Saving 2D map visualizations for {scene_id}...")
+            save_map_visualizations(
+                scene_id=scene_id,
+                radio_map=None, # Passed separately in radio generation block or extracted
+                osm_map=osm_map,
+                output_dir=viz_dir
+            )
+                
+        except Exception as e:
+            logger.error(f"Failed to generate OSM map: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+
+    def _simulate_mock(self, ue_positions, site_positions, cell_ids):
+        """Compatibility wrapper for tests."""
+        return self.batch_simulator._simulate_mock_batch(ue_positions, site_positions, cell_ids)

@@ -659,13 +659,16 @@ class UELocalizationLightning(pl.LightningModule):
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             use_pin_memory = False
             
+        num_workers = self.config['infrastructure']['num_workers']
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
-            num_workers=self.config['infrastructure']['num_workers'],
+            num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=use_pin_memory,
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=2 if num_workers > 0 else None,
         )
     
     def val_dataloader(self):
@@ -684,13 +687,16 @@ class UELocalizationLightning(pl.LightningModule):
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             use_pin_memory = False
             
+        num_workers = self.config['infrastructure']['num_workers']
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
-            num_workers=self.config['infrastructure']['num_workers'],
+            num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=use_pin_memory,
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=2 if num_workers > 0 else None,
         )
     
     def test_dataloader(self):
@@ -704,11 +710,14 @@ class UELocalizationLightning(pl.LightningModule):
         )
         logger.info(f"Test samples: {len(dataset)} ({num_batches} batches)")
         
+        num_workers = self.config['infrastructure']['num_workers']
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
-            num_workers=self.config['infrastructure']['num_workers'],
+            num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=2 if num_workers > 0 else None,
         )

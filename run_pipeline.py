@@ -407,11 +407,11 @@ Examples:
                        help='Training config file (auto-generated if not provided)')
     parser.add_argument('--epochs', type=int, default=10,
                        help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=16,
+    parser.add_argument('--batch-size', type=int, default=128,
                        help='Training batch size')
     parser.add_argument('--learning-rate', type=float, default=0.0001,
                        help='Learning rate')
-    parser.add_argument('--num-workers', type=int, default=2,
+    parser.add_argument('--num-workers', type=int, default=8,
                        help='DataLoader workers')
     parser.add_argument('--resume-checkpoint', type=Path, default=None,
                        help='Resume from checkpoint')

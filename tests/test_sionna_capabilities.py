@@ -86,7 +86,7 @@ def _reduce_expected(arr):
 def test_rt_extractor_paths_reduction(monkeypatch):
     """Ensure RTFeatureExtractor reduces Sionna Paths to expected shapes/values."""
     monkeypatch.setattr(rt_extractor_module, "SIONNA_AVAILABLE", True)
-    extractor = RTFeatureExtractor()
+    extractor = RTFeatureExtractor(max_stored_sites=2, max_stored_paths=3)
     paths = _make_paths(include_doppler=True)
 
     rt_features = extractor.extract(paths)
@@ -105,7 +105,7 @@ def test_rt_extractor_paths_reduction(monkeypatch):
 def test_rt_extractor_missing_doppler(monkeypatch):
     """Verify missing doppler falls back to zeros."""
     monkeypatch.setattr(rt_extractor_module, "SIONNA_AVAILABLE", True)
-    extractor = RTFeatureExtractor()
+    extractor = RTFeatureExtractor(max_stored_sites=2, max_stored_paths=3)
     paths = _make_paths(include_doppler=False)
 
     rt_features = extractor.extract(paths)

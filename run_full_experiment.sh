@@ -10,6 +10,9 @@ export COMET_WORKSPACE="nirtzur0"
 export COMET_PROJECT_NAME="ue-localization"
 export OVERPASS_URL="https://overpass.kumi.systems/api/interpreter"
 
+# Suppress noisy TensorFlow/cuFFT registration warnings (caused by conflict with PyTorch)
+export TF_CPP_MIN_LOG_LEVEL=3
+
 # Experiment Settings
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 STUDY_NAME="ue-localization-${TIMESTAMP}"

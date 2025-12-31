@@ -208,7 +208,8 @@ class TestRTFeatureExtractor:
     
     def test_rms_ds_computation(self):
         """Test RMS delay spread calculation using public extract()."""
-        extractor = RTFeatureExtractor()
+        # Initialize with max_stored_sites=1 to avoid padding mismatch in test
+        extractor = RTFeatureExtractor(max_stored_sites=1)
         
         # simple mock paths object
         class MockPaths:
@@ -242,7 +243,7 @@ class TestRTFeatureExtractor:
     
     def test_k_factor_computation(self):
         """Test Rician K-factor calculation."""
-        extractor = RTFeatureExtractor(compute_k_factor=True)
+        extractor = RTFeatureExtractor(compute_k_factor=True, max_stored_sites=1)
         
         class MockPaths:
             def __init__(self, a, tau):
@@ -258,6 +259,7 @@ class TestRTFeatureExtractor:
         delays = np.zeros_like(gains_los, dtype=float)
         paths_los = MockPaths(gains_los, delays)
         
+        # num_rx matches MockPaths shape
         features_los = extractor.extract(paths_los, batch_size=1, num_rx=1)
         k_los = features_los.k_factor
         
