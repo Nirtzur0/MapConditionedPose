@@ -145,7 +145,21 @@ class PhysicsLoss(nn.Module):
             raise ValueError(f"Unknown loss_type: {self.config.loss_type}")
         
         # Apply feature weights: (batch, C) * (C,) -> (batch, C)
-        weighted_losses = feature_losses * self.feature_weights.unsqueeze(0)
+        # Handle variable number of features by resizing weights if needed
+        num_features = feature_losses.shape[1]
+        if num_features != self.feature_weights.shape[0]:
+            # Resize weights: truncate or pad with 1.0
+            if num_features < self.feature_weights.shape[0]:
+                weights = self.feature_weights[:num_features]
+            else:
+                # Pad with ones
+                padding = torch.ones(num_features - self.feature_weights.shape[0], 
+                                    device=self.feature_weights.device)
+                weights = torch.cat([self.feature_weights, padding])
+        else:
+            weights = self.feature_weights
+            
+        weighted_losses = feature_losses * weights.unsqueeze(0)
         
         # Average over features and batch
         loss = weighted_losses.sum(dim=1).mean()

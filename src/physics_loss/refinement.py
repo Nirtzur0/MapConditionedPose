@@ -34,6 +34,12 @@ class RefineConfig:
     # Refine only low confidence predictions
     min_confidence_threshold: Optional[float] = 0.6
     
+    # Clip refined positions to map extent
+    clip_to_extent: bool = True
+    
+    # Map extent for clipping (x_min, y_min, x_max, y_max)
+    map_extent: Tuple[float, float, float, float] = (0.0, 0.0, 512.0, 512.0)
+    
     # Physics loss configuration for normalization/weights
     physics_config: Optional[object] = None
 
@@ -84,8 +90,8 @@ def refine_position(
     observed_features: torch.Tensor,
     radio_maps: torch.Tensor,
     config: RefineConfig,
-    mixture_params: Optional[Dict[str, torch.Tensor]] = None,
     confidence: Optional[torch.Tensor] = None,
+    mixture_params: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Refine predicted positions using gradient-based optimization on Energy function.
@@ -139,11 +145,20 @@ def refine_position(
     # Slice mixture params if available
     mix_opt = None
     if mixture_params is not None and config.density_weight > 0:
-        mix_opt = {
-            'logits': mixture_params['logits'][refine_mask],
-            'means': mixture_params['means'][refine_mask],
-            'vars': mixture_params['vars'][refine_mask]
-        }
+        # Check if mixture_params has the expected structure
+        if isinstance(mixture_params, dict) and 'logits' in mixture_params:
+            # Convert boolean mask to indices for proper indexing
+            refine_indices = torch.where(refine_mask)[0]
+            # Only index if the tensors are multi-dimensional
+            if mixture_params['logits'].ndim > 1:
+                mix_opt = {
+                    'logits': mixture_params['logits'][refine_indices],
+                    'means': mixture_params['means'][refine_indices],
+                    'vars': mixture_params['vars'][refine_indices]
+                }
+            else:
+                # If 1D, it's likely a single-sample case - don't index
+                mix_opt = mixture_params
     
     optimizer = torch.optim.Adam([xy_opt], lr=config.learning_rate)
     
@@ -169,14 +184,19 @@ def refine_position(
         total_loss.backward()
         optimizer.step()
         
-        # Clip to valid range
-        x_min, y_min, x_max, y_max = loss_fn.config.map_extent
-        with torch.no_grad():
-            xy_opt[:, 0].clamp_(x_min, x_max)
-            xy_opt[:, 1].clamp_(y_min, y_max)
+        # Clip to extent if configured
+        if config.clip_to_extent:
+            x_min, y_min, x_max, y_max = config.map_extent
+            with torch.no_grad():
+                xy_opt[:, 0].clamp_(x_min, x_max)
+                xy_opt[:, 1].clamp_(y_min, y_max)
             
     # Update outputs
     refined_xy[refine_mask] = xy_opt.detach()
+    
+    # Calculate distance moved
+    distance_moved = torch.zeros(batch_size, device=device)
+    distance_moved[refine_mask] = torch.norm(xy_opt.detach() - initial_xy[refine_mask], dim=1)
     
     # Final check
     with torch.no_grad():
@@ -185,7 +205,8 @@ def refine_position(
     return refined_xy, {
         'loss_initial': initial_loss_phys or 0.0,
         'loss_final': final_loss_phys,
-        'num_refined': num_refined
+        'num_refined': num_refined,
+        'distance_moved': distance_moved
     }
 
 

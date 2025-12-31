@@ -515,6 +515,28 @@ Weights & $\lambda_{\text{phys}}=0.1$ & Regularizes without overriding data evid
 We recommend reporting (i) median/percentile Euclidean error in meters, (ii) NLL (Eq.~\eqref{eq:mixture_nll}) to assess uncertainty quality, (iii) calibration curves (optional), and (iv) refinement gain (improvement after Algorithm~\ref{alg:refine}). Key ablations include removing map conditioning, removing physics loss, removing top-$K$ mixture (single-mode regression), and removing cell-conditioned fine embeddings.
 
 % ---------------------------------------------
+\section{Experimental Results}
+\label{sec:results}
+
+We demonstrate the model's ability to leverage both radio propagation physics and semantic map context for probabilistic localization. Figure~\ref{fig:environment} shows the input modalities: the radio map captures signal propagation patterns (shadowing, reflections), while the semantic map provides building geometry constraints.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/environment_context.png}
+\caption{Input modalities for map-conditioned localization: (Left) Radio map showing path gain distribution from ray tracing. (Right) Semantic map with building footprints that constrain feasible UE positions and explain signal occlusions.}
+\label{fig:environment}
+\end{figure}
+
+Figure~\ref{fig:posterior} visualizes the model's predicted posterior density as a Gaussian mixture. The heatmap reveals multi-modal ambiguity in challenging scenarios (e.g., signal reflections from multiple buildings), demonstrating that the model correctly quantifies localization uncertainty rather than producing overconfident point estimates.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/posterior_density.png}
+\caption{Predicted posterior density visualization: The GMM heatmap (viridis colormap) shows probability mass concentrated in plausible regions consistent with both radio measurements and map geometry. Red star indicates ground truth; cyan marker shows MAP estimate. The multi-modal structure captures inherent ambiguity in the inverse problem.}
+\label{fig:posterior}
+\end{figure}
+
+% ---------------------------------------------
 \section{Conclusion and Limitations}
 
 We presented a physics-informed, map-conditioned Transformer for UE localization that outputs a multi-modal posterior over position, coupled to a differentiable radio-map likelihood. The model combines amortized inference (fast prediction, uncertainty) with physics-based consistency (regularization and optional refinement). 
