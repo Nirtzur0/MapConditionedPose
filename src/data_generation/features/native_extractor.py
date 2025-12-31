@@ -32,13 +32,15 @@ class SionnaNativeKPIExtractor:
                  num_rx_ant: int = 1,
                  num_tx_ant: int = 1,
                  thermal_noise_density_dbm: float = -174.0,
-                 noise_figure_db: float = 9.0):
+                 noise_figure_db: float = 9.0,
+                 max_paths: int = 256):
         
         self.fc = carrier_frequency_hz
         self.bw = bandwidth_hz
         self.scs = subcarrier_spacing
         self.num_rx_ant = num_rx_ant
         self.num_tx_ant = num_tx_ant
+        self.max_paths = max_paths
         
         # Noise Power Calculation
         # N0_linear = 10^((Density + NF - 30)/10) * BW
@@ -232,8 +234,26 @@ class SionnaNativeKPIExtractor:
             path_powers_avg = tf.squeeze(path_powers_avg, axis=-1)
             
         path_powers = path_powers_avg # Expected [B, C, P]
+
+        # Enforce max_paths dimension [B, C, max_paths]
+        # Current P might be different from max_paths.
+        curr_paths = tf.shape(path_powers)[-1]
         
-        # 1. Total Power (Narrowband Channel Gain)
+        # Helper to pad/slice last dimension
+        def _enforce_paths(tensor, target_paths, pad_val=0.0):
+            # Tensor shape [..., P]
+            p = tf.shape(tensor)[-1]
+            return tf.cond(
+                p > target_paths,
+                lambda: tensor[..., :target_paths],
+                lambda: tf.pad(tensor, [[0, 0]] * (len(tensor.shape) - 1) + [[0, target_paths - p]], constant_values=pad_val)
+            )
+
+        # Apply strictly to path-dependent outputs for Zarr consistency
+        # Note: Internal metrics (ToA, DS, etc.) should use ALL available paths for accuracy.
+        # BUT the 'path_powers', 'path_delays', 'path_gains' stored in Zarr MUST match max_dims.
+        
+        # 1. Total Power (Narrowband Channel Gain) - Use ALL paths
         total_power = tf.reduce_sum(path_powers, axis=-1) # [B, C]
         
         # 2. ToA (First Arrival)
@@ -299,9 +319,9 @@ class SionnaNativeKPIExtractor:
             'aoa_az': mean_aoa_az,   # [B, C]
             'rms_as': rms_as,        # [B, C]
             'is_nlos': is_nlos,      # [B, C] bool
-            'path_powers': path_powers, # [B, C, P] (Raw PDP)
-            'path_delays': tau_batch,   # [B, C, P]
-            'path_gains': tf.reduce_mean(a_batch, axis=[3, 4]) if len(a_batch.shape) >= 5 else a_batch  # [B, C, P]
+            'path_powers': _enforce_paths(path_powers, self.max_paths, -200.0), # Pad power with low value
+            'path_delays': _enforce_paths(tau_batch, self.max_paths, 0.0),
+            'path_gains': _enforce_paths(tf.reduce_mean(a_batch, axis=[3, 4]) if len(a_batch.shape) >= 5 else a_batch, self.max_paths, 0.0) # Pad gains with 0
         }
 
     def extract_phy(self, 

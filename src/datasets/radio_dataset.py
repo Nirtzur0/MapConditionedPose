@@ -584,7 +584,7 @@ class RadioLocalizationDataset(Dataset):
         if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
         
-        if 'radio_maps' not in self.store:
+        if 'radio_maps' not in self.store or self.store['radio_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
             # Channels: rsrp, rsrq, sinr, cqi, throughput
             H = W = int(self.scene_extent / self.map_resolution)
@@ -614,7 +614,7 @@ class RadioLocalizationDataset(Dataset):
         if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
 
-        if 'osm_maps' not in self.store:
+        if 'osm_maps' not in self.store or self.store['osm_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
             H = W = int(self.scene_extent / self.map_resolution)
             return torch.zeros(5, H, W, dtype=torch.float32)

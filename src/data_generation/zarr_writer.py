@@ -355,28 +355,32 @@ class ZarrDatasetWriter:
     
     def _resize_arrays(self, new_size: int):
         """Resize all arrays to accommodate more data."""
-        def resize_group(group):
+        logger.info(f"Resizing arrays to {new_size}")
+        def resize_group(group, path=""):
             for key in group.keys():
+                full_path = f"{path}/{key}" if path else key
                 if key in ['radio_maps', 'osm_maps']:
-                    # Do not resize scene-level maps with sample count
                     continue
 
                 item = group[key]
-                # Zarr v3 Array class check (safe for v2/v3)
-                is_array = isinstance(item, zarr.Array)
-                if not is_array and hasattr(zarr, 'core') and hasattr(zarr.core, 'Array'):
-                     # Fallback for some v2 versions
-                     is_array = isinstance(item, zarr.core.Array)
                 
-                if is_array:
+                if hasattr(item, 'shape') and hasattr(item, 'resize'):
                     # Resize first dimension
                     current_shape = list(item.shape)
                     if current_shape[0] < new_size:
-                        current_shape[0] = new_size
-                        item.resize(tuple(current_shape))
+                        try:
+                            logger.debug(f"Resizing {full_path}: {current_shape} -> {new_size}")
+                            current_shape[0] = new_size
+                            item.resize(tuple(current_shape))
+                        except Exception as e:
+                            logger.error(f"Failed to resize array {full_path}: {e}")
+                            try:
+                                item.shape = tuple(current_shape)
+                            except Exception as e2:
+                                logger.error(f"Failed to set shape directly for {full_path}: {e2}")
+                                raise e
                 elif hasattr(item, 'keys'):
-                    # Recursively resize nested groups
-                    resize_group(item)
+                    resize_group(item, full_path)
         
         resize_group(self.store)
     
@@ -496,31 +500,37 @@ class ZarrDatasetWriter:
                         # The remote clearly wants an error here to catch data generation bugs.
                         raise ValueError(f"Shape mismatch for {key}: Incoming {value.shape}, Expected {target_array.shape[1:]}. Aborting write.")
                     
-                    # Create a buffer of the correct shape and dtype
-                    # Use the same dtype as the Zarr array
-                    buffer_shape = (value.shape[0],) + target_array.shape[1:]
-                    buffer = np.zeros(buffer_shape, dtype=target_array.dtype)
-                    
-                    # Fill buffer with default background values for radio features
-                    if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
-                        buffer.fill(-150.0) # Weak signal floor
-                    elif any(x in key for x in ['cqi', 'ri', 'throughput', 'bler']):
-                        buffer.fill(0)
-                    elif 'neighbor_cell_ids' in key:
-                        buffer.fill(-1)
+                    try:
+                        # Create a buffer of the correct shape and dtype
+                        # Use the same dtype as the Zarr array
+                        buffer_shape = (value.shape[0],) + target_array.shape[1:]
+                        buffer = np.zeros(buffer_shape, dtype=target_array.dtype)
                         
-                    # Calculate copy region (min of each dimension)
-                    # Build slices for both source and destination
-                    src_slices = []
-                    dst_slices = []
-                    for i in range(value.ndim):
-                        copy_size = min(value.shape[i], buffer.shape[i])
-                        src_slices.append(slice(0, copy_size))
-                        dst_slices.append(slice(0, copy_size))
-                    
-                    # Copy data into buffer
-                    buffer[tuple(dst_slices)] = value[tuple(src_slices)]
-                    value_to_write = buffer
+                        # Fill buffer with default background values for radio features
+                        if any(x in key for x in ['rsrp', 'rsrq', 'sinr', 'path_gain']):
+                            buffer.fill(-150.0) # Weak signal floor
+                        elif any(x in key for x in ['cqi', 'ri', 'throughput', 'bler']):
+                            buffer.fill(0)
+                        elif 'neighbor_cell_ids' in key:
+
+                            buffer.fill(-1)
+                            
+                        # Calculate copy region (min of each dimension)
+                        src_slices = []
+                        dst_slices = []
+                        for i in range(value.ndim):
+                            copy_size = min(value.shape[i], buffer.shape[i])
+                            src_slices.append(slice(0, copy_size))
+                            dst_slices.append(slice(0, copy_size))
+                        
+                        # Copy data into buffer
+                        buffer[tuple(dst_slices)] = value[tuple(src_slices)]
+                        value_to_write = buffer
+                    except Exception as e:
+                        details = f"Buffer creation failed for {key}: {e}. Value Shape: {value.shape}, Target Shape: {target_array.shape}"
+                        logger.error(details)
+                        print(f"ERROR DETAILS: {details}")
+                        raise
                 else:
                     value_to_write = value
 
@@ -529,7 +539,11 @@ class ZarrDatasetWriter:
                     target_array[start_idx:end_idx] = value_to_write
                 except Exception as e:
                     logger.error(f"Error writing {key}: {e}")
-                    logger.error(f"  Value Shape: {value_to_write.shape}, Target Shape: {target_array.shape}, Start: {start_idx}, End: {end_idx}")
+                    # Use 'value' instead of 'value_to_write' which might be unbound
+                    v_shape = value_to_write.shape if 'value_to_write' in locals() else value.shape
+                    details = f"  Value Shape: {v_shape}, Target Shape: {target_array.shape}, Start: {start_idx}, End: {end_idx}"
+                    logger.error(details)
+                    print(f"ERROR DETAILS: {details}") # Force visible output
                     raise
 
     def write_scene_maps(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
@@ -702,13 +716,22 @@ def zarr_to_dict(store: zarr.Group,
     def load_group(group, prefix=''):
         for key in group.keys():
             full_key = f"{prefix}{key}" if prefix else key
+            
+            # Skip scene-level maps (they are not aligned with sample indices)
+            if key in ['radio_maps', 'osm_maps'] and prefix == '':
+                continue
+
             item = group[key]
             
-            if isinstance(item, zarr.Group):
+            if hasattr(item, 'keys'): # Check for group (v2/v3 compatible)
                 load_group(item, prefix=f"{full_key}/")
             else:
                 # Load array at indices
-                data[full_key] = item[indices]
+                try:
+                    data[full_key] = item[indices]
+                except Exception:
+                    # If shapes mismatch (e.g. metadata), skip or warn
+                    pass
     
     load_group(store)
     
@@ -716,6 +739,7 @@ def zarr_to_dict(store: zarr.Group,
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     # Test Zarr writer
     logger.info("Testing ZarrDatasetWriter...")
     

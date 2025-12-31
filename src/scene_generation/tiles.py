@@ -106,6 +106,7 @@ class TileGenerator:
         overlap_meters: Optional[float] = None,
         num_tx_per_tile: int = 3,
         num_rx_per_tile: int = 10,
+        osm_server_addr: Optional[str] = None,
     ) -> List[Dict]:
         """
         Generate scene tiles covering a bounding box.
@@ -116,6 +117,7 @@ class TileGenerator:
             overlap_meters: Tile overlap in meters (overrides config)
             num_tx_per_tile: Transmitters per tile
             num_rx_per_tile: Receivers per tile
+            osm_server_addr: Custom Overpass API endpoint
             
         Returns:
             List of metadata dictionaries for all tiles
@@ -138,6 +140,7 @@ class TileGenerator:
                 tile_utm=tile_utm,
                 num_tx=num_tx_per_tile,
                 num_rx=num_rx_per_tile,
+                osm_server_addr=osm_server_addr,
             )
 
             all_metadata.append(metadata)
@@ -268,6 +271,7 @@ class TileGenerator:
         tile_utm: Dict,
         num_tx: int,
         num_rx: int,
+        osm_server_addr: Optional[str] = None,
     ) -> Dict:
         """
         Generate scene for a single tile.
@@ -277,6 +281,7 @@ class TileGenerator:
             tile_utm: Tile dictionary with bounds and polygon
             num_tx: Number of transmitters
             num_rx: Number of receivers
+            osm_server_addr: Custom Overpass API endpoint
             
         Returns:
             Scene metadata dictionary
@@ -302,6 +307,7 @@ class TileGenerator:
                 'use_dem': terrain_cfg.get('use_dem', False),
                 'hag_tiff_path': terrain_cfg.get('hag_tiff_path'),
             },
+            osm_server_addr=osm_server_addr,
         )
 
         # Add tile-specific metadata

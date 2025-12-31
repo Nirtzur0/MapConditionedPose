@@ -271,6 +271,7 @@ def main():
             overlap_meters=args.overlap,
             num_tx_per_tile=args.num_tx,
             num_rx_per_tile=args.num_rx,
+            osm_server_addr=args.osm_server,
         )
         
         logger.info(f"\n✓ Generated {len(metadata_list)} tiles")

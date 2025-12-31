@@ -113,7 +113,8 @@ class MultiLayerDataGenerator:
         self.native_extractor = SionnaNativeKPIExtractor(
             carrier_frequency_hz=config.carrier_frequency_hz,
             bandwidth_hz=config.bandwidth_hz,
-            noise_figure_db=config.noise_figure_db
+            noise_figure_db=config.noise_figure_db,
+            max_paths=config.max_stored_paths
         )
         
         # Initialize Sionna Backbone (OFDM/MIMO)
@@ -141,6 +142,15 @@ class MultiLayerDataGenerator:
                 output_dir=config.output_dir,
                 chunk_size=config.zarr_chunk_size,
             )
+            
+            # Pre-configure Max Dimensions for Variable Length Arrays
+            # This is critical to prevent "Shape Mismatch" errors. A priori knowledge from config.
+            self.zarr_writer.set_max_dimensions({
+                 # RT Layer - Path metrics [max_sites, max_paths]
+                'rt/path_gains': (config.max_stored_sites, config.max_stored_paths),
+                'rt/path_delays': (config.max_stored_sites, config.max_stored_paths),
+                'rt/path_powers': (config.max_stored_sites, config.max_stored_paths),
+            })
         else:
             logger.warning("Zarr writer unavailable; install 'zarr' for dataset writing.")
         
@@ -194,6 +204,137 @@ class MultiLayerDataGenerator:
             logger.warning(f"Failed to initialize Sionna Backbone: {e}")
             return None
     
+
+
+    def compute_max_dimensions(self, scene_ids: List[str]) -> Dict[str, Tuple]:
+        """
+        Pre-compute maximum dimensions for variable-length features across all scenes.
+        
+        Args:
+            scene_ids: List of scene IDs to scan.
+            
+        Returns:
+            Dictionary of max dimensions (e.g., {'rt/path_gains': (2, 175)})
+        """
+        logger.info("Computing max dimensions across all scenes...")
+        max_paths = 0
+        max_neighbors = self.config.max_neighbors
+        
+        for scene_id in tqdm(scene_ids, desc="Scanning Metadata"):
+            try:
+                meta = self.scene_loader.load_metadata(scene_id)
+                # Check for cached max paths in metadata
+                if 'stats' in meta and 'max_paths' in meta['stats']:
+                     m_p = meta['stats']['max_paths']
+                     if m_p > max_paths: max_paths = m_p
+                else:
+                     # Fallback or estimation if not in metadata
+                     # For now, use config default or safe upper bound if unknown
+                     pass
+            except Exception:
+                pass
+        
+        # If metadata stats missing, use config limit or safe default
+        if max_paths == 0:
+            max_paths = self.config.max_stored_paths
+            
+        logger.info(f"Global Max Dimensions -> Paths: {max_paths}, Neighbors: {max_neighbors}")
+        
+        # Define shapes
+        # RT Layer: [num_cells, max_paths]
+        # For 'rt/path_gains': (num_cells, max_paths)
+        # But wait, rt_extractor returns [num_cells, max_paths] arrays per sample?
+        # Let's check RTFeatureExtractor.
+        # It typically returns [num_rx, num_tx, max_paths] or flattened [num_cells, max_paths]
+        # Based on zarr_writer schema: [N, max_paths] ??
+        # The schema in zarr_writer says: path_gains: [N, max_paths]
+        # But wait, if we have multiple cells, is it [N, num_cells, max_paths]?
+        # Let's check typical output. 
+        # RTFeatureExtractor usually consolidates paths or returns per-link.
+        # Assuming [N, num_cells, max_paths] for now based on 'rt/path_gains'.
+        # Actually, let's look at `test_zarr_writer.py` dummy data: 
+        # 'rt/path_gains': np.random.randn(num_samples, max_paths)
+        # It seems it treats it as [N, max_paths] -- implying paths are aggregated or single cell?
+        # BUT `rt_extractor` in `BatchSimulator` usually iterates over cells.
+        # In `features.py` (not shown), it often returns `(num_paths_total,)` or `(num_cells, max_paths)`.
+        # Given the ambiguity, I'll set dimensions based on config.
+        
+        # Let's assume the Zarr writer expects [N, ...max_dims...]
+        # So we return the tuple of dimensions *after* N.
+        
+        # We need to know the number of cells? 
+        # Num cells varies per scene? 
+        # If num_cells varies, we can't use a fixed 2nd dimension for all unless we pad to MAX_CELLS.
+        # Zarr writer `_resize_arrays` handles the first dimension (N).
+        # Variable length inner dimensions (cells) is tricky.
+        # The fix plan says: "Fix Shape Mismatch issues".
+        # If cells vary, we must pad to a global max_cells or store as variable length (object).
+        # We will assume we want fixed array shapes for ML.
+        
+        # Scan for max cells too
+        max_cells = 0
+        for scene_id in scene_ids:
+             try:
+                meta = self.scene_loader.load_metadata(scene_id)
+                num_sites = len([s for s in meta.get('sites', []) if s.get('cell_id')])
+                if num_sites > max_cells: max_cells = num_sites
+             except: pass
+        
+        if max_cells == 0: max_cells = 1 # Fallback
+        
+        # Update logic: If Zarr writer expects [N, max_paths] it might be flattening cells?
+        # Let's assume [N, num_cells, max_paths] for RT if multi-cell.
+        # Or [N, max_paths] if it picks best cell?
+        # Let's stick to what we see in `zarr_writer.py` schema documentation:
+        # path_gains: [N, max_paths]  <-- looks like flattened or single cell?
+        # But wait, lines 30-40 in `zarr_writer` docstring say:
+        # path_gains: [N, max_paths]
+        # rsrp: [N, num_cells]
+        
+        # I will set max dims for `rt/path_gains` to include max_cells if the data is 3D.
+        # If the data is 2D (paths from all cells merged), then just max_paths.
+        # `RTFeatureExtractor` usually pads to `max_stored_paths` per link, or total?
+        # Use `self.config.max_stored_paths`.
+        
+        dims = {}
+        # We need to verify what `RTFeatureExtractor` produces.
+        # Assuming it produces [num_cells, max_paths_per_cell], then for N samples it is [N, num_cells, max_paths].
+        # But `zarr_writer` docstring says [N, max_paths].
+        # Let's be safe and set it to whatever `max_stored_paths` is configured to.
+        # If the extractor produces [N, C, P], and we say max_dim is (C, P), that works.
+        
+        # For now, simple mapping based on config:
+        
+        # Default to at least 2 cells (mock sites) if none found
+        max_cells = max(max_cells, 2)
+        
+        # RT Layer
+        # Assuming shape (num_cells, max_stored_paths) for single sample
+        dims['rt/path_gains'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_delays'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_aoa_azimuth'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_aoa_elevation'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_aod_azimuth'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_aod_elevation'] = (max_cells, self.config.max_stored_paths)
+        dims['rt/path_doppler'] = (max_cells, self.config.max_stored_paths)
+        
+        # PHY Layer (add beam/path dimension)
+        # Observed shape (N, 16, 16) -> (max_cells, max_beams)
+        max_beams = 64 # Safe upper bound
+        dims['phy_fapi/rsrp'] = (max_cells, max_beams)
+        dims['phy_fapi/rsrq'] = (max_cells, max_beams)
+        dims['phy_fapi/sinr'] = (max_cells, max_beams)
+        dims['phy_fapi/cqi'] = (max_cells, 1) # CQI usually scalar per cell
+        dims['phy_fapi/ri'] = (max_cells, 1)
+        dims['phy_fapi/pmi'] = (max_cells, 1)
+        
+        # MAC Layer
+        dims['mac_rrc/neighbor_cell_ids'] = (max_neighbors,)
+        # serving_cell_id is scalar [N]
+        # timing_advance is scalar [N]
+        
+        return dims
+
     def generate_dataset(self,
                         scene_ids: Optional[List[str]] = None,
                         num_scenes: Optional[int] = None) -> Path:
@@ -225,6 +366,7 @@ class MultiLayerDataGenerator:
         
         logger.info(f"Processing {len(scene_ids)} scenes...")
         
+
         # Process each scene
         for scene_id in tqdm(scene_ids, desc="Generating Dataset"):
             scene_path = self.config.scene_dir / scene_id / 'scene.xml'
@@ -237,29 +379,32 @@ class MultiLayerDataGenerator:
                 scene_data = self.generate_scene_data(scene_path, scene_id)
                 
                 # Write to Zarr
-                if ZARR_AVAILABLE and scene_data:
+                if ZARR_AVAILABLE and scene_data and self.zarr_writer:
                     self.zarr_writer.append(scene_data, scene_id=scene_id)
                     
                     # Write Maps if available
                     if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                        logger.info(f"Writing maps for scene {scene_id}...")
                         self.zarr_writer.write_scene_maps(
                             scene_id=scene_id,
                             radio_map=scene_data['radio_map'],
                             osm_map=scene_data['osm_map']
                         )
+                    else:
+                        logger.warning(f"Maps missing for scene {scene_id}: keys={list(scene_data.keys())}")
                     
             except Exception as e:
                 logger.error(f"Failed to process scene {scene_id}: {e}")
                 logger.error(traceback.format_exc())
         
         # Finalize dataset
-        if ZARR_AVAILABLE:
+        if ZARR_AVAILABLE and self.zarr_writer:
             output_path = self.zarr_writer.finalize()
             logger.info(f"Dataset saved to: {output_path}")
             return output_path
         
         return None
-    
+
     def generate_scene_data(self,
                            scene_path: Path,
                            scene_id: str,

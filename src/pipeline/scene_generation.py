@@ -57,11 +57,16 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
                 scene_dir_city = project_root / "data" / "scenes" / scene_slug
                 city_cmd.extend(["--output", str(scene_dir_city)])
 
+                # Add custom Overpass API if present
+                if overpass_url:
+                    city_cmd.extend(["--osm-server", overpass_url])
+
                 tiles_cfg = city.get('tiles') or config.city.tiles
                 if tiles_cfg and tiles_cfg.num_tiles > 0:
                     city_cmd.append("--tiles")
                     city_cmd.extend(["--tile-size", str(tiles_cfg.tile_size_m)])
                     city_cmd.extend(["--overlap", str(tiles_cfg.overlap_m)])
+                    # Note: TileGenerator will be called by scripts/scene_generation/generate_scenes.py which now gets --osm-server
 
                 sites_cfg = city.get('sites') or config.sites
                 if sites_cfg:
