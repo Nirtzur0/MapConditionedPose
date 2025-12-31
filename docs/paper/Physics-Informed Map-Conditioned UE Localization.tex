@@ -24,6 +24,7 @@
 \usepackage{algpseudocode}
 
 \usepackage{xcolor}
+\usepackage{soul} % Added for highligting
 \usepackage{hyperref}
 \hypersetup{
   colorlinks=true,
@@ -61,6 +62,12 @@
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator{\LogSumExp}{LogSumExp}
 
+% Semantic highlighting commands
+% Pink: Problems, Challenges, Constraints
+\DeclareRobustCommand{\hlprob}[1]{{\sethlcolor{pink}\hl{#1}}}
+% Yellow: Solutions, Key Innovations, Core Concepts
+\DeclareRobustCommand{\hlsol}[1]{{\sethlcolor{yellow}\hl{#1}}}
+
 % Theorem environments (kept lightweight; we use them for invariance statements)
 \newtheorem{proposition}{Proposition}
 
@@ -75,10 +82,10 @@
 \vspace{-0.6cm}
 
 \begin{abstract}
-Localizing user equipment (UE) from sparse, irregular radio measurements is an ill-posed inverse problem: multiple spatial hypotheses can explain the same measurements, and purely data-driven predictors can violate basic propagation constraints. We present a \emph{map-conditioned} Transformer that amortizes Bayesian inference over UE position while remaining tightly coupled to a physics simulator through a differentiable radio-map likelihood.
-The model (i) encodes measurement sequences as sets of timestamped, multi-layer features, (ii) encodes multi-channel environmental context (radio maps and semantic GIS layers) via a vision Transformer, (iii) fuses both modalities with cross-attention, and (iv) outputs a \emph{coarse-to-fine} \emph{top-$K$ Gaussian mixture posterior} over 2D position.
-Training combines a proper probabilistic objective (coarse cell cross-entropy + mixture negative log-likelihood) with a physics-consistency term computed by differentiable bilinear sampling of precomputed radio maps.
-At inference, the learned posterior provides calibrated uncertainty and supports optional \emph{MAP refinement} by gradient descent on an energy combining the network density and the physics likelihood.
+Localizing user equipment (UE) from sparse, irregular radio measurements is an \hlprob{ill-posed inverse problem}: multiple spatial hypotheses can explain the same measurements, and \hlprob{purely data-driven predictors can violate basic propagation constraints}. We present a \hlsol{map-conditioned Transformer} that amortizes Bayesian inference over UE position while remaining tightly coupled to a physics simulator through a \hlsol{differentiable radio-map likelihood}.
+The model (i) encodes measurement sequences as sets of timestamped, multi-layer features, (ii) encodes multi-channel environmental context (radio maps and semantic GIS layers) via a vision Transformer, (iii) fuses both modalities with cross-attention, and (iv) outputs a \hlsol{coarse-to-fine} \hlsol{top-$K$ Gaussian mixture posterior} over 2D position.
+Training combines a proper probabilistic objective (coarse cell cross-entropy + \hlsol{mixture negative log-likelihood}) with a \hlsol{physics-consistency term} computed by \hlsol{differentiable bilinear sampling} of precomputed radio maps.
+At inference, the learned posterior provides calibrated uncertainty and supports optional \hlsol{MAP refinement} by gradient descent on an energy combining the network density and the physics likelihood.
 We detail the model end-to-end from first principles, including the induced invariances, the probabilistic semantics of the heads, and the differentiable physics coupling.
 \end{abstract}
 
@@ -115,20 +122,20 @@ We detail the model end-to-end from first principles, including the induced inva
 
 UE localization from sparse radio measurements under complex urban propagation is central to digital twins, network planning, and context-aware communications. Yet it poses two fundamental difficulties.
 
-First, the inverse map from measurements to position is \emph{multi-valued}: different locations can generate similar received power/quality patterns due to shadowing, multipath, and limited sampling.
-Second, the forward physics is constrained (e.g., occlusion by buildings, diffraction/reflection structure), and purely data-driven regressors can produce predictions that are not physically plausible.
+First, the inverse map from measurements to position is \hlprob{multi-valued}: different locations can generate similar received power/quality patterns due to shadowing, multipath, and limited sampling.
+Second, the forward physics is constrained (e.g., occlusion by buildings, diffraction/reflection structure), and \hlprob{purely data-driven regressors can produce predictions that are not physically plausible}.
 
-This work treats localization as \emph{probabilistic inference} with explicit environmental conditioning. We assume access to a multi-channel map context $\mathcal{M}$ (semantic GIS layers and/or precomputed radio fields) and a variable-length measurement sequence $\mathcal{X}$. We learn an amortized posterior $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ over UE position $\mathbf{y}\in\R^2$.
-To capture multi-modality at scale, we represent the posterior as a coarse-to-fine \emph{top-$K$ Gaussian mixture} tied to a coarse spatial grid.
-To enforce physics consistency, we add a differentiable radio-map likelihood term: predicted positions must align with precomputed radio-map features when sampled via bilinear interpolation.
-Finally, we expose a principled refinement mechanism: when needed, we optimize a MAP objective combining the learned posterior and the physics likelihood.
+This work treats localization as \hlsol{probabilistic inference} with explicit environmental conditioning. We assume access to a multi-channel map context $\mathcal{M}$ (semantic GIS layers and/or precomputed radio fields) and a variable-length measurement sequence $\mathcal{X}$. We learn an amortized posterior $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ over UE position $\mathbf{y}\in\R^2$.
+To capture multi-modality at scale, we represent the posterior as a \hlsol{coarse-to-fine} \hlsol{top-$K$ Gaussian mixture} tied to a coarse spatial grid.
+To enforce physics consistency, we add a \hlsol{differentiable radio-map likelihood term}: predicted positions must align with precomputed radio-map features when sampled via bilinear interpolation.
+Finally, we expose a principled refinement mechanism: when needed, we optimize a \hlsol{MAP objective} combining the learned posterior and the physics likelihood.
 
 \paragraph{Contributions.}
 \begin{itemize}
-\item \textbf{Map-conditioned Transformer posterior.} A dual-encoder architecture (set-based radio Transformer + map ViT) fused by cross-attention.
-\item \textbf{Coarse-to-fine mixture density head.} A hierarchical discretize-then-refine posterior $p(\mathbf{y})=\sum_c \pi_c\,\mathcal{N}(\mathbf{y};\bm\mu_c,\bm\Sigma_c)$ with a top-$K$ truncation that preserves multi-modality while controlling compute.
-\item \textbf{Differentiable physics coupling.} A physics-consistency loss derived as a negative log-likelihood under a measurement noise model, computed via differentiable sampling of precomputed radio fields.
-\item \textbf{MAP refinement.} An inference-time energy minimization that improves low-confidence predictions while remaining consistent with the learned posterior.
+\item \hlsol{Map-conditioned Transformer posterior.} A dual-encoder architecture (set-based radio Transformer + map ViT) fused by cross-attention.
+\item \hlsol{Coarse-to-fine mixture density head.} A hierarchical discretize-then-refine posterior $p(\mathbf{y})=\sum_c \pi_c\,\mathcal{N}(\mathbf{y};\bm\mu_c,\bm\Sigma_c)$ with a top-$K$ truncation that preserves multi-modality while controlling compute.
+\item \hlsol{Differentiable physics coupling.} A physics-consistency loss derived as a negative log-likelihood under a measurement noise model, computed via \hlsol{differentiable sampling} of precomputed radio fields.
+\item \hlsol{MAP refinement.} An inference-time energy minimization that improves low-confidence predictions while remaining consistent with the learned posterior.
 \end{itemize}
 
 % ---------------------------------------------
@@ -247,12 +254,12 @@ A Transformer encoder processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with p
 \begin{proposition}[Time affine invariance of the embedding]
 Assume timestamps transform as $\tau_t' = a\,\tau_t + b$ with $a>0$. Then the normalized relative time coordinates $\bar\delta_t$ in Eq.~\eqref{eq:time_norm} are invariant: $\bar\delta_t'=\bar\delta_t$ for all $t$ (up to the stabilizer $\varepsilon$), and therefore $\psi(\tau_t';\bm\tau')=\psi(\tau_t;\bm\tau)$.
 \end{proposition}
-\noindent This invariance makes the encoder robust to absolute clock shifts and changes in sampling rate, focusing attention on the \emph{relative temporal structure} of measurements.
+\noindent This invariance makes the encoder \hlsol{robust to absolute clock shifts and changes in sampling rate}, focusing attention on the \emph{relative temporal structure} of measurements.
 
 \begin{proposition}[Permutation invariance via set encoding]
 If the encoder does not use index-based positional encodings (only token-local features such as Eq.~\eqref{eq:radio_token}), then the Transformer is permutation \emph{equivariant} in its token outputs, and the pooled \texttt{[CLS]} representation is permutation \emph{invariant} with respect to the order of measurements.
 \end{proposition}
-\noindent This aligns with the theory of set functions \cite{zaheer2017deepsets} and attention-based set models \cite{lee2019settransformer}. In practice, this property is crucial because measurement sequences are irregular and may arrive unordered or with missing entries.
+\noindent This aligns with the theory of set functions \cite{zaheer2017deepsets} and attention-based set models \cite{lee2019settransformer}. In practice, this property is crucial because \hlprob{measurement sequences are irregular and may arrive unordered or with missing entries}.
 
 \subsection{Map encoder: radio + semantic fields}
 \label{sec:map}
@@ -304,7 +311,7 @@ For each cell $c$, the fine head parameterizes a local Gaussian over positions c
   \label{eq:fine_gauss}
 \end{equation}
 with $(\bm\mu_c,\bm\sigma_c)=\mathrm{Head}_{\text{fine}}(\mathbf{z}_f,\,e_{\text{cell}}(c))$ and $e_{\text{cell}}$ a learned embedding of the cell index (a ``local chart'' for each coarse region).
-This \emph{cell-conditioned} parameterization is essential: without $e_{\text{cell}}(c)$, the fine head cannot represent spatially varying offsets/uncertainties tied to the coarse hypothesis.
+This \emph{cell-conditioned} parameterization is essential: without $e_{\text{cell}}(c)$, \hlprob{the fine head cannot represent spatially varying offsets/uncertainties tied to the coarse hypothesis}.
 
 \paragraph{Top-$K$ truncation.}
 Evaluating all $G^2$ components can be expensive. We therefore retain only the top-$K$ most likely cells $\{c_k\}_{k=1}^K$ under $\bm\pi$ and renormalize:
@@ -366,7 +373,7 @@ Given the top-$K$ posterior $p_{\theta,K}$ (Eq.~\eqref{eq:topk_mixture}), the pr
   \label{eq:mixture_nll}
 \end{equation}
 Equation~\eqref{eq:mixture_nll} is \emph{not} equal to the commonly used surrogate $\sum_k \hat\pi_k\,\big(-\log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k)\big)$.
-By Jensen's inequality, the surrogate upper-bounds the true mixture NLL and tends to encourage \emph{all} components to explain every sample, reducing useful multi-modality. In contrast, Eq.~\eqref{eq:mixture_nll} rewards allocating probability mass to \emph{at least one} well-placed component, which is the correct likelihood for mixture density networks \cite{bishop1994mdn}.
+By Jensen's inequality, \hlprob{the surrogate upper-bounds the true mixture NLL and tends to encourage \emph{all} components to explain every sample, reducing useful multi-modality}. In contrast, Eq.~\eqref{eq:mixture_nll} rewards allocating probability mass to \emph{at least one} well-placed component, which is the correct likelihood for mixture density networks \cite{bishop1994mdn}.
 
 \subsection{Differentiable radio-map lookup}
 \label{sec:lookup}
@@ -446,7 +453,7 @@ The physics loss enables test-time refinement. We define an energy over $\mathbf
   \label{eq:refine_energy}
 \end{equation}
 where $\alpha\ge 0$ and $\beta\ge 0$ control the trust in the network posterior and the physics term, respectively. 
-The special case $\alpha=0$ corresponds to \emph{physics-only} refinement (the setting used in our current refinement module), while $\alpha>0$ yields a composite MAP objective that keeps refined solutions in high-density regions of the learned posterior.
+The special case $\alpha=0$ corresponds to \emph{physics-only} refinement (the setting used in our current refinement module), while $\alpha>0$ yields a \hlsol{composite MAP objective that keeps refined solutions in high-density regions of the learned posterior}.
 
 \begin{algorithm}[t]
 \caption{Optional test-time refinement (per sample)}
