@@ -274,7 +274,21 @@ class UELocalizationLightning(pl.LightningModule):
                 )
                 
                 if augmented_pos is not None:
+                    # Clamp augmented position to [0, 1] range to ensure valid grid mapping
+                    augmented_pos = torch.clamp(augmented_pos, 0.0, 1.0 - 1e-6)
                     batch['position'] = augmented_pos
+                    
+                    # Recompute cell_grid after augmentation (flip/rotate/scale)
+                    # grid_size is usually 32
+                    grid_size = self.model.grid_size
+                    grid_x = (augmented_pos[:, 0] * grid_size).long()
+                    grid_y = (augmented_pos[:, 1] * grid_size).long()
+                    
+                    # Ensure indices are within [0, grid_size-1]
+                    grid_x = torch.clamp(grid_x, 0, grid_size - 1)
+                    grid_y = torch.clamp(grid_y, 0, grid_size - 1)
+                    
+                    batch['cell_grid'] = grid_y * grid_size + grid_x
             else:
                  batch['measurements'], batch['radio_map'], batch['osm_map'], _ = self.augmentor(
                     batch['measurements'], batch['radio_map'], batch['osm_map']
