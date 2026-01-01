@@ -215,12 +215,22 @@ class ZarrDatasetWriter:
         scene_ids = [scene_id] * num_samples
         self.store['metadata/scene_ids'][self.current_idx:end_idx] = scene_ids
         
+        # Store scene bbox (for reference/debugging)
         if scene_metadata and 'bbox' in scene_metadata:
             bbox = scene_metadata['bbox']
             bbox_array = np.array([bbox['x_min'], bbox['y_min'], bbox['x_max'], bbox['y_max']], dtype=np.float32)
             self.store['metadata/scene_bbox'][self.current_idx:end_idx] = np.tile(bbox_array, (num_samples, 1))
+            
+            # Compute and store scene extent (width, height) from bbox
+            # This is the actual size in meters for normalization
+            width = bbox['x_max'] - bbox['x_min']
+            height = bbox['y_max'] - bbox['y_min']
+            extent = max(width, height)  # Use max for square normalization
+            extent_array = np.array([extent], dtype=np.float32)
+            self.store['metadata/scene_extent'][self.current_idx:end_idx] = np.tile(extent_array, (num_samples, 1))
         else:
             self.store['metadata/scene_bbox'][self.current_idx:end_idx] = np.zeros((num_samples, 4), dtype=np.float32)
+            self.store['metadata/scene_extent'][self.current_idx:end_idx] = np.zeros((num_samples, 1), dtype=np.float32)
 
         # Scene Indices
         self.store['metadata/scene_indices'][self.current_idx:end_idx] = np.full(num_samples, current_scene_idx, dtype=np.int16)

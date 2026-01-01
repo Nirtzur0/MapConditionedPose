@@ -314,21 +314,41 @@ class RadioLocalizationDataset(Dataset):
         ue_y = float(self.store['positions/ue_y'][zarr_idx])
         
         # Load scene bounding box; fall back to dataset origin if missing/invalid.
+        # Try to get scene extent from metadata (preferred - ground truth)
+        scene_extent_value = None
+        if 'metadata' in self.store and 'scene_extent' in self.store['metadata']:
+            scene_extent_arr = self.store['metadata/scene_extent'][zarr_idx]
+            if scene_extent_arr is not None and len(scene_extent_arr) > 0:
+                scene_extent_value = float(scene_extent_arr[0])
+                if scene_extent_value > 1e-6:  # Valid extent
+                    # Use scene extent from metadata for normalization
+                    normalization_extent = scene_extent_value
+                else:
+                    scene_extent_value = None
+        
+        # Fall back to bbox if extent not available
         scene_bbox = None
-        if 'metadata' in self.store and 'scene_bbox' in self.store['metadata']:
-            scene_bbox = self.store['metadata/scene_bbox'][zarr_idx]
-        if scene_bbox is not None:
-            scene_bbox = np.asarray(scene_bbox, dtype=np.float32)
-            bbox_valid = np.isfinite(scene_bbox).all() and np.any(np.abs(scene_bbox) > 1e-6)
-        else:
-            bbox_valid = False
-
+        bbox_valid = False
+        if scene_extent_value is None:
+            if 'metadata' in self.store and 'scene_bbox' in self.store['metadata']:
+                scene_bbox = self.store['metadata/scene_bbox'][zarr_idx]
+            if scene_bbox is not None:
+                scene_bbox = np.asarray(scene_bbox, dtype=np.float32)
+                bbox_valid = np.isfinite(scene_bbox).all() and np.any(np.abs(scene_bbox) > 1e-6)
+        
+        # Fall back to inference if neither extent nor bbox available
+        if scene_extent_value is None and not bbox_valid:
+            if self._inferred_extent is not None:
+                normalization_extent = self._inferred_extent
+            else:
+                normalization_extent = self.scene_extent
+        
+        # Determine origin for bbox-based normalization (legacy path)
+        x_min, y_min = 0.0, 0.0
         if bbox_valid:
             x_min, y_min = scene_bbox[0], scene_bbox[1]
         elif self._dataset_origin is not None:
             x_min, y_min = self._dataset_origin
-        else:
-            x_min, y_min = 0.0, 0.0
 
         # Standard Coordinate Handling (Local Bottom-Left [0, W])
         # We assume stored data is in the correct Local frame.
@@ -356,18 +376,8 @@ class RadioLocalizationDataset(Dataset):
         # Prepare position and grid calculation
         position = torch.tensor([local_x, local_y], dtype=torch.float32)
         
-        # Determine sample-specific extent for grid calculation
-        if bbox_valid:
-            w = scene_bbox[2] - scene_bbox[0]
-            h = scene_bbox[3] - scene_bbox[1]
-            sample_extent = float(max(w, h))
-        else:
-            # If no bbox, infer from data range
-            # Check if we have the actual extent in store metadata
-            if hasattr(self, '_inferred_extent'):
-                sample_extent = self._inferred_extent
-            else:
-                sample_extent = self.scene_extent
+        # Use normalization_extent determined above for all calculations
+        sample_extent = normalization_extent
         
         # Convert to grid cell for coarse supervision (grid_size: e.g., 32x32)
         grid_size = 32

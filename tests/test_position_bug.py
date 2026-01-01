@@ -24,22 +24,15 @@ class TestPositionDataLoading:
     
     def test_position_diversity_in_dataset(self, tmp_path):
         """Test that dataset has diverse UE positions, not all the same."""
-        # Check if there's a test dataset available
-        test_data_path = Path("data/processed/sionna_dataset")
-        if not test_data_path.exists():
-            pytest.skip("No test dataset available")
-        
-        # Find a zarr file
-        zarr_files = list(test_data_path.glob("*.zarr"))
-        if not zarr_files:
-            pytest.skip("No zarr files found in test dataset")
-        
-        zarr_path = zarr_files[0]
+        # Use the specific known good dataset
+        zarr_path = Path("data/processed/sionna_dataset/dataset_20260101_184259.zarr")
+        if not zarr_path.exists():
+            pytest.skip("Test dataset not available")
         
         # Load dataset
         dataset = RadioLocalizationDataset(
             zarr_path=str(zarr_path),
-            split='all',
+            split='train',
             normalize=True
         )
         
