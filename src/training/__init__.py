@@ -213,7 +213,8 @@ class UELocalizationLightning(pl.LightningModule):
                     # grid_size is usually 32
                     grid_size = self.model.grid_size
                     grid_x = (augmented_pos[:, 0] * grid_size).long()
-                    grid_y = (augmented_pos[:, 1] * grid_size).long()
+                    # Flip Y for grid index: 1.0 -> 0, 0.0 -> grid_size-1
+                    grid_y = ((1.0 - augmented_pos[:, 1]) * grid_size).long()
                     
                     # Ensure indices are within [0, grid_size-1]
                     grid_x = torch.clamp(grid_x, 0, grid_size - 1)
@@ -288,6 +289,7 @@ class UELocalizationLightning(pl.LightningModule):
         extent = batch.get('sample_extent', torch.tensor(512.0, device=pred_pos.device))
         errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
 
+        # Always visualize the first sample of the first batch for consistency across epochs
         if batch_idx == 0:
             self._last_val_sample = {
                 'radio_map': batch['radio_map'][0].detach().cpu(),
@@ -378,6 +380,7 @@ class UELocalizationLightning(pl.LightningModule):
             'uncertainties': outputs['fine_uncertainties'][:, 0, :],
         })
 
+        # Always visualize the first sample of the first batch
         if batch_idx == 0:
             self._last_test_sample = {
                 'radio_map': batch['radio_map'][0].detach().cpu(),
@@ -415,7 +418,9 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Center of cell in [0, 1] coords
         center_x = (gx.float() + 0.5) * cell_size
-        center_y = (gy.float() + 0.5) * cell_size
+        # Flip Y back for visualization: grid_y=0 is top=1.0, grid_y=N-1 is bottom=0.0
+        center_y = (grid_size - 1 - gy.float() + 0.5) * cell_size
+        
         centers = torch.stack([center_x, center_y], dim=-1).cpu().numpy() # [K, 2]
         
         # Add predicted offsets
@@ -451,7 +456,7 @@ class UELocalizationLightning(pl.LightningModule):
 
     def _log_comet_visuals(self, split: str, errors: Optional[torch.Tensor] = None):
         experiment = self._get_comet_experiment()
-        if experiment is None or self._comet_logged.get(split):
+        if experiment is None:
             return
 
         sample = self._last_val_sample if split == 'val' else self._last_test_sample
@@ -535,7 +540,7 @@ class UELocalizationLightning(pl.LightningModule):
         if errors is not None and hasattr(experiment, "log_histogram"):
             experiment.log_histogram(errors.detach().cpu().numpy(), name=f"{split}_error_hist_m")
 
-        self._comet_logged[split] = True
+
     
     def on_test_epoch_end(self):
         """Aggregate test metrics at epoch end."""

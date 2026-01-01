@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional, List
 
+from src.utils.logging_utils import print_info, print_success
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,7 +229,7 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
     from ..training.optimization import run_optimization
 
     if args.skip_training:
-        logger.info("Skipping training (--skip-training)")
+        print_info("Skipping training")
         return
 
     step_label = "STEP 4: Train Model" if args.optimize else "STEP 3: Train Model"
@@ -283,4 +285,4 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
 
     run_command_func(cmd, "Model Training")
 
-    logger.info(f"Training complete. Checkpoints saved to {checkpoint_dir}")
+    print_success(f"Checkpoints: [bold]{checkpoint_dir.relative_to(project_root)}[/bold]\")

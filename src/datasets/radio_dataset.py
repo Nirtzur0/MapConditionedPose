@@ -366,8 +366,13 @@ class RadioLocalizationDataset(Dataset):
         clamped_x = max(0, min(position[0].item(), sample_extent - 1e-3))
         clamped_y = max(0, min(position[1].item(), sample_extent - 1e-3))
         
-        grid_x = int(clamped_x / cell_size)
-        grid_y = int(clamped_y / cell_size)
+        # Flip Y: 1.0 (North/Top) -> 0, 0.0 (South/Bottom) -> grid_size-1
+        # This aligns with image coordinates where (0,0) is Top-Left
+        norm_x = clamped_x / sample_extent
+        norm_y = clamped_y / sample_extent
+        
+        grid_x = int(norm_x * grid_size)
+        grid_y = int((1.0 - norm_y) * grid_size)
         
         # Ensure grid indices are within bounds
         grid_x = max(0, min(grid_x, grid_size - 1))

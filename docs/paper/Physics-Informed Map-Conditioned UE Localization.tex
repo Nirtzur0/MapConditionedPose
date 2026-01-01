@@ -265,13 +265,15 @@ If the encoder does not use index-based positional encodings (only token-local f
 \label{sec:map}
 
 We represent map context as a multi-channel tensor $\mathbf{M}\in\R^{(C_r+C_o)\times H\times W}$ by early fusion of radio-map channels $\mathbf{R}$ and semantic channels $\mathbf{O}$.
-To encode $\mathbf{M}$, we employ a vision Transformer (ViT) backbone \cite{dosovitskiy2021vit} but modify the tokenization stage to induce inductive biases for rotational symmetry.
-Specifically, we treat the input map as a geometric field transforming under the trivial representation of the cyclic group $C_4$ (representing $90^\circ$ rotations). We replace the standard linear patch projection with a \emph{strided group-equivariant convolution} (implemented via \texttt{escnn}):
+To encode $\mathbf{M}$, we employ an E(2)-Equivariant Vision Transformer (ViT) architecture that explicitly preserves rotational and reflectional symmetries.
+We operate under the discrete group $G=p4m$ (the symmetry group of the square), consisting of 4 rotations and reflections ($|G|=8$).
+The input map $\mathbf{M}$ is first mapped from the planar domain to the group domain via a \emph{lifting self-attention} layer:
 \begin{equation}
-  \mathbf{E} = \mathrm{Conv}_{C_4}(\mathbf{M}) \in \R^{d_m \times (H/P) \times (W/P)}.
+  \mathbf{Z}^{(0)} = \mathrm{LiftAttn}(\mathbf{M}) \in \R^{d_m \times |G| \times H \times W},
 \end{equation}
-By constraining the convolution kernel to satisfy the equivariance condition $\mathcal{K}(g\cdot \mathbf{x}) = \rho_{\text{out}}(g)\mathcal{K}(\mathbf{x})\rho_{\text{in}}(g)^{-1}$ for $g\in C_4$, we ensure that physical rotations of the map explicitly result in corresponding rotations of the feature grid, improving parameter efficiency for urban grids which often exhibit rectilinear symmetries.
-The features are then flattened into a sequence of $N=(H/P)\cdot(W/P)$ tokens, summed with 2D sinusoidal positional encodings, and processed by the Transformer encoder to yield the spatial context $\mathbf{S}$.These spatial tokens preserve the map geometry while enabling long-range interactions across the scene.
+which lifts features from $\mathbb{R}^2$ to the semidirect product $\mathbb{R}^2 \rtimes G$.
+Subsequent layers employ \emph{group-equivariant self-attention}, ensuring that rotations of the input map result in corresponding permutations of the feature fibers.
+Finally, we obtain spatial context tokens $\mathbf{S}$ by flattening the group and spatial dimensions, preserving local equivariant structure for the fusion stage. These spatial tokens enable the model to reason about relative geometry invariant to the absolute orientation of the map.
 
 \subsection{Cross-attention fusion}
 \label{sec:fusion}
@@ -499,7 +501,7 @@ Max sequence & $T=20$ & Sufficient to capture movement trends without high memor
 \midrule
 \multicolumn{3}{l}{\textit{Neural Architecture}} \\
 Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=128$, $L=4$, $H=4$\end{tabular} & \textbf{Lightweight:} Radio features are low-dim sets. Set-attention is sufficient to capture temporal/beam correlations. \\
-Map Encoder & \begin{tabular}[t]{@{}l@{}}$d_m=256$, $L=4$, $H=4$\\\texttt{patch}=16\end{tabular} & \textbf{Capacity-heavy:} Vision backbone (ViT) needed to parse complex urban geometry (occlusions, canyons). \\
+Map Encoder & \begin{tabular}[t]{@{}l@{}}$d_m=256$, $L=4$, $H=4$\\\texttt{group}=$p4m$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance for urban grids. \\
 Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=128$, $L=1$, $H=8$\end{tabular} & \textbf{Bottleneck:} Projects rich map context into the signal-focused latent space for efficient querying. \\
 Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: $512\to G^2$\\Fine: $512\to 256 \to 2K$\end{tabular} & \textbf{Hierarchical:} Deep MLP for coarse ambiguity resolution; shallow head for local Gaussian refinement. \\
 \midrule
@@ -627,6 +629,11 @@ M.~Shahid, K.~Das, H.~Ushaq, H.~Zhang, J.~Song, D.~Qiao, S.~Babu, Y.~Guan, Z.~Zh
 M.~Shahid, K.~Das, H.~Ushaq, H.~Zhang, J.~Song, D.~Qiao, S.~Babu, Y.~Guan, Z.~Zhu, and A.~Ahmad.
 \newblock ReVeal-MT: A physics-informed neural network for multi-transmitter radio environment mapping.
 \newblock \emph{arXiv:2512.04100}, 2025.
+
+\bibitem{xu2023evit}
+M.~Xu, et al.
+\newblock E(2)-equivariant vision transformer.
+\newblock \emph{arXiv preprint}, 2023.
 
 \end{thebibliography}
 

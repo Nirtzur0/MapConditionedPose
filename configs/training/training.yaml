@@ -30,6 +30,8 @@ model:
     
   # Map Encoder (Vision Transformer)
   map_encoder:
+    use_e2_equivariant: true  # Use E2 equivariant vision transformer (NEW)
+    num_group_elements: 8  # p4m group: 4 rotations x 2 reflections (NEW)
     img_size: 256
     patch_size: 16
     in_channels: 10

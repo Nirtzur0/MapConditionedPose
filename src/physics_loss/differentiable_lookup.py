@@ -37,8 +37,16 @@ def normalize_coords(
     y = xy_meters[..., 1]
     
     # Normalize to [-1, 1]
+    # X: West(-1) -> East(1)
     x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
-    y_norm = 2 * (y - y_min) / (y_max - y_min) - 1
+    
+    # Y: South(1) -> North(-1)
+    # Standard grid_sample: -1 is Top, 1 is Bottom
+    # Map Coords: Min Y is South, Max Y is North
+    # We want North (Max Y) -> Top (-1)
+    # We want South (Min Y) -> Bottom (1)
+    # y_norm = 1 - 2 * (y - min) / (max - min)
+    y_norm = 1 - 2 * (y - y_min) / (y_max - y_min)
     
     # Stack back
     xy_norm = torch.stack([x_norm, y_norm], dim=-1)

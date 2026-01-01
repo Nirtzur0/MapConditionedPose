@@ -111,7 +111,11 @@ class CoarseHead(nn.Module):
         cols = indices % self.grid_size
         
         # Convert to metric coordinates (cell centers)
-        y = (rows.float() + 0.5) * cell_size
+        # Flip Y back: Grid 0 is Top(North/MaxY), Grid N-1 is Bottom(South/MinY)
+        # So Normalized Y = 1.0 - (row + 0.5)/grid_size
+        # Metric Y = (grid_size - 1 - rows + 0.5) * cell_size
+        
+        y = (self.grid_size - 1 - rows.float() + 0.5) * cell_size
         x = (cols.float() + 0.5) * cell_size
         
         # Stack coordinates

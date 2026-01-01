@@ -12,7 +12,7 @@ import logging
 
 # Model components
 from src.models.radio_encoder import RadioEncoder, PositionalEncoding
-from src.models.map_encoder import MapEncoder, PatchEmbedding
+from src.models.map_encoder import E2EquivariantMapEncoder, MapEncoder
 from src.models.fusion import CrossAttentionFusion
 from src.models.heads import CoarseHead, FineHead
 from src.models.ue_localization_model import UELocalizationModel
@@ -148,35 +148,35 @@ class TestRadioEncoder:
         assert encoded.shape == (4, 10, 128)
 
 
-class TestMapEncoder:
-    """Test MapEncoder component."""
+class TestE2EquivariantMapEncoder:
+    """Test E2EquivariantMapEncoder component with equivariance properties."""
     
     def test_initialization(self, config):
-        """Test map encoder initialization."""
+        """Test E2 equivariant encoder initialization."""
         cfg = config['model']['map_encoder']
-        encoder = MapEncoder(
+        encoder = E2EquivariantMapEncoder(
             img_size=cfg['img_size'],
-            patch_size=cfg['patch_size'],
             in_channels=cfg['in_channels'],
             d_model=cfg['d_model'],
-            nhead=cfg['nhead'],
-            num_layers=cfg['num_layers'],
+            num_heads=cfg['nhead'],
+            num_layers=2,  # Small for testing
+            num_group_elements=4,  # p4 group for testing
         )
         
         assert encoder.img_size == cfg['img_size']
         assert encoder.d_model == cfg['d_model']
-        assert encoder.num_patches == (cfg['img_size'] // cfg['patch_size']) ** 2
+        assert encoder.num_group_elements == 4
     
     def test_forward_pass(self, config, batch_maps):
         """Test forward pass."""
         cfg = config['model']['map_encoder']
-        encoder = MapEncoder(
+        encoder = E2EquivariantMapEncoder(
             img_size=cfg['img_size'],
-            patch_size=cfg['patch_size'],
             in_channels=cfg['in_channels'],
             d_model=cfg['d_model'],
-            nhead=cfg['nhead'],
-            num_layers=cfg['num_layers'],
+            num_heads=cfg['nhead'],
+            num_layers=2,
+            num_group_elements=4,
         )
         
         spatial_tokens, cls_token = encoder(
@@ -186,25 +186,182 @@ class TestMapEncoder:
         
         # Check shapes
         batch_size = batch_maps['radio_map'].shape[0]
-        num_patches = (cfg['img_size'] // cfg['patch_size']) ** 2
+        img_size = cfg['img_size']
         
-        assert spatial_tokens.shape == (batch_size, num_patches, cfg['d_model'])
+        assert spatial_tokens.shape[0] == batch_size
+        assert spatial_tokens.shape[2] == cfg['d_model']
         assert cls_token.shape == (batch_size, cfg['d_model'])
+        
+        # Ensure no NaN or Inf
+        assert not torch.isnan(spatial_tokens).any()
+        assert not torch.isinf(spatial_tokens).any()
+        assert not torch.isnan(cls_token).any()
+        assert not torch.isinf(cls_token).any()
     
-    def test_patch_embedding(self, config):
-        """Test PatchEmbedding module."""
-        patch_embed = PatchEmbedding(
-            img_size=512,
-            patch_size=16,
-            in_channels=9,
-            embed_dim=768,
+    def test_rotation_invariance(self, config):
+        """Test that the encoder produces similar outputs for rotated inputs."""
+        # Create smaller encoder for testing
+        encoder = E2EquivariantMapEncoder(
+            img_size=64,
+            in_channels=10,
+            d_model=64,
+            num_heads=4,
+            num_layers=1,
+            num_group_elements=4,  # p4 group
+            dropout=0.0,  # No dropout for deterministic testing
+        )
+        encoder.eval()
+        
+        # Create test input
+        torch.manual_seed(42)
+        radio_map = torch.randn(1, 5, 64, 64)
+        osm_map = torch.randn(1, 5, 64, 64)
+        
+        # Get output for original
+        with torch.no_grad():
+            _, cls_original = encoder(radio_map, osm_map)
+        
+        # Rotate input by 90 degrees
+        radio_map_rot = torch.rot90(radio_map, k=1, dims=[2, 3])
+        osm_map_rot = torch.rot90(osm_map, k=1, dims=[2, 3])
+        
+        # Get output for rotated
+        with torch.no_grad():
+            _, cls_rotated = encoder(radio_map_rot, osm_map_rot)
+        
+        # Check if outputs are similar (invariance to rotation)
+        diff = torch.abs(cls_original - cls_rotated).mean().item()
+        
+        # For p4 group (4 rotations), the output should be similar after 90° rotation
+        # Allow small difference due to numerical precision
+        assert diff < 0.1, f"Rotation invariance failed: difference = {diff}"
+    
+    def test_reflection_invariance(self, config):
+        """Test that the encoder produces similar outputs for reflected inputs."""
+        # Create smaller encoder for testing
+        encoder = E2EquivariantMapEncoder(
+            img_size=64,
+            in_channels=10,
+            d_model=64,
+            num_heads=4,
+            num_layers=1,
+            num_group_elements=8,  # p4m group (with reflections)
+            dropout=0.0,
+        )
+        encoder.eval()
+        
+        # Create test input
+        torch.manual_seed(42)
+        radio_map = torch.randn(1, 5, 64, 64)
+        osm_map = torch.randn(1, 5, 64, 64)
+        
+        # Get output for original
+        with torch.no_grad():
+            _, cls_original = encoder(radio_map, osm_map)
+        
+        # Reflect input horizontally
+        radio_map_ref = torch.flip(radio_map, dims=[3])
+        osm_map_ref = torch.flip(osm_map, dims=[3])
+        
+        # Get output for reflected
+        with torch.no_grad():
+            _, cls_reflected = encoder(radio_map_ref, osm_map_ref)
+        
+        # Check if outputs are similar (invariance to reflection)
+        diff = torch.abs(cls_original - cls_reflected).mean().item()
+        
+        # For p4m group (includes reflections), the output should be similar
+        assert diff < 0.1, f"Reflection invariance failed: difference = {diff}"
+    
+    def test_combined_transformation_invariance(self, config):
+        """Test invariance to combined rotation + reflection."""
+        encoder = E2EquivariantMapEncoder(
+            img_size=64,
+            in_channels=10,
+            d_model=64,
+            num_heads=4,
+            num_layers=1,
+            num_group_elements=8,  # p4m group
+            dropout=0.0,
+        )
+        encoder.eval()
+        
+        # Create test input
+        torch.manual_seed(42)
+        radio_map = torch.randn(1, 5, 64, 64)
+        osm_map = torch.randn(1, 5, 64, 64)
+        
+        # Get output for original
+        with torch.no_grad():
+            _, cls_original = encoder(radio_map, osm_map)
+        
+        # Apply rotation + reflection
+        radio_map_trans = torch.flip(torch.rot90(radio_map, k=2, dims=[2, 3]), dims=[3])
+        osm_map_trans = torch.flip(torch.rot90(osm_map, k=2, dims=[2, 3]), dims=[3])
+        
+        # Get output for transformed
+        with torch.no_grad():
+            _, cls_transformed = encoder(radio_map_trans, osm_map_trans)
+        
+        # Check if outputs are similar
+        diff = torch.abs(cls_original - cls_transformed).mean().item()
+        
+        assert diff < 0.1, f"Combined transformation invariance failed: difference = {diff}"
+    
+    def test_spatial_grid_output(self, config, batch_maps):
+        """Test get_spatial_grid method."""
+        cfg = config['model']['map_encoder']
+        encoder = E2EquivariantMapEncoder(
+            img_size=cfg['img_size'],
+            in_channels=cfg['in_channels'],
+            d_model=cfg['d_model'],
+            num_heads=cfg['nhead'],
+            num_layers=2,
+            num_group_elements=4,
         )
         
-        x = torch.randn(2, 9, 512, 512)
-        patches, grid_size = patch_embed(x)
+        grid = encoder.get_spatial_grid(
+            batch_maps['radio_map'],
+            batch_maps['osm_map'],
+        )
         
-        assert patches.shape == (2, 1024, 768)  # 32x32=1024 patches
-        assert grid_size == 32
+        batch_size = batch_maps['radio_map'].shape[0]
+        img_size = cfg['img_size']
+        
+        # Grid should be [B, d_model, H, W]
+        assert grid.shape[0] == batch_size
+        assert grid.shape[1] == cfg['d_model']
+        assert grid.shape[2] == grid.shape[3]  # Square grid
+    
+    def test_deterministic_output(self, config, batch_maps):
+        """Test that encoder produces deterministic outputs."""
+        cfg = config['model']['map_encoder']
+        encoder = E2EquivariantMapEncoder(
+            img_size=cfg['img_size'],
+            in_channels=cfg['in_channels'],
+            d_model=cfg['d_model'],
+            num_heads=cfg['nhead'],
+            num_layers=2,
+            num_group_elements=4,
+            dropout=0.0,  # No dropout for deterministic testing
+        )
+        encoder.eval()
+        
+        with torch.no_grad():
+            _, cls1 = encoder(batch_maps['radio_map'], batch_maps['osm_map'])
+            _, cls2 = encoder(batch_maps['radio_map'], batch_maps['osm_map'])
+        
+        # Outputs should be identical
+        assert torch.allclose(cls1, cls2, atol=1e-6)
+
+
+class TestMapEncoderBackwardCompatibility:
+    """Test MapEncoder alias for backward compatibility."""
+    
+    def test_alias_works(self, config):
+        """Test that MapEncoder is an alias for E2EquivariantMapEncoder."""
+        from src.models.map_encoder import MapEncoder, E2EquivariantMapEncoder
+        assert MapEncoder is E2EquivariantMapEncoder
 
 
 class TestCrossAttentionFusion:

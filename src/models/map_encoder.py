@@ -1,228 +1,47 @@
 """
-Map Encoder: Vision Transformer for Radio + OSM Maps
+Map Encoder: E(2) Equivariant Vision Transformer for Radio + OSM Maps
 
 Processes multi-channel maps with early fusion:
 - Radio maps: 5 channels (path_gain, toa, snr, sinr, throughput)
 - OSM maps: 5 channels (height, material, footprint, road, terrain)
 
-Uses Vision Transformer (ViT) architecture with patch-based encoding.
+Uses E(2) Equivariant Vision Transformer architecture for rotation/reflection invariance.
+Based on GE-ViT: "E(2)-Equivariant Vision Transformer" (Xu et al.)
 """
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
 import math
+from typing import Tuple, Optional
+
+# E2 equivariant imports
+from .e2_vit.g_selfatt.groups import E2
+from .e2_vit.g_selfatt.nn import (
+    LiftSelfAttention, 
+    GroupSelfAttention,
+    TransformerBlock,
+    LayerNorm,
+    Conv3d1x1
+)
+from .e2_vit.g_selfatt.nn.activations import Swish
 
 
-class PatchEmbedding(nn.Module):
-    """Convert image into patches and embed them.
+class E2EquivariantMapEncoder(nn.Module):
+    """E(2) Equivariant Vision Transformer encoder for radio + OSM maps.
     
-    Args:
-        img_size: Input image size (assumes square)
-        patch_size: Size of each patch
-        in_channels: Number of input channels
-        embed_dim: Embedding dimension
-    """
+    This encoder uses group equivariant self-attention to maintain equivariance
+    to rotations and reflections (E(2) group), making the model invariant to
+    orientations in the map data.
     
-    def __init__(
-        self,
-        img_size: int = 512,
-        patch_size: int = 16,
-        in_channels: int = 10,
-        embed_dim: int = 768,
-    ):
-        super().__init__()
-        
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
-        self.grid_size = img_size // patch_size
-        
-        # Convolutional layer for patch extraction and embedding
-        self.projection = nn.Conv2d(
-            in_channels,
-            embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size,
-        )
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Args:
-            x: [batch, channels, height, width]
-        
-        Returns:
-            Patch embeddings [batch, num_patches, embed_dim]
-            Grid size (for reshaping later)
-        """
-        # x: [B, C, H, W]
-        x = self.projection(x)  # [B, embed_dim, H/P, W/P]
-        
-        # Flatten patches
-        B, E, H, W = x.shape
-        x = x.flatten(2)  # [B, embed_dim, num_patches]
-        x = x.transpose(1, 2)  # [B, num_patches, embed_dim]
-        
-        return x, H  # Return grid size for potential use
-
-
-class EquivariantPatchEmbedding(nn.Module):
-    """C4-equivariant patch embedding using escnn.
-    
-    Uses group equivariant convolutions to extract patches while preserving
-    rotation equivariance under the C4 group (90-degree rotations).
-    
-    Args:
-        img_size: Input image size (assumes square)
-        patch_size: Size of each patch
-        in_channels: Number of input channels
-        embed_dim: Embedding dimension (per rotation)
-    """
-    
-    def __init__(
-        self,
-        img_size: int = 256,
-        patch_size: int = 16,
-        in_channels: int = 10,
-        embed_dim: int = 768,
-    ):
-        super().__init__()
-        
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
-        self.grid_size = img_size // patch_size
-        self.embed_dim = embed_dim
-        
-        # Import escnn here to allow graceful fallback
-        try:
-            from escnn import gspaces, nn as enn
-            self._use_escnn = True
-        except ImportError:
-            self._use_escnn = False
-            
-        if self._use_escnn:
-            # Define the group space: C4 (90-degree rotations)
-            self.gspace = gspaces.rot2dOnR2(N=4)  # C4 group
-            
-            # Input field type: trivial (scalar) representations for each channel
-            self.in_type = enn.FieldType(self.gspace, in_channels * [self.gspace.trivial_repr])
-            
-            # Output field type: trivial representation 
-            # This means each output channel is a scalar field that is INVARIANT to rotation
-            # The equivariance comes from the fact that the kernel weights are appropriately constrained
-            self.out_type = enn.FieldType(self.gspace, embed_dim * [self.gspace.trivial_repr])
-            
-            # Equivariant convolution for patch extraction
-            self.projection = enn.R2Conv(
-                self.in_type,
-                self.out_type,
-                kernel_size=patch_size,
-                stride=patch_size,
-                padding=0,
-                bias=True,
-            )
-            
-            self._out_channels = embed_dim
-        else:
-            # Fallback to standard Conv2d
-            self.projection = nn.Conv2d(
-                in_channels,
-                embed_dim,
-                kernel_size=patch_size,
-                stride=patch_size,
-            )
-            self._out_channels = embed_dim
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Args:
-            x: [batch, channels, height, width]
-        
-        Returns:
-            Patch embeddings [batch, num_patches, embed_dim]
-            Grid size (for reshaping later)
-        """
-        if self._use_escnn:
-            from escnn import nn as enn
-            # Wrap input as geometric tensor
-            x_geo = enn.GeometricTensor(x, self.in_type)
-            
-            # Apply equivariant convolution
-            out_geo = self.projection(x_geo)
-            
-            # Extract tensor (features are now C4-equivariant)
-            out = out_geo.tensor  # [B, C*4, H/P, W/P]
-        else:
-            out = self.projection(x)  # [B, embed_dim, H/P, W/P]
-        
-        # Flatten patches
-        B, E, H, W = out.shape
-        out = out.flatten(2)  # [B, embed_dim, num_patches]
-        out = out.transpose(1, 2)  # [B, num_patches, embed_dim]
-        
-        return out, H
-
-
-class ViT2DPositionalEncoding(nn.Module):
-    """2D sinusoidal positional encoding for spatial tokens."""
-    
-    def __init__(self, embed_dim: int, grid_size: int):
-        super().__init__()
-        
-        self.grid_size = grid_size
-        num_patches = grid_size ** 2
-        
-        # Create 2D position indices
-        y_pos = torch.arange(grid_size).unsqueeze(1).repeat(1, grid_size)
-        x_pos = torch.arange(grid_size).unsqueeze(0).repeat(grid_size, 1)
-        
-        # Flatten
-        y_pos = y_pos.flatten()  # [num_patches]
-        x_pos = x_pos.flatten()  # [num_patches]
-        
-        # Sinusoidal encoding for x and y separately
-        pe = torch.zeros(num_patches, embed_dim)
-        
-        div_term = torch.exp(
-            torch.arange(0, embed_dim // 4, 1) * (-math.log(10000.0) / (embed_dim // 4))
-        )
-        
-        # X position encoding (first half of dimensions)
-        pe[:, 0:embed_dim//2:2] = torch.sin(x_pos.unsqueeze(1) * div_term)
-        pe[:, 1:embed_dim//2:2] = torch.cos(x_pos.unsqueeze(1) * div_term)
-        
-        # Y position encoding (second half of dimensions)
-        pe[:, embed_dim//2::2] = torch.sin(y_pos.unsqueeze(1) * div_term)
-        pe[:, embed_dim//2+1::2] = torch.cos(y_pos.unsqueeze(1) * div_term)
-        
-        self.register_buffer('pe', pe)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [batch, num_patches, embed_dim]
-        Returns:
-            x + positional encoding [batch, num_patches, embed_dim]
-        """
-        return x + self.pe.unsqueeze(0)
-
-
-
-
-
-class MapEncoder(nn.Module):
-    """Vision Transformer encoder for radio + OSM maps.
-    
-    Early fusion: concatenate all map channels, then encode with ViT.
+    Based on GE-ViT: "E(2)-Equivariant Vision Transformer" (Xu et al.)
     
     Args:
         img_size: Input image size (256x256)
-        patch_size: Patch size for ViT (16x16)
         in_channels: Total input channels (5 radio + 5 OSM = 10)
-        d_model: Hidden dimension (embed_dim)
-        nhead: Number of attention heads
-        num_layers: Number of transformer layers
+        d_model: Hidden dimension
+        num_heads: Number of attention heads
+        num_layers: Number of equivariant transformer layers
+        num_group_elements: Number of discrete E(2) group elements (default: 8 for p4m)
         dropout: Dropout rate
         radio_map_channels: Number of radio map channels (default: 5)
         osm_map_channels: Number of OSM map channels (default: 5)
@@ -231,11 +50,11 @@ class MapEncoder(nn.Module):
     def __init__(
         self,
         img_size: int = 256,
-        patch_size: int = 16,
         in_channels: int = 10,
         d_model: int = 768,
-        nhead: int = 8,
-        num_layers: int = 12,
+        num_heads: int = 8,
+        num_layers: int = 6,
+        num_group_elements: int = 8,  # p4m group (4 rotations x 2 reflections)
         dropout: float = 0.1,
         radio_map_channels: int = 5,
         osm_map_channels: int = 5,
@@ -243,68 +62,89 @@ class MapEncoder(nn.Module):
         super().__init__()
         
         self.img_size = img_size
-        self.patch_size = patch_size
         self.d_model = d_model
-        self.grid_size = img_size // patch_size
-        self.num_patches = self.grid_size ** 2
+        self.in_channels = in_channels
+        self.num_group_elements = num_group_elements
         
         assert in_channels == radio_map_channels + osm_map_channels, \
             f"in_channels ({in_channels}) must equal radio ({radio_map_channels}) + osm ({osm_map_channels})"
         
-        # Patch embedding - use C4-equivariant version
-        self.patch_embed = EquivariantPatchEmbedding(
-            img_size=img_size,
-            patch_size=patch_size,
+        # Initialize E(2) group
+        self.group = E2(num_elements=num_group_elements)
+        
+        # Lifting layer: lifts from spatial domain to group domain
+        # Uses global self-attention (no patch size parameter)
+        mid_channels = d_model // 2
+        self.lifting_layer = LiftSelfAttention(
+            group=self.group,
             in_channels=in_channels,
-            embed_dim=d_model,
+            mid_channels=mid_channels,
+            out_channels=d_model,
+            num_heads=num_heads,
+            max_pos_embedding=img_size,
+            attention_dropout_rate=dropout,
         )
         
+        # Normalization and activation after lifting
+        self.lifting_norm = LayerNorm(d_model)
+        self.lifting_activation = Swish()
         
-        # Positional Encoding: Use simple 2D sinusoidal (compatible with equivariant features)
-        # The equivariance is handled by the patch embedding layer itself
-        self.pos_encoding = ViT2DPositionalEncoding(d_model, self.grid_size)
+        # Group equivariant transformer layers
+        self.transformer_blocks = nn.ModuleList()
+        for _ in range(num_layers):
+            attention_layer = GroupSelfAttention(
+                group=self.group,
+                in_channels=d_model,
+                mid_channels=d_model // 2,
+                out_channels=d_model,
+                num_heads=num_heads,
+                max_pos_embedding=img_size,
+                attention_dropout_rate=dropout,
+            )
+            
+            transformer_block = TransformerBlock(
+                in_channels=d_model,
+                out_channels=d_model,
+                attention_layer=attention_layer,
+                norm_type="LayerNorm",
+                activation_function="Swish",
+                crop_size=0,  # No cropping for full image
+                value_dropout_rate=dropout,
+                dim_mlp_conv=3,  # 3D convolutions for group signals
+            )
+            self.transformer_blocks.append(transformer_block)
         
-        # CLS token (optional, for global representation)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        # Final normalization
+        self.output_norm = LayerNorm(d_model)
         
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True,
-            norm_first=True,  # Pre-LN
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers,
-            norm=nn.LayerNorm(d_model),
-        )
+        # Pooling to get fixed-size output
+        # Average pool over spatial dimensions
+        self.spatial_pool = nn.AdaptiveAvgPool3d((num_group_elements, 1, 1))
         
-        # Output normalization
-        self.output_norm = nn.LayerNorm(d_model)
+        # Group pooling: sum over group dimension for invariance
+        # Or we can use max pooling for more robustness
+        self.group_pool_type = 'max'  # 'sum' or 'max'
         
-        # Dropout
-        self.dropout = nn.Dropout(dropout)
+        # Optional: Project to fixed dimension after pooling
+        self.output_projection = nn.Linear(d_model * num_group_elements if self.group_pool_type == 'concat' else d_model, d_model)
         
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize weights."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.LayerNorm):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
+        """Initialize weights with proper scaling."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv3d) or isinstance(m, nn.Conv2d):
+                # Whitening initialization as in original GE-ViT
+                m.weight.data.normal_(
+                    0,
+                    1.41421356 * torch.prod(torch.Tensor(list(m.weight.shape)[1:])) ** (-1 / 2),
+                )
+                if m.bias is not None:
+                    m.bias.data.fill_(0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
     
     def forward(
         self,
@@ -317,35 +157,61 @@ class MapEncoder(nn.Module):
             osm_map: [batch, 5, H, W] (height, material, footprint, road, terrain)
         
         Returns:
-            Spatial tokens [batch, num_patches, d_model]
-            CLS token [batch, d_model] (global representation)
+            spatial_tokens: [batch, H*W, d_model] - flattened spatial features
+            cls_token: [batch, d_model] - global representation (pooled)
         """
         batch_size = radio_map.shape[0]
-        device = radio_map.device
         
         # 1. Early fusion: concatenate radio and OSM maps
         combined_map = torch.cat([radio_map, osm_map], dim=1)  # [B, 10, H, W]
         
-        # 2. Patch embedding
-        patches, grid_size = self.patch_embed(combined_map)  # [B, num_patches, d_model]
+        # 2. Lift to group domain
+        # Output: [B, d_model, num_group_elements, H, W]
+        lifted = self.lifting_layer(combined_map)
+        lifted = self.lifting_norm(lifted)
+        lifted = self.lifting_activation(lifted)
         
-        # 3. Add positional encoding
-        patches = self.pos_encoding(patches)  # [B, num_patches, d_model]
-        patches = self.dropout(patches)
+        # 3. Apply equivariant transformer blocks
+        out = lifted
+        for block in self.transformer_blocks:
+            out = block(out)
         
-        # 4. Prepend CLS token
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [B, 1, d_model]
-        tokens = torch.cat([cls_tokens, patches], dim=1)  # [B, num_patches+1, d_model]
+        # 4. Final normalization
+        out = self.output_norm(out)  # [B, d_model, G, H, W]
         
-        # 5. Transformer encoding
-        encoded = self.transformer(tokens)  # [B, num_patches+1, d_model]
-        encoded = self.output_norm(encoded)
+        # 5. Pool to get fixed-size representations
+        # First, pool spatially
+        B, C, G, H, W = out.shape
+        out_spatial_pooled = self.spatial_pool(out)  # [B, d_model, G, 1, 1]
+        out_spatial_pooled = out_spatial_pooled.squeeze(-1).squeeze(-1)  # [B, d_model, G]
         
-        # 6. Split CLS token and spatial tokens
-        cls_output = encoded[:, 0, :]  # [B, d_model]
-        spatial_tokens = encoded[:, 1:, :]  # [B, num_patches, d_model]
+        # For cls_token: pool over group dimension for invariance
+        if self.group_pool_type == 'sum':
+            cls_token = out_spatial_pooled.sum(dim=2)  # [B, d_model]
+        elif self.group_pool_type == 'max':
+            cls_token = out_spatial_pooled.max(dim=2)[0]  # [B, d_model]
+        elif self.group_pool_type == 'concat':
+            cls_token = out_spatial_pooled.flatten(1)  # [B, d_model * G]
+        else:
+            cls_token = out_spatial_pooled.mean(dim=2)  # [B, d_model]
         
-        return spatial_tokens, cls_output
+        cls_token = self.output_projection(cls_token)  # [B, d_model]
+        
+        # For spatial_tokens: flatten spatial and group dimensions
+        # This gives position-dependent features while maintaining equivariance
+        out_flattened = out.permute(0, 3, 4, 2, 1)  # [B, H, W, G, C]
+        out_flattened = out_flattened.reshape(B, H * W, G * C)  # [B, H*W, G*C]
+        
+        # Project back to d_model dimension if needed
+        if G * C != self.d_model:
+            # Use a learnable projection
+            if not hasattr(self, 'spatial_projection'):
+                self.spatial_projection = nn.Linear(G * C, self.d_model).to(out.device)
+            spatial_tokens = self.spatial_projection(out_flattened)
+        else:
+            spatial_tokens = out_flattened
+        
+        return spatial_tokens, cls_token
     
     def get_spatial_grid(
         self,
@@ -353,8 +219,6 @@ class MapEncoder(nn.Module):
         osm_map: torch.Tensor,
     ) -> torch.Tensor:
         """Get spatial tokens reshaped as 2D grid.
-        
-        Useful for visualization and spatial operations.
         
         Returns:
             Spatial grid [batch, d_model, grid_h, grid_w]
@@ -378,8 +242,6 @@ class MapEncoder(nn.Module):
         patch_size: int = 64,
     ) -> torch.Tensor:
         """Extract high-resolution patch around a center point.
-        
-        Used for fine refinement stage.
         
         Args:
             radio_map: [batch, 5, H, W]
@@ -405,7 +267,7 @@ class MapEncoder(nn.Module):
             max(0, cx - half_size):cx + half_size
         ]
         
-        # Resize if needed (to match expected patch_size)
+        # Resize if needed
         if radio_patch.shape[2] != patch_size or radio_patch.shape[3] != patch_size:
             radio_patch = torch.nn.functional.interpolate(
                 radio_patch,
@@ -420,11 +282,14 @@ class MapEncoder(nn.Module):
                 align_corners=False,
             )
         
-        # Encode patch (using smaller ViT for efficiency)
-        # For now, use same encoder - in practice, might want dedicated fine encoder
-        spatial_tokens, cls_token = self.forward(radio_patch, osm_patch)
+        # Encode patch
+        _, cls_token = self.forward(radio_patch, osm_patch)
         
         return cls_token  # [B, d_model]
+
+
+# Alias for backward compatibility
+MapEncoder = E2EquivariantMapEncoder
 
 
 

@@ -183,8 +183,8 @@ def render_figures(model, batch, outputs, output_dir):
     pass
 
 def main():
-    checkpoint_path = "checkpoints/trial_0/best_model.ckpt"
-    data_path = "data/processed/sionna_dataset/dataset_20251231_122230.zarr"
+    checkpoint_path = "checkpoints/trial_0/best_model-v2.ckpt"
+    data_path = "data/processed/sionna_dataset/dataset_20251231_143438.zarr"
     
     try:
         model, loader = load_model_and_data(checkpoint_path, data_path)

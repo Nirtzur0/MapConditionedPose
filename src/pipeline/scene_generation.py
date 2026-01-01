@@ -12,6 +12,8 @@ from typing import Optional
 from easydict import EasyDict
 import yaml
 
+from src.utils.logging_utils import print_info, print_success, print_warning
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
     Generate 3D scenes with transmitter sites using GIS data.
     """
     if args.skip_scenes:
-        logger.info("Skipping scene generation (--skip-scenes)")
+        print_info("Skipping scene generation")
         return
 
     log_section_func("STEP 1: Generate Scenes")
@@ -31,11 +33,11 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
     import os
     overpass_url = os.environ.get("OVERPASS_URL")
     if overpass_url:
-        logger.info(f"Using custom Overpass API: {overpass_url}")
+        print_info(f"Using custom Overpass API: [dim]{overpass_url}[/dim]")
         cmd.extend(["--osm-server", overpass_url])
 
     if args.scene_config:
-        logger.info(f"Using scene config file: {args.scene_config}")
+        print_info(f"Using scene config: [bold]{args.scene_config.name}[/bold]")
         with open(args.scene_config, 'r') as f:
             config = EasyDict(yaml.safe_load(f)).scene_generation
         cities = getattr(config, "cities", None)
@@ -83,7 +85,7 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
                          city_cmd.append("--use-dem")
 
                 if args.clean and scene_dir_city.exists():
-                    logger.info(f"Cleaning existing scenes at {scene_dir_city}")
+                    print_info(f"Cleaning: [dim]{scene_slug}[/dim]")
                     shutil.rmtree(scene_dir_city)
 
                 run_command_func(city_cmd, f"Scene Generation ({scene_slug})")
@@ -117,7 +119,8 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
                     cmd.append("--use-dem")
 
     else:
-        logger.info(f"Using GIS bounding box: {args.bbox} for scene generation")
+        bbox_str = f"{args.bbox[0]:.3f}, {args.bbox[1]:.3f}, {args.bbox[2]:.3f}, {args.bbox[3]:.3f}"
+        print_info(f"Bounding box: [dim]{bbox_str}[/dim]")
         cmd.extend([
             "--bbox",
             str(args.bbox[0]),  # west
@@ -133,7 +136,7 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
 
     # Clean existing scenes if requested
     if args.clean and scene_dir.exists():
-        logger.info(f"Cleaning existing scenes at {scene_dir}")
+        print_info(f"Cleaning: [dim]{scene_dir}[/dim]")
         shutil.rmtree(scene_dir)
 
     run_command_func(cmd, "Scene Generation")
@@ -143,4 +146,4 @@ def generate_scenes(args, project_root: Path, scene_dir: Path, log_section_func,
         raise RuntimeError(f"Scene directory not created: {scene_dir}")
 
     scene_count = len(list(scene_dir.glob("scene_*")))
-    logger.info(f"Created {scene_count} scene(s)")
+    print_success(f"Created {scene_count} scene(s)")

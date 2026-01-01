@@ -14,7 +14,7 @@ import torch.nn as nn
 from typing import Dict, Tuple, Optional
 
 from .radio_encoder import RadioEncoder
-from .map_encoder import MapEncoder
+from .map_encoder import E2EquivariantMapEncoder
 from .fusion import CrossAttentionFusion
 from .heads import CoarseHead, FineHead
 
@@ -65,13 +65,14 @@ class UELocalizationModel(nn.Module):
             mac_features_dim=radio_cfg['mac_features_dim'],
         )
         
-        self.map_encoder = MapEncoder(
+        # Map encoder: E2 equivariant vision transformer
+        self.map_encoder = E2EquivariantMapEncoder(
             img_size=map_cfg['img_size'],
-            patch_size=map_cfg['patch_size'],
             in_channels=map_cfg['in_channels'],
             d_model=map_cfg['d_model'],
-            nhead=map_cfg['nhead'],
+            num_heads=map_cfg['nhead'],
             num_layers=map_cfg['num_layers'],
+            num_group_elements=map_cfg.get('num_group_elements', 8),  # p4m group by default
             dropout=map_cfg['dropout'],
             radio_map_channels=map_cfg['radio_map_channels'],
             osm_map_channels=map_cfg['osm_map_channels'],

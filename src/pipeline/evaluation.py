@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
+from src.utils.logging_utils import print_info
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,10 +21,10 @@ def evaluate_model(args, checkpoint_dir: Path, eval_dataset_path: Optional[Path]
     Evaluate trained model on held-out dataset.
     """
     if args.skip_eval:
-        logger.info("Skipping evaluation (--skip-eval)")
+        print_info("Skipping evaluation")
         return
     if eval_dataset_path is None:
-        logger.info("No eval dataset provided; skipping evaluation")
+        print_info("No eval dataset; skipping evaluation")
         return
 
     step_label = "STEP 5: Evaluate Model" if args.optimize else "STEP 4: Evaluate Model"

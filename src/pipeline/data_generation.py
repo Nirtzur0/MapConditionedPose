@@ -12,6 +12,8 @@ from typing import Optional, List
 from easydict import EasyDict
 import yaml
 
+from src.utils.logging_utils import print_info, print_success, print_warning
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,13 +32,11 @@ def _resolve_data_output_path(config_path: Path, project_root: Path) -> Optional
 
 def _latest_dataset_in_dir(output_dir: Path) -> Optional[Path]:
     if not output_dir.exists():
-        logger.warning(f"Directory not found during dataset lookup: {output_dir}")
         return None
     zarr_files = sorted(output_dir.glob("*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not zarr_files:
-        logger.warning(f"No .zarr files found in {output_dir}")
         return None
-    logger.info(f"Found latest dataset: {zarr_files[0].name} in {output_dir}")
+    print_info(f"Found: [bold]{zarr_files[0].name}[/bold]")
     return zarr_files[0]
 
 
@@ -53,7 +53,7 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
     Generate synthetic dataset from scenes using Sionna ray tracing.
     """
     if args.skip_dataset:
-        logger.info("Skipping dataset generation (--skip-dataset)")
+        print_info("Skipping dataset generation")
         # Logic to reuse existing datasets
         if args.train_data_configs or args.train_datasets or args.eval_data_config:
             for config_path in args.train_data_configs or []:
@@ -88,14 +88,14 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
             if not zarr_files:
                 raise RuntimeError(f"No dataset available to reuse in: {dataset_dir}")
             dataset_path = zarr_files[0]
-        logger.info(f"Reusing dataset: {dataset_path}")
+        print_info(f"Reusing: [bold]{dataset_path.name}[/bold]")
         return dataset_path, eval_dataset_path
 
     log_section_func("STEP 2: Generate Dataset")
 
     if args.train_data_configs or args.train_datasets or args.eval_data_config:
         for config_path in args.train_data_configs or []:
-            logger.info(f"Using training data config: {config_path}")
+            print_info(f"Using training config: [bold]{config_path.name}[/bold]")
             _run_dataset_generation_for_config(config_path, project_root, run_command_func)
             dataset_path = _resolve_data_output_path(config_path, project_root)
             if dataset_path is None:
@@ -105,7 +105,7 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
             train_dataset_paths.append(dataset_path)
 
         if args.eval_data_config:
-            logger.info(f"Using eval data config: {args.eval_data_config}")
+            print_info(f"Using eval config: [bold]{args.eval_data_config.name}[/bold]")
             _run_dataset_generation_for_config(args.eval_data_config, project_root, run_command_func)
             eval_dataset_path = _resolve_data_output_path(args.eval_data_config, project_root)
             if eval_dataset_path is None:
@@ -119,15 +119,16 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
             eval_dataset_path = project_root / args.eval_dataset
 
         dataset_path = train_dataset_paths[0] if train_dataset_paths else None
-        logger.info(f"Training datasets: {[p.name for p in train_dataset_paths]}")
+        if train_dataset_paths:
+            print_success(f"Training datasets: {len(train_dataset_paths)}")
         if eval_dataset_path:
-            logger.info(f"Eval dataset: {eval_dataset_path.name}")
+            print_info(f"Eval: [bold]{eval_dataset_path.name}[/bold]")
         return dataset_path, eval_dataset_path
 
     cmd = [sys.executable, "scripts/generate_dataset.py"]
 
     if args.data_config:
-        logger.info(f"Using data generation config file: {args.data_config}")
+        print_info(f"Using data config: [bold]{args.data_config.name}[/bold]")
         with open(args.data_config, 'r') as f:
             config = EasyDict(yaml.safe_load(f)).data_generation
 
@@ -155,7 +156,7 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
 
     # Clean existing dataset if requested
     if args.clean and dataset_dir.exists():
-        logger.info(f"Cleaning existing dataset at {dataset_dir}")
+        print_info(f"Cleaning: [dim]{dataset_dir.name}[/dim]")
         shutil.rmtree(dataset_dir)
 
     dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +189,7 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
     if not dataset_path.exists():
         raise RuntimeError(f"Dataset not created at: {dataset_path}")
 
-    logger.info(f"Created dataset: {dataset_path.name}")
+    print_success(f"Dataset: [bold]{dataset_path.name}[/bold]")
 
     if args.eval_dataset:
         eval_dataset_path = project_root / args.eval_dataset
