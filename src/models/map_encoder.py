@@ -50,6 +50,7 @@ class E2EquivariantMapEncoder(nn.Module):
     def __init__(
         self,
         img_size: int = 256,
+        patch_size: int = 16,  # NEW: patch size to reduce spatial dims
         in_channels: int = 10,
         d_model: int = 768,
         num_heads: int = 8,
@@ -62,26 +63,41 @@ class E2EquivariantMapEncoder(nn.Module):
         super().__init__()
         
         self.img_size = img_size
+        self.patch_size = patch_size
         self.d_model = d_model
         self.in_channels = in_channels
         self.num_group_elements = num_group_elements
         
+        # Calculate patch grid dimensions
+        self.num_patches_per_side = img_size // patch_size
+        self.num_patches = self.num_patches_per_side ** 2
+        
         assert in_channels == radio_map_channels + osm_map_channels, \
             f"in_channels ({in_channels}) must equal radio ({radio_map_channels}) + osm ({osm_map_channels})"
+        
+        # Patch embedding - reduces spatial dimensions BEFORE E2 attention
+        self.patch_embed = nn.Conv2d(
+            in_channels,
+            d_model,
+            kernel_size=patch_size,
+            stride=patch_size
+        )
         
         # Initialize E(2) group
         self.group = E2(num_elements=num_group_elements)
         
         # Lifting layer: lifts from spatial domain to group domain
-        # Uses global self-attention (no patch size parameter)
+        # CRITICAL FIX: Use patch-level spatial dimensions (num_patches_per_side)
+        # instead of pixel-level (img_size) to avoid 256GB memory requirement!
+        # For 256x256 image with 16x16 patches: 16 spatial dims vs 256 spatial dims
         mid_channels = d_model // 2
         self.lifting_layer = LiftSelfAttention(
             group=self.group,
-            in_channels=in_channels,
+            in_channels=d_model,  # After patch embedding
             mid_channels=mid_channels,
             out_channels=d_model,
             num_heads=num_heads,
-            max_pos_embedding=img_size,
+            max_pos_embedding=self.num_patches_per_side,  # FIXED: 16 instead of 256!
             attention_dropout_rate=dropout,
         )
         
@@ -98,7 +114,7 @@ class E2EquivariantMapEncoder(nn.Module):
                 mid_channels=d_model // 2,
                 out_channels=d_model,
                 num_heads=num_heads,
-                max_pos_embedding=img_size,
+                max_pos_embedding=self.num_patches_per_side,  # FIXED: Use patch dims!
                 attention_dropout_rate=dropout,
             )
             
@@ -157,7 +173,7 @@ class E2EquivariantMapEncoder(nn.Module):
             osm_map: [batch, 5, H, W] (height, material, footprint, road, terrain)
         
         Returns:
-            spatial_tokens: [batch, H*W, d_model] - flattened spatial features
+            spatial_tokens: [batch, num_patches, d_model] - patch-level features
             cls_token: [batch, d_model] - global representation (pooled)
         """
         batch_size = radio_map.shape[0]
@@ -165,13 +181,17 @@ class E2EquivariantMapEncoder(nn.Module):
         # 1. Early fusion: concatenate radio and OSM maps
         combined_map = torch.cat([radio_map, osm_map], dim=1)  # [B, 10, H, W]
         
-        # 2. Lift to group domain
-        # Output: [B, d_model, num_group_elements, H, W]
-        lifted = self.lifting_layer(combined_map)
+        # 2. Patch embedding - reduces spatial dimensions
+        # [B, 10, H, W] -> [B, d_model, H/P, W/P] where P=patch_size
+        patched = self.patch_embed(combined_map)
+        
+        # 3. Lift to group domain (now operating on reduced spatial dims!)
+        # Output: [B, d_model, num_group_elements, H/P, W/P]
+        lifted = self.lifting_layer(patched)
         lifted = self.lifting_norm(lifted)
         lifted = self.lifting_activation(lifted)
         
-        # 3. Apply equivariant transformer blocks
+        # 4. Apply equivariant transformer blocks
         out = lifted
         for block in self.transformer_blocks:
             out = block(out)

@@ -55,20 +55,21 @@ def objective(trial, args, base_config_path: Path):
 
     # 2. Suggest hyperparameters
     # Radio Encoder
-    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [64, 128, 256])
+    config['model']['radio_encoder']['d_model'] = trial.suggest_categorical('radio_d_model', [64, 128])
     config['model']['radio_encoder']['nhead'] = trial.suggest_categorical('radio_nhead', [2, 4, 8])
-    config['model']['radio_encoder']['num_layers'] = trial.suggest_int('radio_num_layers', 2, 6)
+    config['model']['radio_encoder']['num_layers'] = trial.suggest_int('radio_num_layers', 2, 4)
     config['model']['radio_encoder']['dropout'] = trial.suggest_float('radio_dropout', 0.1, 0.3)
 
     # Map Encoder
-    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [128, 256, 384])
+    config['model']['map_encoder']['use_e2_equivariant'] = True  # Enable E2 (now fixed!)
+    config['model']['map_encoder']['patch_size'] = trial.suggest_categorical('map_patch_size', [16, 32])
+    config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [128, 256])
     config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8])
-    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 2, 6)
+    config['model']['map_encoder']['num_layers'] = trial.suggest_int('map_num_layers', 2, 4)
     config['model']['map_encoder']['dropout'] = trial.suggest_float('map_dropout', 0.1, 0.3)
-    config['model']['map_encoder']['patch_size'] = trial.suggest_categorical('map_patch_size', [8, 16])
 
     # Fusion
-    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [128, 256, 384])
+    config['model']['fusion']['d_fusion'] = trial.suggest_categorical('fusion_d_fusion', [128, 256])
     config['model']['fusion']['nhead'] = trial.suggest_categorical('fusion_nhead', [4, 8])
     config['model']['fusion']['dropout'] = trial.suggest_float('fusion_dropout', 0.1, 0.3)
     
@@ -78,7 +79,7 @@ def objective(trial, args, base_config_path: Path):
 
     # Training params
     config['training']['learning_rate'] = trial.suggest_float('learning_rate', 5e-5, 1e-3, log=True)
-    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [8, 16, 32])
+    config['training']['batch_size'] = trial.suggest_categorical('batch_size', [8, 16])
     config['training']['weight_decay'] = trial.suggest_float('weight_decay', 1e-4, 0.05, log=True)
     config['training']['warmup_steps'] = trial.suggest_categorical('warmup_steps', [500, 1000, 2000])
 

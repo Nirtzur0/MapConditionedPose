@@ -4,13 +4,13 @@ dataset:
   normalize_features: true
   scene_extent: 512
   test_on_eval: true
-  test_zarr_path: /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset_eval/dataset_eval.zarr
+  test_zarr_path: data/processed/sionna_dataset_eval/dataset_eval.zarr
   train_zarr_paths:
-  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260101_100204.zarr
+  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260101_130755.zarr
 infrastructure:
   accelerator: auto
   checkpoint:
-    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260101_100112
+    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260101_134949
     mode: min
     monitor: val_median_error
     save_top_k: 3
@@ -28,32 +28,33 @@ infrastructure:
   precision: 32-true
 model:
   coarse_head:
-    d_input: 128
+    d_input: 256
     dropout: 0.1
     grid_size: 32
   fine_head:
     d_hidden: 256
-    d_input: 128
+    d_input: 256
     dropout: 0.1
     top_k: 5
   fusion:
-    d_fusion: 128
-    dropout: 0.11029170664370364
-    nhead: 8
+    d_fusion: 256
+    dropout: 0.14017033039430735
+    nhead: 4
   map_encoder:
     d_model: 128
-    dropout: 0.22761160050250553
+    dropout: 0.11453413455674342
     img_size: 256
     in_channels: 10
     nhead: 8
-    num_layers: 5
+    num_layers: 4
     osm_map_channels: 5
-    patch_size: 16
+    patch_size: 32
     radio_map_channels: 5
+    use_e2_equivariant: true
   name: MapConditionedTransformer
   radio_encoder:
-    d_model: 256
-    dropout: 0.15721804482409746
+    d_model: 128
+    dropout: 0.2054473179624739
     embedding:
       beam_id_embed_dim: 32
       cell_id_embed_dim: 64
@@ -61,10 +62,10 @@ model:
       time_embed_dim: 64
     mac_features_dim: 6
     max_seq_len: 20
-    nhead: 2
+    nhead: 8
     num_beams: 64
     num_cells: 3
-    num_layers: 2
+    num_layers: 4
     phy_features_dim: 8
     rt_features_dim: 16
     type: SetTransformer
@@ -83,10 +84,10 @@ physics_loss:
   loss_type: mse
   normalize_features: true
 training:
-  batch_size: 16
+  batch_size: 8
   gradient_clip: 1.0
   gradient_clip_val: 1.0
-  learning_rate: 7.528461607758345e-05
+  learning_rate: 0.00048550255397640074
   loss:
     augmentation:
       feature_dropout: 0.05
@@ -103,5 +104,5 @@ training:
   num_epochs: 10
   optimizer: adamw
   scheduler: cosine_with_warmup
-  warmup_steps: 2000
-  weight_decay: 0.025742765157550765
+  warmup_steps: 1000
+  weight_decay: 0.0007594269547901447

@@ -70,6 +70,7 @@ class UELocalizationModel(nn.Module):
         if use_e2:
             self.map_encoder = E2EquivariantMapEncoder(
                 img_size=map_cfg['img_size'],
+                patch_size=map_cfg.get('patch_size', 16),  # Pass patch_size!
                 in_channels=map_cfg['in_channels'],
                 d_model=map_cfg['d_model'],
                 num_heads=map_cfg['nhead'],

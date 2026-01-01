@@ -5,9 +5,9 @@ model:
   radio_encoder:
     num_cells: 512  # Max number of unique cell IDs
     num_beams: 64   # Max number of beam IDs
-    d_model: 256    # Hidden dimension (Reduced from 512)
-    nhead: 8        # Attention heads
-    num_layers: 6   # Transformer layers
+    d_model: 128    # Hidden dimension (Reduced for memory)
+    nhead: 4        # Attention heads
+    num_layers: 3   # Transformer layers (reduced)
     dropout: 0.1
     max_seq_len: 20 # Max measurement reports per sequence
     
@@ -18,14 +18,14 @@ model:
   
   # Map Encoder (Vision Transformer)
   map_encoder:
-    use_e2_equivariant: false  # Use standard ViT instead of E2 equivariant
-    num_group_elements: 8     # p4m group: 4 rotations x 2 reflections (only for E2)
+    use_e2_equivariant: true  # NOW WORKING! Uses patch-level spatial dims
+    num_group_elements: 8     # p4m group: 4 rotations x 2 reflections
     img_size: 256             # Map resolution (pixels)
-    patch_size: 16            # Patch size for ViT
+    patch_size: 16            # Patch size (CRITICAL for memory efficiency)
     in_channels: 10           # 5 (radio) + 5 (OSM)
-    d_model: 384              # Hidden dimension (ViT-Small)
-    nhead: 8                  # Attention heads
-    num_layers: 6             # Transformer layers
+    d_model: 192              # Hidden dimension
+    nhead: 4                  # Attention heads
+    num_layers: 3             # Transformer layers
     dropout: 0.1
     
     # Channel configuration
@@ -34,16 +34,16 @@ model:
   
   # Cross-Attention Fusion
   fusion:
-    d_radio: 256     # From radio encoder
-    d_map: 384       # From map encoder
-    d_fusion: 512    # Output dimension (Reduced from 768)
-    nhead: 8
+    d_radio: 128     # From radio encoder
+    d_map: 192       # From map encoder
+    d_fusion: 256    # Output dimension (reduced)
+    nhead: 4
     dropout: 0.1
   
   # Coarse Head (Grid Classification)
   coarse_head:
     grid_size: 32    # 32x32 grid cells
-    d_input: 512     # From fusion (Updated)
+    d_input: 256     # From fusion (Updated)
     dropout: 0.1
   
   # Fine Head (Offset Regression)
@@ -56,7 +56,7 @@ model:
 
 # Training configuration
 training:
-  batch_size: 8
+  batch_size: 4
   num_epochs: 100
   learning_rate: 0.0001
   weight_decay: 0.01
@@ -90,7 +90,7 @@ training:
 
 # Dataset configuration
 dataset:
-  zarr_path: "data/processed/sionna_dataset/dataset_20260101_100204.zarr"
+  zarr_path: "data/processed/sionna_dataset/dataset_20260101_130755.zarr"
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
@@ -161,7 +161,7 @@ infrastructure:
   accelerator: "gpu"
   devices: 1
   precision: "16-mixed"  # Mixed precision training
-  num_workers: 4         # DataLoader workers
+  num_workers: 2         # DataLoader workers (reduced for memory)
   
   # Checkpointing
   checkpoint:
