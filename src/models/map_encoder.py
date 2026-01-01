@@ -288,6 +288,100 @@ class E2EquivariantMapEncoder(nn.Module):
         return cls_token  # [B, d_model]
 
 
+class StandardMapEncoder(nn.Module):
+    """Standard Vision Transformer encoder for radio + OSM maps (non-equivariant)."""
+    
+    def __init__(
+        self,
+        img_size: int = 256,
+        patch_size: int = 16,
+        in_channels: int = 10,
+        d_model: int = 384,
+        num_heads: int = 8,
+        num_layers: int = 6,
+        dropout: float = 0.1,
+        radio_map_channels: int = 5,
+        osm_map_channels: int = 5,
+    ):
+        super().__init__()
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.in_channels = in_channels
+        self.d_model = d_model
+        self.num_patches = (img_size // patch_size) ** 2
+        
+        # Patch embedding
+        self.patch_embed = nn.Conv2d(
+            in_channels, 
+            d_model, 
+            kernel_size=patch_size, 
+            stride=patch_size
+        )
+        
+        # Positional embedding
+        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, d_model) * 0.02)
+        
+        # Class token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        
+        # Transformer blocks
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Layer norm
+        self.norm = nn.LayerNorm(d_model)
+        
+    def forward(
+        self, 
+        radio_map: torch.Tensor, 
+        osm_map: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            radio_map: [B, 5, H, W]
+            osm_map: [B, 5, H, W]
+            
+        Returns:
+            tokens: [B, N, d_model] - all patch tokens
+            cls_token: [B, d_model] - classification token
+        """
+        B = radio_map.shape[0]
+        
+        # Concatenate maps
+        combined_map = torch.cat([radio_map, osm_map], dim=1)  # [B, 10, H, W]
+        
+        # Patch embedding
+        x = self.patch_embed(combined_map)  # [B, d_model, H/P, W/P]
+        x = x.flatten(2).transpose(1, 2)  # [B, N, d_model]
+        
+        # Add class token
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, d_model]
+        x = torch.cat([cls_tokens, x], dim=1)  # [B, N+1, d_model]
+        
+        # Add positional embedding
+        x = x + self.pos_embed
+        
+        # Transformer
+        x = self.transformer(x)  # [B, N+1, d_model]
+        
+        # Layer norm
+        x = self.norm(x)
+        
+        # Split class token and patch tokens
+        cls_token = x[:, 0]  # [B, d_model]
+        tokens = x[:, 1:]    # [B, N, d_model]
+        
+        return tokens, cls_token
+
+
 # Alias for backward compatibility
 MapEncoder = E2EquivariantMapEncoder
 

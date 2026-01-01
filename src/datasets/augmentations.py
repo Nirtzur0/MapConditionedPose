@@ -71,7 +71,7 @@ class RadioAugmentation(torch.nn.Module):
             # PHY features: Add absolute noise (different scales for different features)
             phy_feat = measurements['phy_features']
             # RSRP/RSRQ/SINR: ±2-5 dB noise, CQI: ±1, RI/PMI: no noise
-            phy_noise_scales = torch.tensor([3.0, 2.0, 3.0, 1.0, 0.0, 0.0, 2.0, 0.0])[:phy_feat.shape[-1]]
+            phy_noise_scales = torch.tensor([3.0, 2.0, 3.0, 1.0, 0.0, 0.0, 2.0, 0.0], device=phy_feat.device)[:phy_feat.shape[-1]]
             phy_noise = torch.randn_like(phy_feat) * noise_std * phy_noise_scales
             measurements['phy_features'] = phy_feat + phy_noise
             
@@ -86,7 +86,7 @@ class RadioAugmentation(torch.nn.Module):
             mask = measurements['mask']
             # Only drop if we have multiple time steps
             if mask.sum() > 1:
-                drop_mask = torch.rand(mask.shape) > drop_prob
+                drop_mask = torch.rand(mask.shape, device=mask.device) > drop_prob
                 # Ensure at least one time step remains
                 if drop_mask.any():
                     measurements['mask'] = mask & drop_mask
@@ -96,11 +96,11 @@ class RadioAugmentation(torch.nn.Module):
             drop_prob = cfg['feature_dropout']
             
             # Drop RT features
-            rt_drop = torch.rand(measurements['rt_features'].shape) < drop_prob
+            rt_drop = torch.rand(measurements['rt_features'].shape, device=measurements['rt_features'].device) < drop_prob
             measurements['rt_features'] = measurements['rt_features'].masked_fill(rt_drop, 0.0)
             
             # Drop PHY features (per-feature, not per-timestep)
-            phy_drop = torch.rand(measurements['phy_features'].shape[-1]) < drop_prob
+            phy_drop = torch.rand(measurements['phy_features'].shape[-1], device=measurements['phy_features'].device) < drop_prob
             measurements['phy_features'][..., phy_drop] = 0.0
         
         return measurements

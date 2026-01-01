@@ -91,3 +91,4 @@ optuna_study.db
 *.toc
 *.blg
 *.bbl
+optuna_*.db

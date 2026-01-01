@@ -32,7 +32,7 @@ import shutil
 import yaml
 from easydict import EasyDict
 
-from src.utils.logging_utils import setup_logging
+from src.utils.logging_utils import setup_logging, print_section, print_success, print_info, print_warning, print_error, console
 from src.training import UELocalizationLightning
 from src.training.optimization import run_optimization
 from src.pipeline.scene_generation import generate_scenes
@@ -157,13 +157,16 @@ class PipelineOrchestrator:
         
     def log_section(self, title):
         """Log a section header"""
-        logger.info("=" * 80)
-        logger.info(f"  {title}")
-        logger.info("=" * 80)
+        print_section(title)
         
     def run_command(self, cmd, step_name, check=True):
         """Run a command and handle errors"""
-        logger.info(f"Running: {' '.join(cmd)}")
+        # Show command in dim for debugging without clutter
+        cmd_str = ' '.join(str(c) for c in cmd)
+        if len(cmd_str) > 100:
+            cmd_str = cmd_str[:97] + "..."
+        console.print(f"[dim]→ {cmd_str}[/dim]")
+        
         start = time.time()
         
         try:
@@ -180,12 +183,12 @@ class PipelineOrchestrator:
                 raise subprocess.CalledProcessError(return_code, cmd)
             
             duration = time.time() - start
-            logger.info(f"✓ {step_name} completed in {duration:.1f}s")
+            print_success(f"{step_name} [dim]({duration:.1f}s)[/dim]")
             return return_code
             
         except subprocess.CalledProcessError as e:
             duration = time.time() - start
-            logger.error(f"✗ {step_name} failed after {duration:.1f}s")
+            print_error(f"{step_name} failed after {duration:.1f}s")
             raise
     
     def step_1_generate_scenes(self):
@@ -279,25 +282,33 @@ class PipelineOrchestrator:
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2)
             
-        logger.info(f"Pipeline report saved to: {report_path}")
+        print_info(f"Report saved to [bold]{report_path.name}[/bold]")
         
-        # Print summary
-        logger.info("\n" + "=" * 80)
-        logger.info("  PIPELINE EXECUTION SUMMARY")
-        logger.info("=" * 80)
-        logger.info(f"Run Name:       {self.args.run_name}")
-        logger.info(f"Duration:       {duration/60:.1f} minutes")
-        logger.info(f"Steps:          {', '.join(report['steps_completed'])}")
-        logger.info(f"Scenes:         {self.scene_dir}")
-        logger.info(f"Dataset:        {self.dataset_dir}")
-        logger.info(f"Checkpoints:    {self.checkpoint_dir}")
-        logger.info("=" * 80 + "\n")
+        # Print summary using rich table
+        from rich.table import Table
+        
+        console.print()  # Empty line
+        print_section("PIPELINE SUMMARY", f"Run: {self.args.run_name}")
+        
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="cyan")
+        table.add_column("Value", style="white")
+        
+        table.add_row("Duration", f"{duration/60:.1f} minutes")
+        table.add_row("Steps", ", ".join(report['steps_completed']))
+        table.add_row("Checkpoints", str(self.checkpoint_dir.relative_to(self.project_root)))
+        if self.train_dataset_paths:
+            datasets_str = ", ".join([p.name for p in self.train_dataset_paths])
+            table.add_row("Datasets", datasets_str)
+        
+        console.print(table)
+        console.print()
         
     def run(self):
         """Execute the complete pipeline"""
         try:
-            logger.info(f"Starting pipeline: {self.args.run_name}")
-            logger.info(f"Project root: {self.project_root}")
+            console.print(f"\n[bold]Starting Pipeline:[/bold] [cyan]{self.args.run_name}[/cyan]")
+            console.print(f"[dim]Project: {self.project_root}[/dim]\n")
             
             self.step_1_generate_scenes()
             self.step_2_generate_dataset()
@@ -313,11 +324,11 @@ class PipelineOrchestrator:
                 
             self.step_5_generate_report()
             
-            logger.info("✓ Pipeline completed successfully!")
+            print_success("Pipeline completed successfully!")
             return 0
             
         except Exception as e:
-            logger.error(f"✗ Pipeline failed: {e}")
+            print_error(f"Pipeline failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return 1
@@ -455,12 +466,12 @@ Examples:
         args.batch_size = 8
         args.scene_name = 'quick_test'
         args.run_name = 'quick_test'
-        logger.info("Quick test mode enabled")
+        print_info("Quick test mode enabled")
 
     if args.light_train:
         args.epochs = min(args.epochs, 2)
         args.batch_size = min(args.batch_size, 8)
-        logger.info("Light training mode enabled")
+        print_info("Light training mode enabled")
     
     # Handle train-only mode
     if args.train_only:
@@ -496,10 +507,11 @@ def _setup_comet_environment(args):
         
         # Check if API key is available
         if not os.environ.get('COMET_API_KEY'):
-            logger.warning("⚠️  --comet enabled but no API key found.")
-            logger.warning("   Set via --comet-api-key or COMET_API_KEY env var.")
+            print_warning("Comet ML enabled but no API key found")
+            console.print("[dim]Set via --comet-api-key or COMET_API_KEY env var[/dim]")
         else:
-            logger.info(f"✓ Comet ML enabled (workspace: {os.environ.get('COMET_WORKSPACE', 'default')})")
+            workspace = os.environ.get('COMET_WORKSPACE', 'default')
+            print_info(f"Comet ML enabled [dim](workspace: {workspace})[/dim]")
 
 
 def main():

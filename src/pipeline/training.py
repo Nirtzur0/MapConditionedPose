@@ -285,4 +285,4 @@ def train_model(args, project_root: Path, checkpoint_dir: Path, optuna_config_pa
 
     run_command_func(cmd, "Model Training")
 
-    print_success(f"Checkpoints: [bold]{checkpoint_dir.relative_to(project_root)}[/bold]\")
+    print_success(f"Checkpoints: [bold]{checkpoint_dir.relative_to(project_root)}[/bold]")

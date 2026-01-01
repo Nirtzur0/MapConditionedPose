@@ -14,7 +14,7 @@ import torch.nn as nn
 from typing import Dict, Tuple, Optional
 
 from .radio_encoder import RadioEncoder
-from .map_encoder import E2EquivariantMapEncoder
+from .map_encoder import E2EquivariantMapEncoder, StandardMapEncoder
 from .fusion import CrossAttentionFusion
 from .heads import CoarseHead, FineHead
 
@@ -65,18 +65,32 @@ class UELocalizationModel(nn.Module):
             mac_features_dim=radio_cfg['mac_features_dim'],
         )
         
-        # Map encoder: E2 equivariant vision transformer
-        self.map_encoder = E2EquivariantMapEncoder(
-            img_size=map_cfg['img_size'],
-            in_channels=map_cfg['in_channels'],
-            d_model=map_cfg['d_model'],
-            num_heads=map_cfg['nhead'],
-            num_layers=map_cfg['num_layers'],
-            num_group_elements=map_cfg.get('num_group_elements', 8),  # p4m group by default
-            dropout=map_cfg['dropout'],
-            radio_map_channels=map_cfg['radio_map_channels'],
-            osm_map_channels=map_cfg['osm_map_channels'],
-        )
+        # Map encoder: Choose between E2 equivariant and standard ViT
+        use_e2 = map_cfg.get('use_e2_equivariant', True)
+        if use_e2:
+            self.map_encoder = E2EquivariantMapEncoder(
+                img_size=map_cfg['img_size'],
+                in_channels=map_cfg['in_channels'],
+                d_model=map_cfg['d_model'],
+                num_heads=map_cfg['nhead'],
+                num_layers=map_cfg['num_layers'],
+                num_group_elements=map_cfg.get('num_group_elements', 8),  # p4m group by default
+                dropout=map_cfg['dropout'],
+                radio_map_channels=map_cfg['radio_map_channels'],
+                osm_map_channels=map_cfg['osm_map_channels'],
+            )
+        else:
+            self.map_encoder = StandardMapEncoder(
+                img_size=map_cfg['img_size'],
+                patch_size=map_cfg.get('patch_size', 16),
+                in_channels=map_cfg['in_channels'],
+                d_model=map_cfg['d_model'],
+                num_heads=map_cfg['nhead'],
+                num_layers=map_cfg['num_layers'],
+                dropout=map_cfg['dropout'],
+                radio_map_channels=map_cfg['radio_map_channels'],
+                osm_map_channels=map_cfg['osm_map_channels'],
+            )
         
         self.fusion = CrossAttentionFusion(
             d_radio=radio_cfg['d_model'],
