@@ -283,6 +283,12 @@ class RadioLocalizationDataset(Dataset):
             ue_y = np.asarray(self.store['positions/ue_y'])
             if ue_x.size == 0 or ue_y.size == 0:
                 return None
+            
+            # Also infer the actual extent from position range
+            x_range = float(np.nanmax(ue_x) - np.nanmin(ue_x))
+            y_range = float(np.nanmax(ue_y) - np.nanmin(ue_y))
+            self._inferred_extent = float(max(x_range, y_range))
+            
             return float(np.nanmin(ue_x)), float(np.nanmin(ue_y))
         except Exception:
             return None
@@ -356,7 +362,12 @@ class RadioLocalizationDataset(Dataset):
             h = scene_bbox[3] - scene_bbox[1]
             sample_extent = float(max(w, h))
         else:
-            sample_extent = self.scene_extent
+            # If no bbox, infer from data range
+            # Check if we have the actual extent in store metadata
+            if hasattr(self, '_inferred_extent'):
+                sample_extent = self._inferred_extent
+            else:
+                sample_extent = self.scene_extent
         
         # Convert to grid cell for coarse supervision (grid_size: e.g., 32x32)
         grid_size = 32

@@ -4,13 +4,13 @@ dataset:
   normalize_features: true
   scene_extent: 512
   test_on_eval: true
-  test_zarr_path: data/processed/sionna_dataset_eval/dataset_eval.zarr
+  test_zarr_path: /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset_eval/dataset_eval.zarr
   train_zarr_paths:
-  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260101_130755.zarr
+  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260101_184259.zarr
 infrastructure:
   accelerator: auto
   checkpoint:
-    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260101_134949
+    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260101_184159
     mode: min
     monitor: val_median_error
     save_top_k: 3
@@ -28,21 +28,21 @@ infrastructure:
   precision: 32-true
 model:
   coarse_head:
-    d_input: 256
+    d_input: 128
     dropout: 0.1
     grid_size: 32
   fine_head:
     d_hidden: 256
-    d_input: 256
+    d_input: 128
     dropout: 0.1
     top_k: 5
   fusion:
-    d_fusion: 256
-    dropout: 0.14017033039430735
-    nhead: 4
+    d_fusion: 128
+    dropout: 0.21071252468272683
+    nhead: 8
   map_encoder:
-    d_model: 128
-    dropout: 0.11453413455674342
+    d_model: 256
+    dropout: 0.1400474003032033
     img_size: 256
     in_channels: 10
     nhead: 8
@@ -54,7 +54,7 @@ model:
   name: MapConditionedTransformer
   radio_encoder:
     d_model: 128
-    dropout: 0.2054473179624739
+    dropout: 0.17184798486918024
     embedding:
       beam_id_embed_dim: 32
       cell_id_embed_dim: 64
@@ -62,10 +62,10 @@ model:
       time_embed_dim: 64
     mac_features_dim: 6
     max_seq_len: 20
-    nhead: 8
+    nhead: 2
     num_beams: 64
     num_cells: 3
-    num_layers: 4
+    num_layers: 2
     phy_features_dim: 8
     rt_features_dim: 16
     type: SetTransformer
@@ -87,7 +87,7 @@ training:
   batch_size: 8
   gradient_clip: 1.0
   gradient_clip_val: 1.0
-  learning_rate: 0.00048550255397640074
+  learning_rate: 0.00013583861930140296
   loss:
     augmentation:
       feature_dropout: 0.05
@@ -104,5 +104,5 @@ training:
   num_epochs: 10
   optimizer: adamw
   scheduler: cosine_with_warmup
-  warmup_steps: 1000
-  weight_decay: 0.0007594269547901447
+  warmup_steps: 500
+  weight_decay: 0.0037025996504164104

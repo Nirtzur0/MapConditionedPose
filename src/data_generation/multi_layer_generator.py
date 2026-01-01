@@ -377,11 +377,13 @@ class MultiLayerDataGenerator:
                 continue
             
             try:
-                scene_data = self.generate_scene_data(scene_path, scene_id)
+                # Load metadata to pass bbox to zarr writer
+                scene_metadata = self.scene_loader.load_metadata(scene_id)
+                scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata)
                 
                 # Write to Zarr
                 if ZARR_AVAILABLE and scene_data and self.zarr_writer:
-                    self.zarr_writer.append(scene_data, scene_id=scene_id)
+                    self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
                     
                     # Write Maps if available
                     if 'radio_map' in scene_data and 'osm_map' in scene_data:
