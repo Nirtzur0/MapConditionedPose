@@ -45,6 +45,9 @@ plyfile           # PLY file processing
 requests>=2.31.0  # HTTP requests
 scipy>=1.11.0     # Scientific computing (for interpolation)
 importlib_resources>=6.0.0  # Resource file access
+networkx>=3.1
+rtree>=1.0.1
+scipy>=1.10.0
 trimesh>=4.0.0        # Mesh processing
 
 # =============================================================================

@@ -422,7 +422,7 @@ Examples:
                        help='Training batch size')
     parser.add_argument('--learning-rate', type=float, default=0.0001,
                        help='Learning rate')
-    parser.add_argument('--num-workers', type=int, default=8,
+    parser.add_argument('--num-workers', type=int, default=2,
                        help='DataLoader workers')
     parser.add_argument('--resume-checkpoint', type=Path, default=None,
                        help='Resume from checkpoint')
