@@ -335,6 +335,11 @@ class RadioLocalizationDataset(Dataset):
             if scene_bbox is not None:
                 scene_bbox = np.asarray(scene_bbox, dtype=np.float32)
                 bbox_valid = np.isfinite(scene_bbox).all() and np.any(np.abs(scene_bbox) > 1e-6)
+                
+                if bbox_valid:
+                    width = scene_bbox[2] - scene_bbox[0]
+                    height = scene_bbox[3] - scene_bbox[1]
+                    normalization_extent = float(max(width, height))
         
         # Fall back to inference if neither extent nor bbox available
         if scene_extent_value is None and not bbox_valid:
@@ -606,8 +611,8 @@ class RadioLocalizationDataset(Dataset):
         if 'radio_maps' not in self.store or self.store['radio_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
             # Channels: rsrp, rsrq, sinr, cqi, throughput
-            H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(5, H, W, dtype=torch.float32)
+            # Return target size 256x256 directly
+            return torch.zeros(5, 256, 256, dtype=torch.float32)
         
         # Load radio map for the specific scene
         # Handle shape [NumScenes, C, H, W] or [NumScenes, H, W, C]
@@ -652,8 +657,8 @@ class RadioLocalizationDataset(Dataset):
 
         if 'osm_maps' not in self.store or self.store['osm_maps'].shape[0] == 0:
             # Return dummy map if not available, padded to 5 channels
-            H = W = int(self.scene_extent / self.map_resolution)
-            return torch.zeros(5, H, W, dtype=torch.float32)
+            # Return target size 256x256 directly
+            return torch.zeros(5, 256, 256, dtype=torch.float32)
         
         # Load OSM map for the specific scene
         osm_map = torch.tensor(self.store['osm_maps'][scene_idx], dtype=torch.float32)

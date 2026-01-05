@@ -45,6 +45,7 @@ plyfile           # PLY file processing
 requests>=2.31.0  # HTTP requests
 scipy>=1.11.0     # Scientific computing (for interpolation)
 importlib_resources>=6.0.0  # Resource file access
+trimesh>=4.0.0        # Mesh processing
 
 # =============================================================================
 # Experiment Tracking & Logging
