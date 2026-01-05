@@ -18,7 +18,7 @@ model:
   
   # Map Encoder (Vision Transformer)
   map_encoder:
-    use_e2_equivariant: true  # NOW WORKING! Uses patch-level spatial dims
+    use_e2_equivariant: false  # Changed to standard ViT by default
     num_group_elements: 8     # p4m group: 4 rotations x 2 reflections
     img_size: 256             # Map resolution (pixels)
     patch_size: 16            # Patch size (CRITICAL for memory efficiency)

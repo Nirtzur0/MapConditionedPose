@@ -403,7 +403,7 @@ class StandardMapEncoder(nn.Module):
 
 
 # Alias for backward compatibility
-MapEncoder = E2EquivariantMapEncoder
+MapEncoder = StandardMapEncoder
 
 
 

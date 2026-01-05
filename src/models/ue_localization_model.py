@@ -66,7 +66,7 @@ class UELocalizationModel(nn.Module):
         )
         
         # Map encoder: Choose between E2 equivariant and standard ViT
-        use_e2 = map_cfg.get('use_e2_equivariant', True)
+        use_e2 = map_cfg.get('use_e2_equivariant', False)
         if use_e2:
             self.map_encoder = E2EquivariantMapEncoder(
                 img_size=map_cfg['img_size'],
