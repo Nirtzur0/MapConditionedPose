@@ -177,6 +177,7 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
                 'dropout': 0.1,
                 'radio_map_channels': 5,
                 'osm_map_channels': 5,
+                'use_e2_equivariant': False,
             },
             'fusion': {
                 'd_fusion': 128,

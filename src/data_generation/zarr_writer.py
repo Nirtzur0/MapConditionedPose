@@ -300,6 +300,8 @@ class ZarrDatasetWriter:
         self._create_array('metadata/ue_ids', dtype='int32', shape=(0,))
         self._create_array('metadata/scene_indices', dtype='int16', shape=(0,))
         
+        self._create_array('metadata/scene_extent', dtype='float32', shape=(0, 1))
+        
         # Dimension metadata for variable-length arrays
         self._create_array('metadata/actual_num_cells', dtype='int16', shape=(0,))
         self._create_array('metadata/actual_num_paths', dtype='int16', shape=(0,))
@@ -777,8 +779,9 @@ if __name__ == "__main__":
     
     writer = ZarrDatasetWriter(output_dir=output_dir, chunk_size=100)
     
-    # Append scene 1
-    writer.append(scene_data_1, scene_id='scene_001')
+    # Append scene 1 WITH METADATA (TESTING FIX)
+    mock_metadata = {'bbox': {'x_min': 0, 'y_min': 0, 'x_max': 1000, 'y_max': 1000}}
+    writer.append(scene_data_1, scene_id='scene_001', scene_metadata=mock_metadata)
     logger.info(f"✓ Appended scene_001: {num_samples} samples")
     
     # Create and append scene 2
@@ -793,7 +796,8 @@ if __name__ == "__main__":
             else:
                 scene_data_2[key] = scene_data_2[key][:150]
     
-    writer.append(scene_data_2, scene_id='scene_002')
+    # Append scene 2 with metadata
+    writer.append(scene_data_2, scene_id='scene_002', scene_metadata=mock_metadata)
     logger.info(f"✓ Appended scene_002: 150 samples")
     
     # Finalize
