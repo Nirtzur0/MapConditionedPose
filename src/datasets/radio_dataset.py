@@ -83,6 +83,7 @@ class RadioLocalizationDataset(Dataset):
         normalize: bool = True,
         handle_missing: str = 'mask',
         augmentation: Optional[Dict] = None,
+        osm_channels: Optional[List[int]] = None,  # None = all 5 channels for backward compat
     ):
         self.zarr_path = Path(zarr_path)
         self.split = split
@@ -92,8 +93,10 @@ class RadioLocalizationDataset(Dataset):
         self.handle_missing = handle_missing
         self._dataset_origin = None
         
-        self.handle_missing = handle_missing
-        self._dataset_origin = None
+        # OSM channel selection:
+        # None = all 5 channels (backward compat with old checkpoints)
+        # [0, 2] = only Height and Footprint (recommended for new training)
+        self.osm_channels = osm_channels  # None means use all 5 channels
         
         # Caching for maps (significant speedup)
         self._radio_map_cache = {}
@@ -645,8 +648,23 @@ class RadioLocalizationDataset(Dataset):
         self._radio_map_cache[scene_idx] = radio_map
         return radio_map
     
+    # OSM channel configuration:
+    # Original 5 channels: [Height, Material, Footprint, Road, Terrain]
+    # - Height (0): Valid - building heights
+    # - Material (1): Constant ground material (20) - NOT USEFUL
+    # - Footprint (2): Valid - building footprints  
+    # - Road (3): Always 0 (Sionna scenes lack road objects) - NOT USEFUL
+    # - Terrain (4): Always 1 - NOT USEFUL
+    # Recommended for new training: [0, 2] (Height and Footprint only)
+    OSM_USEFUL_CHANNELS = [0, 2]  # Height and Footprint
+    
     def _load_osm_map(self, idx: int) -> torch.Tensor:
-        """Load and process an OSM building/geometry map."""
+        """Load and process an OSM building/geometry map.
+        
+        Channel selection is controlled by self.osm_channels:
+        - None: Load all 5 channels (backward compat with old checkpoints)
+        - List[int]: Load only specified channels (e.g., [0, 2] for Height, Footprint)
+        """
         scene_idx = 0
         if 'metadata' in self.store and 'scene_indices' in self.store['metadata']:
             scene_idx = int(self.store['metadata']['scene_indices'][idx])
@@ -655,10 +673,14 @@ class RadioLocalizationDataset(Dataset):
         if scene_idx in self._osm_map_cache:
             return self._osm_map_cache[scene_idx]
 
+        # Determine which channels to load
+        use_all_channels = self.osm_channels is None
+        channels_to_load = list(range(5)) if use_all_channels else self.osm_channels
+        num_osm_channels = len(channels_to_load)
+        
         if 'osm_maps' not in self.store or self.store['osm_maps'].shape[0] == 0:
-            # Return dummy map if not available, padded to 5 channels
-            # Return target size 256x256 directly
-            return torch.zeros(5, 256, 256, dtype=torch.float32)
+            # Return dummy map
+            return torch.zeros(num_osm_channels, 256, 256, dtype=torch.float32)
         
         # Load OSM map for the specific scene
         osm_map = torch.tensor(self.store['osm_maps'][scene_idx], dtype=torch.float32)
@@ -668,12 +690,24 @@ class RadioLocalizationDataset(Dataset):
              if osm_map.shape[-1] < osm_map.shape[0]:
                  osm_map = osm_map.permute(2, 0, 1)
         
-        # Pad to 5 channels if needed
-        if osm_map.shape[0] < 5:
-            padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
-            osm_map = torch.cat([osm_map, padding], dim=0)
-        
-        osm_map = osm_map[:5]
+        # Select channels based on configuration
+        if use_all_channels:
+            # Backward compatibility: use all 5 channels, pad if needed
+            if osm_map.shape[0] < 5:
+                padding = torch.zeros(5 - osm_map.shape[0], osm_map.shape[1], osm_map.shape[2])
+                osm_map = torch.cat([osm_map, padding], dim=0)
+            osm_map = osm_map[:5]
+        else:
+            # Filter to only specified channels
+            if osm_map.shape[0] >= max(channels_to_load) + 1:
+                osm_map = osm_map[channels_to_load]
+            else:
+                # Fallback: pad if original data has fewer channels
+                result = torch.zeros(num_osm_channels, osm_map.shape[1], osm_map.shape[2])
+                for i, ch_idx in enumerate(channels_to_load):
+                    if ch_idx < osm_map.shape[0]:
+                        result[i] = osm_map[ch_idx]
+                osm_map = result
         
         # Resize to model's expected dimensions (256x256)
         target_size = 256

@@ -37,28 +37,28 @@ class E2EquivariantMapEncoder(nn.Module):
     
     Args:
         img_size: Input image size (256x256)
-        in_channels: Total input channels (5 radio + 5 OSM = 10)
+        in_channels: Total input channels (default: 5 radio + 5 OSM = 10)
         d_model: Hidden dimension
         num_heads: Number of attention heads
         num_layers: Number of equivariant transformer layers
         num_group_elements: Number of discrete E(2) group elements (default: 8 for p4m)
         dropout: Dropout rate
         radio_map_channels: Number of radio map channels (default: 5)
-        osm_map_channels: Number of OSM map channels (default: 5)
+        osm_map_channels: Number of OSM map channels (default: 5 for backward compat)
     """
     
     def __init__(
         self,
         img_size: int = 256,
         patch_size: int = 16,  # NEW: patch size to reduce spatial dims
-        in_channels: int = 10,
+        in_channels: int = 10,  # Default: 5 radio + 5 OSM for backward compat
         d_model: int = 768,
         num_heads: int = 8,
         num_layers: int = 6,
         num_group_elements: int = 8,  # p4m group (4 rotations x 2 reflections)
         dropout: float = 0.1,
         radio_map_channels: int = 5,
-        osm_map_channels: int = 5,
+        osm_map_channels: int = 5,  # All 5 by default for backward compat
     ):
         super().__init__()
         
@@ -309,19 +309,27 @@ class E2EquivariantMapEncoder(nn.Module):
 
 
 class StandardMapEncoder(nn.Module):
-    """Standard Vision Transformer encoder for radio + OSM maps (non-equivariant)."""
+    """Standard Vision Transformer encoder for radio + OSM maps (non-equivariant).
+    
+    Uses 10 input channels by default: 5 radio (path_gain, toa, snr, sinr, throughput)
+    + 5 OSM (height, material, footprint, road, terrain).
+    
+    Note: Material (1), Road (3), and Terrain (4) OSM channels are often constant/empty
+    in Sionna-generated scenes. For new training, consider using osm_channels=[0,2]
+    in the dataset to filter to only Height and Footprint.
+    """
     
     def __init__(
         self,
         img_size: int = 256,
         patch_size: int = 16,
-        in_channels: int = 10,
+        in_channels: int = 10,  # Default: 5 radio + 5 OSM for backward compat
         d_model: int = 384,
         num_heads: int = 8,
         num_layers: int = 6,
         dropout: float = 0.1,
         radio_map_channels: int = 5,
-        osm_map_channels: int = 5,
+        osm_map_channels: int = 5,  # All 5 by default for backward compat
     ):
         super().__init__()
         self.img_size = img_size

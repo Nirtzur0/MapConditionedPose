@@ -170,13 +170,13 @@ def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
             'map_encoder': {
                 'img_size': 256,
                 'patch_size': 16,
-                'in_channels': 10,
+                'in_channels': 10,  # 5 radio + 5 OSM (default for backward compat)
                 'd_model': 256,
                 'nhead': 4,
                 'num_layers': 4,
                 'dropout': 0.1,
                 'radio_map_channels': 5,
-                'osm_map_channels': 5,
+                'osm_map_channels': 5,  # All 5 OSM channels by default
                 'use_e2_equivariant': False,
             },
             'fusion': {

@@ -22,7 +22,7 @@ model:
     num_group_elements: 8     # p4m group: 4 rotations x 2 reflections
     img_size: 256             # Map resolution (pixels)
     patch_size: 16            # Patch size (CRITICAL for memory efficiency)
-    in_channels: 10           # 5 (radio) + 5 (OSM)
+    in_channels: 10           # 5 (radio) + 5 (OSM) - default for backward compat
     d_model: 192              # Hidden dimension
     nhead: 4                  # Attention heads
     num_layers: 3             # Transformer layers
@@ -30,7 +30,7 @@ model:
     
     # Channel configuration
     radio_map_channels: 5  # path_gain, toa, snr, sinr, throughput
-    osm_map_channels: 5    # height, material_id, footprint_mask, road_mask, terrain
+    osm_map_channels: 5    # height, material, footprint, road, terrain (all 5 for compat)
   
   # Cross-Attention Fusion
   fusion:
