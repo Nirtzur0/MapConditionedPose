@@ -330,7 +330,7 @@ class MultiLayerDataGenerator:
         dims['phy_fapi/pmi'] = (max_cells, 1)
         
         # MAC Layer
-        dims['mac_rrc/neighbor_cell_ids'] = (max_neighbors,)
+        dims['mac_rrc/neighbor_cell_ids'] = (max_cells, max_neighbors)
         # serving_cell_id is scalar [N]
         # timing_advance is scalar [N]
         
@@ -470,7 +470,7 @@ class MultiLayerDataGenerator:
             
             # Set max dimensions
             scene_ids = [scene_id for scene_id, _, _ in split_data]
-            writer.set_max_dimensions(self._infer_max_dimensions(scene_ids))
+            writer.set_max_dimensions(self.compute_max_dimensions(scene_ids))
             
             # Write data
             for scene_id, scene_data, scene_metadata in tqdm(split_data, desc=f"Writing {split_name}"):

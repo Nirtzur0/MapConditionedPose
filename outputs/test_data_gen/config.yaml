@@ -1,0 +1,25 @@
+data:
+  bandwidth_hz: 100000000.0
+  carrier_freq_hz: 3500000000.0
+  num_reports_per_ue: 10
+  num_ue_per_tile: 100
+  split_ratios:
+    test: 0.15
+    train: 0.7
+    val: 0.15
+name: test_data_gen
+scenes:
+  cities:
+  - bbox:
+    - -105.28
+    - 40.014
+    - -105.27
+    - 40.02
+    name: Boulder, CO
+  num_tx: 3
+  site_strategy: random
+training:
+  batch_size: 16
+  epochs: 30
+  learning_rate: 0.0002
+  num_workers: 4

@@ -1,0 +1,10 @@
+checkpoints: /home/ubuntu/projects/CellularPositioningResearch/outputs/test_train/checkpoints
+datasets:
+  test: /home/ubuntu/projects/CellularPositioningResearch/outputs/test_train/data/dataset_test_20260107_164736.zarr
+  train: /home/ubuntu/projects/CellularPositioningResearch/outputs/test_train/data/dataset_train_20260107_164731.zarr
+  val: /home/ubuntu/projects/CellularPositioningResearch/outputs/test_train/data/dataset_val_20260107_164735.zarr
+duration_formatted: 1.9 minutes
+duration_seconds: 111.53680157661438
+name: test_train
+output_dir: /home/ubuntu/projects/CellularPositioningResearch/outputs/test_train
+timestamp: '2026-01-07T16:48:52.896630'
