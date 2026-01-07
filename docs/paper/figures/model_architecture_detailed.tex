@@ -1,0 +1,153 @@
+% Detailed Model Architecture for Inclusion in Paper
+% Include with: \input{figures/model_architecture_detailed.tex}
+% NOTE: This file should be included INSIDE a figure environment
+
+\begin{tikzpicture}[
+    node distance=0.5cm and 0.7cm,
+    >=Latex,
+    font=\small,
+    scale=0.85,
+    transform shape,
+    % Block styles
+    inputbox/.style={draw, rounded corners=2pt, fill=blue!15, minimum width=1.8cm, minimum height=0.55cm, align=center},
+    embedbox/.style={draw, rounded corners=2pt, fill=green!15, minimum width=1.4cm, minimum height=0.45cm, align=center, font=\scriptsize},
+    projbox/.style={draw, rounded corners=2pt, fill=green!25, minimum width=1.1cm, minimum height=0.38cm, align=center, font=\tiny},
+    transformer/.style={draw, rounded corners=4pt, fill=orange!20, minimum width=2.8cm, minimum height=0.8cm, align=center, thick},
+    fusionbox/.style={draw, rounded corners=4pt, fill=violet!20, minimum width=3.0cm, minimum height=0.7cm, align=center, thick},
+    headbox/.style={draw, rounded corners=2pt, fill=red!15, minimum width=2.2cm, minimum height=0.6cm, align=center},
+    outputbox/.style={draw, rounded corners=2pt, fill=teal!20, minimum width=1.8cm, minimum height=0.55cm, align=center},
+    mapbox/.style={draw, rounded corners=2pt, fill=cyan!15, minimum width=1.8cm, minimum height=0.55cm, align=center},
+    arrow/.style={->, thick, >=Stealth},
+    dasharrow/.style={->, thick, >=Stealth, dashed},
+    catarrow/.style={->, >=Stealth, green!50!black},
+    dimtext/.style={font=\tiny, text=gray},
+]
+
+% ============================================
+% RADIO ENCODER (Left)
+% ============================================
+\node[font=\footnotesize\bfseries, blue!70!black] at (-3.0, 5.3) {Radio Encoder};
+
+% Input features
+\node[inputbox, font=\scriptsize] (embin) at (-4.8, 4.5) {IDs, Time\\{\tiny cell, beam, $\tau$}};
+\node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 13+8+5=26 dim}};
+\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CFR\\{\tiny 8×64}};
+
+% Embeddings
+\node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →128×3}};
+\node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →128×3}};
+\node[projbox] (cfrproj) at (-0.5, 3.6) {Conv1D\\{\tiny →128}};
+
+\draw[arrow, blue!60] (embin) -- (embproj);
+\draw[arrow, blue!60] (featsin) -- (featproj);
+\draw[arrow, cyan!60!black] (cfrin) -- (cfrproj);
+
+% Concatenation
+\node[draw, circle, fill=green!40, minimum size=0.4cm, font=\tiny\bfseries] (concat) at (-2.5, 2.8) {$\oplus$};
+\node[dimtext] at (-1.5, 2.8) {896-dim};
+
+\draw[catarrow] (embproj.south) |- (concat);
+\draw[catarrow] (featproj.south) -- (concat);
+\draw[catarrow] (cfrproj.south) |- (concat);
+
+% Projection
+\node[projbox, minimum width=1.6cm, fill=green!30] (inputproj) at (-2.5, 2.1) {Linear→512};
+\draw[arrow, green!50!black] (concat) -- (inputproj);
+
+% Transformer
+\node[transformer] (radioenc) at (-2.5, 1.0) {\textbf{Transformer}\\{\scriptsize 6L, 8H, Pre-LN}};
+\draw[arrow] (inputproj) -- (radioenc);
+
+% CLS token
+\node[draw, rounded corners=1pt, fill=orange!30, font=\tiny, minimum width=0.6cm, minimum height=0.3cm] (cls) at (-4.2, 1.5) {[CLS]};
+\draw[arrow, orange!60] (cls.south) |- ([yshift=0.1cm]radioenc.north west);
+
+% Output
+\node[outputbox, fill=orange!25, font=\scriptsize] (radiocls) at (-2.5, -0.1) {$\mathbf{z}_r \in \mathbb{R}^{512}$};
+\draw[arrow, orange!60] (radioenc) -- (radiocls);
+
+% ============================================
+% MAP ENCODER (Right)
+% ============================================
+\node[font=\footnotesize\bfseries, cyan!70!black] at (3.5, 5.3) {Map Encoder};
+
+% Map inputs
+\node[mapbox, font=\scriptsize] (radiomap) at (2.5, 4.5) {Radio Map\\{\tiny [5, 256, 256]}};
+\node[mapbox, font=\scriptsize] (osmmap) at (4.8, 4.5) {OSM Map\\{\tiny [5, 256, 256]}};
+
+% Concat
+\node[draw, circle, fill=cyan!40, minimum size=0.4cm, font=\tiny\bfseries] (mapconcat) at (3.65, 3.6) {$\oplus$};
+\node[dimtext] at (4.6, 3.6) {10 ch};
+\draw[arrow, cyan!60] (radiomap) -- (mapconcat);
+\draw[arrow, cyan!60] (osmmap) -- (mapconcat);
+
+% Patch embed
+\node[projbox, minimum width=1.6cm, fill=cyan!25] (patchemb) at (3.65, 2.8) {Patch 16×16};
+\draw[arrow, cyan!60] (mapconcat) -- (patchemb);
+
+% ViT
+\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{E(2)-ViT}\\{\scriptsize 6L, 8H, p4m}};
+\draw[arrow] (patchemb) -- (mapvit);
+
+% Spatial tokens output
+\node[outputbox, fill=cyan!25, font=\scriptsize] (maptokens) at (3.65, 0.5) {$\mathbf{S} \in \mathbb{R}^{256 \times 768}$};
+\draw[arrow, cyan!60] (mapvit) -- (maptokens);
+
+% ============================================
+% CROSS-ATTENTION FUSION (Center)
+% ============================================
+\node[fusionbox] (fusion) at (0.5, -1.3) {\textbf{Cross-Attention}\\{\scriptsize 4 query tokens, 8 heads}};
+
+\draw[arrow, orange!60] (radiocls.south) -- ++(0, -0.35) -| ([xshift=-0.6cm]fusion.north);
+\draw[arrow, cyan!60] (maptokens.south) -- ++(0, -0.35) -| ([xshift=0.6cm]fusion.north);
+
+\node[dimtext, left] at (-0.5, -0.5) {Q};
+\node[dimtext, right] at (1.5, -0.5) {K,V};
+
+% Fused output
+\node[outputbox, fill=violet!25, font=\scriptsize] (fused) at (0.5, -2.4) {$\mathbf{z}_f \in \mathbb{R}^{768}$};
+\draw[arrow, violet!60] (fusion) -- (fused);
+
+% ============================================
+% PREDICTION HEADS (Bottom)
+% ============================================
+% Coarse Head
+\node[headbox, font=\scriptsize] (coarse) at (-1.8, -3.5) {\textbf{Coarse Head}\\{\tiny MLP → 32×32}};
+\draw[arrow] (fused.south) -- ++(0, -0.3) -| (coarse.north);
+
+% Fine Head  
+\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.5) {\textbf{Fine Head}\\{\tiny Top-K=5 GMM}};
+\draw[arrow] (fused.south) -- ++(0, -0.3) -| (fine.north);
+
+% Coarse outputs
+\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (heatmap) at (-2.8, -4.6) {$\boldsymbol{\pi}$\\{\tiny [1024]}};
+\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (topk) at (-0.8, -4.6) {Top-K\\{\tiny [5]}};
+\draw[arrow, red!50] (coarse.south) -- ++(0, -0.25) -| (heatmap.north);
+\draw[arrow, red!50] (coarse.south) -- ++(0, -0.25) -| (topk.north);
+
+% Arrow from coarse to fine
+\draw[dasharrow, red!40] (topk.east) -- ++(0.4, 0) |- ([yshift=-0.15cm]fine.west);
+
+% Fine outputs
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -4.6) {$\boldsymbol{\mu}_k$\\{\tiny [K,2]}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (sigma) at (3.6, -4.6) {$\boldsymbol{\sigma}_k$\\{\tiny [K,2]}};
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (offsets.north);
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (sigma.north);
+
+% ============================================
+% FINAL OUTPUT
+% ============================================
+\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=3.8cm, thick] (finalpos) at (0.5, -5.8) {$\displaystyle p(\mathbf{y}) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{y}; \boldsymbol{\mu}_k, \mathrm{diag}(\boldsymbol{\sigma}_k^2))$};
+\draw[arrow, thick, teal!60] (heatmap.south) |- (finalpos.west);
+\draw[arrow, thick, teal!60] (offsets.south) |- (finalpos);
+\draw[arrow, thick, teal!60] (sigma.south) |- (finalpos.east);
+
+% ============================================
+% BACKGROUND BOXES
+% ============================================
+\begin{scope}[on background layer]
+    \node[draw=blue!40, dashed, rounded corners=6pt, fit=(embin)(cfrin)(radioenc)(radiocls), inner sep=6pt, fill=blue!3] {};
+    \node[draw=cyan!40, dashed, rounded corners=6pt, fit=(radiomap)(osmmap)(mapvit)(maptokens), inner sep=6pt, fill=cyan!3] {};
+\end{scope}
+
+\end{tikzpicture}
