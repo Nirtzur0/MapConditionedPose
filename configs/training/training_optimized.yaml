@@ -83,8 +83,7 @@ model:
 dataset:
   # Training dataset - 7 diverse US cities
   train_zarr_paths:
-    - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260107_080756.zarr
-  
+  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260107_144332.zarr
   # No separate eval dataset - use internal train/val/test splits
   # The dataset will automatically split by scene to prevent data leakage
   test_on_eval: false         # Use internal test split (15% of scenes)
@@ -116,7 +115,7 @@ training:
   
   # Loss configuration - REBALANCED for multi-city generalization
   loss:
-    coarse_weight: 0.5        # REDUCED from 1.0 - coarse CE dominates otherwise
+    coarse_weight: 4.0        # INCREASED from 0.5 to prioritize learning spatial structure first
     fine_weight: 1.0          # Gaussian NLL for offset regression
     position_weight: 0.3      # NEW: Direct position supervision with Smooth L1
     use_physics_loss: false   # Disable unless you have precomputed radio maps
@@ -148,7 +147,7 @@ infrastructure:
   accelerator: "auto"         # Auto-detect GPU/CPU/MPS
   devices: 1
   precision: "32-true"        # Full precision for stability
-  num_workers: 4              # DataLoader workers (adjust based on CPU cores)
+  num_workers: 0  # Disable multiprocessing to avoid Zarr async issues              # DataLoader workers (adjust based on CPU cores)
   
   checkpoint:
     dirpath: "checkpoints/optimized_run"

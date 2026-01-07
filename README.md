@@ -26,24 +26,36 @@ The pipeline learns to localize UEs using:
 ## Quick Start ⚡
 
 ```bash
-# Quick test (recommended for first run)
+# Quick test (uses existing scenes, minimal data, 3 epochs)
 python run_pipeline.py --quick-test
 
-# Full pipeline
-python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+# Full run with custom name
+python run_pipeline.py --name my_experiment
+
+# Skip specific steps
+python run_pipeline.py --skip-scenes  # Use existing scenes
+python run_pipeline.py --skip-training  # Generate data only
+
+# From config file
+python run_pipeline.py --config my_config.yaml
 ```
 
-### Hyperparameter Optimization (Optuna) 🔎
+### Output Structure
 
-```bash
-# Install optional deps
-pip install optuna optuna-integration
-
-# Run Optuna study (then train + eval with best params)
-python run_pipeline.py --optimize --n-trials 20 --study-name ue-localization
+Each run creates organized outputs:
+```
+outputs/{experiment_name}/
+├── config.yaml          # Saved configuration
+├── scenes/              # Generated 3D scenes
+├── data/
+│   ├── dataset_train_*.zarr
+│   ├── dataset_val_*.zarr
+│   └── dataset_test_*.zarr
+├── checkpoints/         # Model checkpoints
+└── report.yaml          # Final metrics
 ```
 
-See `QUICK_START.md` for the compact workflow and `docs/PIPELINE.md` for details.
+See [docs/PIPELINE.md](docs/PIPELINE.md) for detailed usage.
 
 ## Manual Installation
 
@@ -69,29 +81,34 @@ pytest tests/ -v
 ## Architecture (High-Level)
 
 ```
-M1: OSM -> Scene Builder -> Mitsuba scenes
-M2: Sionna RT -> RT/PHY/MAC features -> Zarr
-M3: Transformer (radio + map encoders -> fusion -> position)
-M4: Training + evaluation (+ optional physics loss)
-M5: Web UI for inspection and demos
+Scene Generation: OSM → Scene Builder → 3D Mitsuba scenes
+Data Generation:  Sionna RT → RT/PHY/MAC features → Zarr datasets (train/val/test)
+Model Training:   Transformer (radio + map encoders → fusion → position)
+Evaluation:       Test metrics and visualization
 ```
+
+**Single Entry Point**: `run_pipeline.py` orchestrates the entire pipeline with direct function calls.
 
 ## Documentation 📚
 
-- [QUICK_START.md](QUICK_START.md) - Short start guide
-- [docs/paper/paper.tex](docs/paper/paper.tex) - **Research Paper: Physics-Informed Transformer for UE Localization**
+- [docs/PIPELINE.md](docs/PIPELINE.md) - **Main pipeline usage and CLI options**
 - [docs/README.md](docs/README.md) - Documentation index
-- [docs/PIPELINE.md](docs/PIPELINE.md) - Pipeline usage and options
-- [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) - Design + milestones
-- [docs/SYSTEM_INTEGRATION_GUIDE.md](docs/SYSTEM_INTEGRATION_GUIDE.md) - Data flow and integration
-- [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) - Current status and roadmap
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) - Setup and installation
+- [docs/paper/](docs/paper/) - Research paper and figures
 
 ## Key Directories
 
 ```
-configs/ # Pipeline configs
-scripts/ # Dataset + training scripts
-src/ # Core code
-tests/ # Test suite
-web/ # Streamlit app
+configs/         # Model and training configurations
+scripts/         # Standalone utility scripts
+src/            # Core source code
+  ├── models/         # Transformer model architecture
+  ├── training/       # Training and evaluation logic
+  ├── data_generation/# Data generation from scenes
+  ├── scene_builder/  # OSM to 3D scene conversion
+  └── datasets/       # Data loading and preprocessing
+tests/          # Test suite
+web/            # Streamlit demo app
+run_pipeline.py # Main entry point
 ```

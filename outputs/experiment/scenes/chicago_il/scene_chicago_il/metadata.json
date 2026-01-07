@@ -1,0 +1,157 @@
+{
+  "scene_id": "scene_chicago_il",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/chicago_il/scene_chicago_il",
+  "bbox_wgs84": {
+    "lon_min": -87.67,
+    "lat_min": 41.875,
+    "lon_max": -87.66,
+    "lat_max": 41.885
+  },
+  "bbox": {
+    "x_min": 444403.59125469544,
+    "x_max": 445241.93075670267,
+    "y_min": 4636108.3285705075,
+    "y_max": 4637225.031315033
+  },
+  "polygon": [
+    [
+      -87.67,
+      41.875
+    ],
+    [
+      -87.66,
+      41.875
+    ],
+    [
+      -87.66,
+      41.885
+    ],
+    [
+      -87.67,
+      41.885
+    ],
+    [
+      -87.67,
+      41.875
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_medium_dry_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_wood"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 6.559978729761793,
+      "sigma": 0.0010355622505642467,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 1414871.8741724344,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 1.5317680445903894,
+      "sigma": 0.007922472689653876,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        444487.762734249,
+        4636166.12867004,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          30.595276976030025,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        444725.63437611796,
+        4636842.907937859,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          159.968376464595,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_2",
+      "site_type": "tx",
+      "position": [
+        445133.4944164652,
+        4637080.388688925,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          43.470934188632256,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 2,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 3,
+  "bounds": {
+    "x_min": 444403.59125469544,
+    "x_max": 445241.93075670267,
+    "y_min": 4636108.3285705075,
+    "y_max": 4637225.031315033,
+    "utm_epsg": "EPSG:32616"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/chicago_il/scene_chicago_il/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/chicago_il/scene_chicago_il/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/chicago_il/scene_chicago_il/metadata.json"
+  }
+}

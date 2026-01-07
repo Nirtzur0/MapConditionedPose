@@ -278,12 +278,19 @@ class UELocalizationModel(nn.Module):
         var = sigma ** 2
         
         # Log likelihood per dimension: -0.5 * log(2πσ²) - 0.5 * (x-μ)²/σ²
-        log_prob_dim = -0.5 * torch.log(2 * torch.pi * var) - 0.5 * (residuals ** 2) / var
+        log_prob_dim = -0.5 * torch.log(2 * torch.pi * var + eps) - 0.5 * (residuals ** 2) / (var + eps)
         log_prob_xy = log_prob_dim.sum(dim=-1)  # [B, K] sum over x,y
+        
+        # Clip log probabilities to prevent numerical issues when coarse predictions are very wrong
+        # Minimum corresponds to ~3 sigma away (log(0.01) ≈ -4.6)
+        log_prob_xy = torch.clamp(log_prob_xy, min=-15.0)
         
         # 4. Total mixture probability: sum_k (pi_k * N_k)
         # In log domain: logsumexp(log_pi + log_N)
         log_mixture = torch.logsumexp(log_pi + log_prob_xy, dim=-1)  # [B]
+        
+        # Ensure numerical stability
+        log_mixture = torch.clamp(log_mixture, min=-15.0)
         
         fine_loss = -log_mixture.mean()
         

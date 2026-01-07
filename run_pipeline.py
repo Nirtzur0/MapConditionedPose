@@ -43,7 +43,13 @@ class ExperimentConfig:
     
     # Scene generation
     scenes: Dict = field(default_factory=lambda: {
-        'cities': [{'name': 'Boulder, CO', 'bbox': [-105.28, 40.014, -105.27, 40.020]}],
+        'cities': [
+            {'name': 'Boulder, CO', 'bbox': [-105.28, 40.014, -105.27, 40.020]},
+            {'name': 'Austin, TX', 'bbox': [-97.76, 30.275, -97.75, 30.285]},
+            {'name': 'Seattle, WA', 'bbox': [-122.36, 47.625, -122.35, 47.635]},
+            {'name': 'Chicago, IL', 'bbox': [-87.67, 41.875, -87.66, 41.885]},
+            {'name': 'NYC, NY', 'bbox': [-73.985, 40.75, -73.975, 40.76]}
+        ],
         'num_tx': 3,
         'site_strategy': 'random'
     })

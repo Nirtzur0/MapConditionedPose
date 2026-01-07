@@ -1,0 +1,157 @@
+{
+  "scene_id": "scene_seattle_wa",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/seattle_wa/scene_seattle_wa",
+  "bbox_wgs84": {
+    "lon_min": -122.36,
+    "lat_min": 47.625,
+    "lon_max": -122.35,
+    "lat_max": 47.635
+  },
+  "bbox": {
+    "x_min": 548076.8101344707,
+    "x_max": 548837.3228475862,
+    "y_min": 5274820.304350403,
+    "y_max": 5275937.933066508
+  },
+  "polygon": [
+    [
+      -122.36,
+      47.625
+    ],
+    [
+      -122.35,
+      47.625
+    ],
+    [
+      -122.35,
+      47.635
+    ],
+    [
+      -122.36,
+      47.635
+    ],
+    [
+      -122.36,
+      47.625
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_wet_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_glass"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 20.75781640911283,
+      "sigma": 0.04385665104759,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 2752896.9213443827,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 6.459403331241272,
+      "sigma": 0.0,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        548720.2108338657,
+        5275796.512046514,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          309.427260645811,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        548362.7594902047,
+        5275344.614917354,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          179.84258063691215,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_2",
+      "site_type": "tx",
+      "position": [
+        548667.8472470706,
+        5275648.923330351,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          193.48528342611866,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 2,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 3,
+  "bounds": {
+    "x_min": 548076.8101344707,
+    "x_max": 548837.3228475862,
+    "y_min": 5274820.304350403,
+    "y_max": 5275937.933066508,
+    "utm_epsg": "EPSG:32610"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/seattle_wa/scene_seattle_wa/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/seattle_wa/scene_seattle_wa/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/scenes/seattle_wa/scene_seattle_wa/metadata.json"
+  }
+}
