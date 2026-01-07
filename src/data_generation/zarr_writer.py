@@ -77,25 +77,31 @@ class ZarrDatasetWriter:
                  output_dir: Path,
                  chunk_size: int = 100,
                  compression: str = 'blosc',
-                 compression_level: int = 5):
+                 compression_level: int = 5,
+                 split_name: str = None):
         """
         Args:
             output_dir: Output directory for Zarr store
             chunk_size: Number of samples per chunk (default 100)
             compression: Compression algorithm ('blosc', 'gzip', 'lz4', None)
             compression_level: Compression level (1-9)
+            split_name: Name of split (train/val/test), None for single dataset
         """
         self.output_dir = Path(output_dir)
         self.chunk_size = chunk_size
         self.compression = compression
         self.compression_level = compression_level
+        self.split_name = split_name
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize Zarr store
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.store_path = self.output_dir / f"dataset_{timestamp}.zarr"
+        if split_name:
+            self.store_path = self.output_dir / f"dataset_{split_name}_{timestamp}.zarr"
+        else:
+            self.store_path = self.output_dir / f"dataset_{timestamp}.zarr"
         self.store = zarr.open(str(self.store_path), mode='w')
         
         # Track current index

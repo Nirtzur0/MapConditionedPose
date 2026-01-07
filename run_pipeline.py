@@ -56,6 +56,8 @@ class PipelineOrchestrator:
         self.dataset_dir = self.project_root / "data" / "processed" / f"{args.scene_name}_dataset"
         self.checkpoint_dir = self.project_root / "checkpoints" / args.run_name
         self.train_dataset_paths = [Path(p) for p in args.train_datasets] if args.train_datasets else []
+        self.val_dataset_paths = []
+        self.test_dataset_paths = []
         self.eval_dataset_path = Path(args.eval_dataset) if args.eval_dataset else None
         self.eval_config_path = None
         self.optuna_params: Optional[Dict[str, float]] = None
@@ -175,9 +177,16 @@ class PipelineOrchestrator:
             process = subprocess.Popen(
                 cmd,
                 text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 cwd=self.project_root,
                 env=env
             )
+            
+            # Stream output in real-time
+            for line in process.stdout:
+                print(line, end='')
+            
             return_code = process.wait()
             if check and return_code != 0:
                 raise subprocess.CalledProcessError(return_code, cmd)
@@ -197,16 +206,20 @@ class PipelineOrchestrator:
         
     def step_2_generate_dataset(self):
         """Generate synthetic dataset from scenes using Sionna ray tracing"""
-        self.dataset_path, self.eval_dataset_path = generate_dataset(
+        train_paths, val_paths, test_paths = generate_dataset(
             self.args, self.project_root, self.scene_dir, self.dataset_dir,
             self.train_dataset_paths, self.eval_dataset_path,
             self.log_section, self.run_command
         )
+        # Store all three splits
+        self.train_dataset_paths = train_paths
+        self.val_dataset_paths = val_paths
+        self.test_dataset_paths = test_paths
         
     def step_3_train_model(self):
         """Train the transformer model"""
         train_model(self.args, self.project_root, self.checkpoint_dir, self.optuna_config_path,
-                   self.optuna_params, self.train_dataset_paths, self.dataset_path, self.eval_dataset_path,
+                   self.optuna_params, self.train_dataset_paths, self.val_dataset_paths, self.test_dataset_paths,
                    self.args.num_tx, self.log_section, self.run_command)
 
     def step_3_optimize_model(self):

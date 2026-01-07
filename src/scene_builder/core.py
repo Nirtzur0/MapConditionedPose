@@ -425,10 +425,47 @@ class Scene:
         logger.debug(
             f"OSM bounding box: (north={north}, south={south}, east={east}, west={west})"
         )
-        buildings = ox.features.features_from_bbox(
-            bbox=ground_polygon_4326_bbox, tags={"building": True}
-        )
-        buildings = buildings.to_crs(projection_UTM_EPSG_code)
+        
+        # Query OSM with retry logic for transient errors
+        max_retries = 3
+        retry_delay = 2.0
+        buildings = None
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                buildings = ox.features.features_from_bbox(
+                    bbox=ground_polygon_4326_bbox, tags={"building": True}
+                )
+                buildings = buildings.to_crs(projection_UTM_EPSG_code)
+                break  # Success
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                
+                # Check if it's a transient error
+                is_transient = (
+                    "504" in error_msg or "503" in error_msg or "502" in error_msg or
+                    "timeout" in error_msg.lower() or
+                    "connection" in error_msg.lower() or
+                    "overpass" in error_msg.lower()
+                )
+                
+                if attempt < max_retries - 1 and is_transient:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"OSM query failed (attempt {attempt + 1}/{max_retries}): {error_msg[:100]}"
+                    )
+                    logger.info(f"Retrying in {wait_time:.1f} seconds...")
+                    import time
+                    time.sleep(wait_time)
+                else:
+                    raise
+        
+        if buildings is None:
+            raise RuntimeError(
+                f"Failed to query OSM after {max_retries} attempts. Last error: {last_error}"
+            )
 
         # Filter out the building which outside the bounding box since
         # OSM will return some extra buildings.

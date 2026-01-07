@@ -153,18 +153,37 @@ def main():
     # Generate dataset
     logger.info("Starting dataset generation...")
     try:
-        output_path = generator.generate_dataset(
+        output_paths = generator.generate_dataset(
             scene_ids=args.scene_ids,
-            num_scenes=args.num_scenes
+            num_scenes=args.num_scenes,
+            create_splits=True  # Always create train/val/test splits
         )
         
         logger.info(f"✓ Dataset generation complete!")
-        logger.info(f"  Output: {output_path}")
         
-        # Print statistics
-        stats = generator.zarr_writer.get_stats()
-        logger.info(f"  Total samples: {stats['num_samples']}")
-        logger.info(f"  Total scenes: {stats['num_scenes']}")
+        if isinstance(output_paths, dict):
+            # Split datasets created
+            for split_name, path in output_paths.items():
+                logger.info(f"  {split_name.capitalize()}: {path}")
+                
+                # Print split statistics
+                stats = generator.zarr_writer.get_stats() if hasattr(generator, 'zarr_writer') else None
+                if not stats:
+                    # Try to get stats from the zarr file
+                    import zarr
+                    try:
+                        store = zarr.open(str(path), mode='r')
+                        if 'positions' in store and 'ue_x' in store['positions']:
+                            num_samples = len(store['positions/ue_x'])
+                            logger.info(f"    Samples: {num_samples}")
+                    except:
+                        pass
+        else:
+            # Single dataset (legacy)
+            logger.info(f"  Output: {output_paths}")
+            stats = generator.zarr_writer.get_stats()
+            logger.info(f"  Total samples: {stats['num_samples']}")
+            logger.info(f"  Total scenes: {stats['num_scenes']}")
         
         return 0
         

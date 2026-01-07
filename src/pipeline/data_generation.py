@@ -51,8 +51,65 @@ def generate_dataset(args, project_root: Path, scene_dir: Path, dataset_dir: Pat
                     log_section_func, run_command_func):
     """
     Generate synthetic dataset from scenes using Sionna ray tracing.
+    Creates 3 separate datasets: train (70%), val (15%), test (15%)
+    Returns: (train_paths, val_paths, test_paths)
     """
-    if args.skip_dataset:
+    log_section_func("STEP 2: Generate Dataset")
+
+    cmd = [sys.executable, "scripts/generate_dataset.py"]
+
+    if args.data_config:
+        print_info(f"Using data config: [bold]{args.data_config.name}[/bold]")
+        with open(args.data_config, 'r') as f:
+            config = EasyDict(yaml.safe_load(f)).data_generation
+
+        # The scene_dir used for generation is specified inside the data_config file
+        scene_dir_from_config = project_root / config.scenes.root_dir
+        dataset_dir = project_root / Path(config.output.path).parent
+
+        cmd.extend(["--config", str(args.data_config)])
+        cmd.extend(["--scene-dir", str(scene_dir_from_config)])
+        cmd.extend(["--output-dir", str(dataset_dir)])
+    else:
+        logger.info(f"Using scenes from {scene_dir} with Sionna ray tracing")
+        dataset_dir = project_root / "data" / "processed" / f"{args.scene_name}_dataset"
+        cmd.extend([
+            "--scene-dir", str(scene_dir),
+            "--output-dir", str(dataset_dir),
+            "--carrier-freq", str(args.carrier_freq),
+            "--bandwidth", str(args.bandwidth),
+            "--num-ue", str(args.num_ues),
+        ])
+
+    if args.num_scenes:
+        cmd.extend(["--num-scenes", str(args.num_scenes)])
+
+    # Clean existing dataset if requested
+    if args.clean and dataset_dir.exists():
+        print_info(f"Cleaning: [dim]{dataset_dir.name}[/dim]")
+        shutil.rmtree(dataset_dir)
+
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    run_command_func(cmd, "Dataset Generation")
+
+    # Find the generated split datasets
+    train_files = sorted(dataset_dir.glob("dataset_train_*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+    val_files = sorted(dataset_dir.glob("dataset_val_*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+    test_files = sorted(dataset_dir.glob("dataset_test_*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    if not train_files or not val_files or not test_files:
+        raise RuntimeError(f"Split datasets not created in: {dataset_dir}")
+    
+    train_path = train_files[0]
+    val_path = val_files[0]
+    test_path = test_files[0]
+    
+    print_success(f"Train: [bold]{train_path.name}[/bold]")
+    print_success(f"Val: [bold]{val_path.name}[/bold]")
+    print_success(f"Test: [bold]{test_path.name}[/bold]")
+    
+    # Return as lists for compatibility
+    return [train_path], [val_path], [test_path]
         print_info("Skipping dataset generation")
         # Logic to reuse existing datasets
         if args.train_data_configs or args.train_datasets or args.eval_data_config:

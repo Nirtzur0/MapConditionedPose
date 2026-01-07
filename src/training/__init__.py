@@ -670,69 +670,42 @@ class UELocalizationLightning(pl.LightningModule):
         if split == 'train' and 'training' in self.config:
             augmentation = self.config['training'].get('augmentation', None)
         
-        # Determine paths and split mode
-        paths = None
-        single_path = None
-        target_split = split
-
-        # Check for new explicit configuration
-        train_paths = dataset_config.get('train_zarr_paths')
-        test_path = dataset_config.get('test_zarr_path')
-        test_on_eval = dataset_config.get('test_on_eval', False)
-
-        if train_paths or (test_path and test_on_eval):
-            if split == 'test' and test_on_eval and test_path:
-                # Test on explicit evaluation dataset (use all data)
-                single_path = test_path
-                target_split = 'all'
-            elif split == 'train':
-                # Train on training datasets (80% split)
-                paths = train_paths 
-                target_split = 'train_80'
-            elif split == 'val':
-                # Val on training datasets (20% split)
-                paths = train_paths
-                target_split = 'val_20'
-            elif split == 'test':
-                 # Fallback: Use validation set as test set if no explicit test set provided
-                 paths = train_paths
-                 target_split = 'val_20' 
-                 logger.warning("No test set configured. Using val_20 split for testing.")
-        else:
-            # Legacy fallback
-            split_key = f"{split}_zarr_paths"
-            paths = dataset_config.get(split_key) or dataset_config.get('zarr_paths')
-            single_path = dataset_config.get(f"{split}_zarr_path") or dataset_config.get('zarr_path')
-
-        # Instantiate Dataset
-        if paths:
-            # Filter out empty paths (including Path('') or '.')
-            valid_paths = [p for p in paths if p and str(p) not in ['', '.']]
-            if not valid_paths:
-                raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
-            
-            return CombinedRadioLocalizationDataset(
-                zarr_paths=valid_paths,
-                split=target_split,
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-                augmentation=augmentation,
-            )
-
-        if single_path:
-            return RadioLocalizationDataset(
-                zarr_path=single_path,
-                split=target_split,
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-                augmentation=augmentation,
-            )
+        # Simple 3-dataset approach: train_zarr_paths, val_zarr_paths, test_zarr_paths
+        # Each contains the full dataset for that split (no further splitting needed)
+        dataset_config = self.config['dataset']
         
-        raise ValueError(f"No dataset configuration found for split {split}")
+        train_paths = dataset_config.get('train_zarr_paths', [])
+        val_paths = dataset_config.get('val_zarr_paths', [])
+        test_paths = dataset_config.get('test_zarr_paths', [])
+        
+        # Select paths based on split
+        if split == 'train':
+            paths = train_paths
+        elif split == 'val':
+            paths = val_paths if val_paths else train_paths  # Fallback to train if no val
+        elif split == 'test':
+            paths = test_paths if test_paths else val_paths  # Fallback to val if no test
+        else:
+            raise ValueError(f"Unknown split: {split}")
+        
+        if not paths:
+            raise ValueError(f"No dataset paths configured for split '{split}'")
+
+        # Filter out empty paths
+        valid_paths = [p for p in paths if p and str(p) not in ['', '.']]
+        if not valid_paths:
+            raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
+        
+        # Use all data from the split dataset (no further splitting)
+        return CombinedRadioLocalizationDataset(
+            zarr_paths=valid_paths,
+            split='all',  # Use all data from this split's dataset
+            map_resolution=dataset_config['map_resolution'],
+            scene_extent=dataset_config['scene_extent'],
+            normalize=dataset_config['normalize_features'],
+            handle_missing=dataset_config['handle_missing_values'],
+            augmentation=augmentation,
+        )
 
     def train_dataloader(self):
         """Create training dataloader."""

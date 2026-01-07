@@ -27,7 +27,16 @@ N_TRIALS=10
 # Training dataset (70k samples from 7 cities)
 TRAIN_DATASET="data/processed/sionna_dataset/dataset_20260107_080756.zarr"
 # Define explicit Evaluation Dataset (Strictly held-out) - optional
+# NOTE: This must be generated separately if you want a held-out test set
+# Otherwise, the pipeline uses 80/20 train/val split from the training dataset
 EVAL_DATASET="data/processed/sionna_dataset_eval/dataset_eval.zarr"
+
+# Check if eval dataset exists
+EVAL_DATASET_ARG=""
+if [ -f "$EVAL_DATASET/.zattrs" ] || [ -d "$EVAL_DATASET" ]; then
+    echo "   Eval dataset found: $EVAL_DATASET"
+    EVAL_DATASET_ARG="--eval-dataset $EVAL_DATASET"
+fi
 
 # --- Dynamic Configuration Based on Mode ---
 if [ "$USE_OPTUNA" = "true" ]; then
@@ -55,6 +64,8 @@ fi
 
 if [ -f "$EVAL_DATASET" ]; then
     echo "   Test Set: $EVAL_DATASET"
+else
+    echo "   Test Set: Using val_20 split from training data (no separate eval dataset)"
 fi
 
 echo ""
@@ -74,7 +85,7 @@ if [ "$USE_OPTUNA" = "true" ]; then
       --n-trials "$N_TRIALS" \
       --study-name "$STUDY_NAME" \
       --storage "$STORAGE" \
-      --eval-dataset "$EVAL_DATASET" \
+      $EVAL_DATASET_ARG \
       --run-name "$RUN_NAME" \
       --clean \
       "$@"
@@ -86,7 +97,7 @@ else
       --data-config configs/data_generation/data_generation_sionna.yaml \
       --config "$TRAINING_CONFIG" \
       --run-name "$RUN_NAME" \
-      --eval-dataset "$EVAL_DATASET" \
+      $EVAL_DATASET_ARG \
       --clean \
       "$@"
 fi

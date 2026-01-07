@@ -338,17 +338,28 @@ class MultiLayerDataGenerator:
 
     def generate_dataset(self,
                         scene_ids: Optional[List[str]] = None,
-                        num_scenes: Optional[int] = None) -> Path:
+                        num_scenes: Optional[int] = None,
+                        create_splits: bool = True,
+                        train_ratio: float = 0.70,
+                        val_ratio: float = 0.15,
+                        test_ratio: float = 0.15) -> Dict[str, Path]:
         """
         Generates a complete dataset from M1 scenes.
         
         Args:
             scene_ids: Specific scene IDs to process (defaults to all).
             num_scenes: Limits the number of scenes processed (for testing).
+            create_splits: If True, create separate train/val/test zarr files (default: True)
+            train_ratio: Proportion of data for training (default: 0.70)
+            val_ratio: Proportion of data for validation (default: 0.15)
+            test_ratio: Proportion of data for testing (default: 0.15)
             
         Returns:
-            Path to the generated Zarr dataset.
+            Dict with paths to generated datasets {'train': Path, 'val': Path, 'test': Path}
+            or single Path if create_splits=False
         """
+        
+        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 0.001, "Split ratios must sum to 1.0"
         # Discover scenes
         if scene_ids is None:
             # Find all scene.xml files recursively
@@ -367,9 +378,11 @@ class MultiLayerDataGenerator:
         
         logger.info(f"Processing {len(scene_ids)} scenes...")
         
-
+        # Collect all data from scenes first
+        all_data = []
+        
         # Process each scene
-        for scene_id in tqdm(scene_ids, desc="Generating Dataset"):
+        for scene_id in tqdm(scene_ids, desc="Generating Data from Scenes"):
             scene_path = self.config.scene_dir / scene_id / 'scene.xml'
             
             if not scene_path.exists():
@@ -377,36 +390,105 @@ class MultiLayerDataGenerator:
                 continue
             
             try:
-                # Load metadata to pass bbox to zarr writer
+                # Load metadata
                 scene_metadata = self.scene_loader.load_metadata(scene_id)
                 scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata)
                 
-                # Write to Zarr
-                if ZARR_AVAILABLE and scene_data and self.zarr_writer:
-                    self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
-                    
-                    # Write Maps if available
-                    if 'radio_map' in scene_data and 'osm_map' in scene_data:
-                        logger.info(f"Writing maps for scene {scene_id}...")
-                        self.zarr_writer.write_scene_maps(
-                            scene_id=scene_id,
-                            radio_map=scene_data['radio_map'],
-                            osm_map=scene_data['osm_map']
-                        )
-                    else:
-                        logger.warning(f"Maps missing for scene {scene_id}: keys={list(scene_data.keys())}")
+                if scene_data:
+                    all_data.append((scene_id, scene_data, scene_metadata))
                     
             except Exception as e:
                 logger.error(f"Failed to process scene {scene_id}: {e}")
                 logger.error(traceback.format_exc())
         
-        # Finalize dataset
-        if ZARR_AVAILABLE and self.zarr_writer:
-            output_path = self.zarr_writer.finalize()
-            logger.info(f"Dataset saved to: {output_path}")
-            return output_path
+        if not all_data:
+            logger.error("No data generated from any scene")
+            return None
         
-        return None
+        logger.info(f"Generated data from {len(all_data)} scenes")
+        
+        # Create splits if requested
+        if create_splits:
+            return self._create_split_datasets(all_data, train_ratio, val_ratio, test_ratio)
+        else:
+            # Create single dataset (legacy behavior)
+            if ZARR_AVAILABLE and self.zarr_writer:
+                for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to Zarr"):
+                    self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+                    
+                    if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                        self.zarr_writer.write_scene_maps(
+                            scene_id=scene_id,
+                            radio_map=scene_data['radio_map'],
+                            osm_map=scene_data['osm_map']
+                        )
+                
+                output_path = self.zarr_writer.finalize()
+                logger.info(f"Dataset saved to: {output_path}")
+                return output_path
+            
+            return None
+    
+    def _create_split_datasets(self, all_data, train_ratio, val_ratio, test_ratio) -> Dict[str, Path]:
+        """Create separate train/val/test zarr files from collected data."""
+        
+        # Shuffle data for random split
+        import random
+        random.seed(42)  # Reproducible splits
+        all_data_shuffled = all_data.copy()
+        random.shuffle(all_data_shuffled)
+        
+        # Calculate split indices
+        total = len(all_data_shuffled)
+        train_end = int(total * train_ratio)
+        val_end = train_end + int(total * val_ratio)
+        
+        train_data = all_data_shuffled[:train_end]
+        val_data = all_data_shuffled[train_end:val_end]
+        test_data = all_data_shuffled[val_end:]
+        
+        logger.info(f"Split: Train={len(train_data)}, Val={len(val_data)}, Test={len(test_data)} scenes")
+        
+        # Create writers for each split
+        output_paths = {}
+        
+        for split_name, split_data in [('train', train_data), ('val', val_data), ('test', test_data)]:
+            if not split_data:
+                logger.warning(f"No data for {split_name} split")
+                continue
+            
+            logger.info(f"Creating {split_name} dataset...")
+            
+            # Create writer for this split
+            writer = ZarrDatasetWriter(
+                output_dir=self.config.output_dir,
+                chunk_size=self.config.zarr_chunk_size,
+                compression='blosc',
+                compression_level=5,
+                split_name=split_name
+            )
+            
+            # Set max dimensions
+            scene_ids = [scene_id for scene_id, _, _ in split_data]
+            writer.set_max_dimensions(self._infer_max_dimensions(scene_ids))
+            
+            # Write data
+            for scene_id, scene_data, scene_metadata in tqdm(split_data, desc=f"Writing {split_name}"):
+                writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+                
+                if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                    writer.write_scene_maps(
+                        scene_id=scene_id,
+                        radio_map=scene_data['radio_map'],
+                        osm_map=scene_data['osm_map']
+                    )
+            
+            # Finalize
+            output_path = writer.finalize()
+            output_paths[split_name] = output_path
+            logger.info(f"✓ {split_name}: {output_path}")
+        
+        return output_paths
 
     def generate_scene_data(self,
                            scene_path: Path,

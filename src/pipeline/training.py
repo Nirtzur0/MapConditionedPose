@@ -59,41 +59,38 @@ def _dataset_defaults(args) -> Dict:
     }
 
 
-def _apply_dataset_paths(dataset_config: Dict, train_paths: List[Path], test_path: Optional[Path]) -> None:
-    # 1. Training Paths
-    paths = [str(p) for p in train_paths]
-    if paths:
-        dataset_config['train_zarr_paths'] = paths
-        # Map resolution/extent still applies globally for now
-    
-    # 2. Test Path
-    if test_path:
-        dataset_config['test_zarr_path'] = str(test_path)
-        dataset_config['test_on_eval'] = True
+def _apply_dataset_paths(dataset_config: Dict, train_paths: List[Path], val_paths: List[Path], test_paths: List[Path]) -> None:
+    # Set paths for train/val/test datasets
+    if train_paths:
+        dataset_config['train_zarr_paths'] = [str(p) for p in train_paths]
+    if val_paths:
+        dataset_config['val_zarr_paths'] = [str(p) for p in val_paths]
+    if test_paths:
+        dataset_config['test_zarr_paths'] = [str(p) for p in test_paths]
     
     # Clean up old keys
     dataset_config.pop('zarr_path', None)
     dataset_config.pop('zarr_paths', None)
-    dataset_config.pop('val_zarr_path', None)
-    dataset_config.pop('val_zarr_paths', None)
-    dataset_config.pop('train_zarr_path', None)
+    dataset_config.pop('test_zarr_path', None)
+    dataset_config.pop('test_on_eval', None)
 
 
-def _ensure_dataset_config(config: Dict, args, train_paths: List[Path], test_path: Optional[Path]) -> Dict:
+
+def _ensure_dataset_config(config: Dict, args, train_paths: List[Path], val_paths: List[Path], test_paths: List[Path]) -> Dict:
     dataset_config = config.setdefault('dataset', {})
     for key, value in _dataset_defaults(args).items():
         dataset_config.setdefault(key, value)
-    _apply_dataset_paths(dataset_config, train_paths, test_path)
+    _apply_dataset_paths(dataset_config, train_paths, val_paths, test_paths)
     return config
 
 
 def _create_training_config(args, project_root: Path, checkpoint_dir: Path,
-                            train_paths: List[Path], test_path: Optional[Path], num_tx: int) -> Path:
+                            train_paths: List[Path], val_paths: List[Path], test_paths: List[Path], num_tx: int) -> Path:
     """Create a training config file based on command line args"""
     import yaml
 
     dataset_config = _dataset_defaults(args)
-    _apply_dataset_paths(dataset_config, train_paths, test_path)
+    _apply_dataset_paths(dataset_config, train_paths, val_paths, test_paths)
 
     config = {
         'dataset': dataset_config,
