@@ -3,11 +3,11 @@ data_generation:
     root_dir: data/scenes
   scene_metadata_path: data/scenes/metadata.json
 
-  # RF parameters
-  carrier_frequency_hz: 3.5e9
-  bandwidth_hz: 100e6
-  tx_power_dbm: 43.0
-  noise_figure_db: 9.0
+  # RF parameters (5G NR n78 band - 3.5 GHz)
+  carrier_frequency_hz: 3.5e9  # 3.5 GHz (5G mid-band)
+  bandwidth_hz: 100e6          # 100 MHz (5G NR typical)
+  tx_power_dbm: 43.0           # Base station transmit power (macro cell)
+  noise_figure_db: 9.0         # UE noise figure
 
   # Sionna RT parameters
   use_mock_mode: false

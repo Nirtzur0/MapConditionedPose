@@ -15,6 +15,11 @@ model:
     rt_features_dim: 16   # padded to accommodate all possible RT features
     phy_features_dim: 8   # rsrp, rsrq, sinr, cqi, ri, pmi, capacity, condition_number
     mac_features_dim: 6   # serving_cell_id, timing_advance, phr, throughput, bler, + padding
+    
+    # Channel Frequency Response (CFR) - channel estimate from DMRS
+    cfr_enabled: true        # Enable CFR feature encoding
+    cfr_num_cells: 8         # Max cells in CFR
+    cfr_num_subcarriers: 64  # Subcarriers per cell (downsampled from full BW)
   
   # Map Encoder (Vision Transformer)
   map_encoder:

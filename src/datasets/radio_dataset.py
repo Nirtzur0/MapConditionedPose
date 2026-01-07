@@ -39,6 +39,8 @@ class RadioLocalizationDataset(Dataset):
     """
     
     # --- Feature Schemas ---
+    # These define which features to load and their defaults
+    # Shape info: tuple of (output_name, zarr_key, [default_value])
     RT_SCHEMA = [
         ('path_gains', 'path_gains'),
         ('path_delays', 'path_delays'),
@@ -66,6 +68,12 @@ class RadioLocalizationDataset(Dataset):
         ('condition_number', 'condition_number', 1.0),
     ]
     
+    # CFR (Channel Frequency Response) - loaded separately due to variable dimensions
+    CFR_SCHEMA = [
+        ('cfr_magnitude', 'cfr_magnitude', 0.0),
+        ('cfr_phase', 'cfr_phase', 0.0),
+    ]
+    
     MAC_SCHEMA = [
         ('serving_cell_id', 'serving_cell_id', 0.0),
         ('timing_advance', 'timing_advance', 0.0),
@@ -73,6 +81,12 @@ class RadioLocalizationDataset(Dataset):
         ('throughput', 'throughput', 0.0),
         ('bler', 'bler', 0.0),
     ]
+    
+    # Default dimensions (can be overridden by FeatureConfig)
+    DEFAULT_RT_DIM = 16
+    DEFAULT_PHY_DIM = 8
+    DEFAULT_MAC_DIM = 6
+    DEFAULT_CFR_SUBCARRIERS = 64
 
     def __init__(
         self,
@@ -575,30 +589,98 @@ class RadioLocalizationDataset(Dataset):
         # We'll use a dynamic target dim based on the schema length effectively?
         # Or better, just pad to the "known max" for safety, which is effectively the schema size.
         
-        rt_target_dim = 16 # Accommodate all possible RT features
+        rt_target_dim = self.DEFAULT_RT_DIM  # Accommodate all possible RT features
         rt_feat = rt_data.get('features', torch.zeros(seq_len, rt_target_dim))
         if rt_feat.shape[-1] < rt_target_dim: 
             rt_feat = torch.cat([rt_feat, torch.zeros(rt_feat.shape[0], rt_target_dim - rt_feat.shape[-1])], dim=-1)
         elif rt_feat.shape[-1] > rt_target_dim:
             rt_feat = rt_feat[..., :rt_target_dim]
+        
+        # PHY features: scalar features + optional CFR
+        phy_target_dim = self.DEFAULT_PHY_DIM
+        phy_feat = phy_data.get('features', torch.zeros(phy_target_dim))
+        if len(phy_feat) < phy_target_dim: 
+            phy_feat = torch.cat([phy_feat, torch.zeros(phy_target_dim - len(phy_feat))], dim=0)
+        elif len(phy_feat) > phy_target_dim: 
+            phy_feat = phy_feat[:phy_target_dim]
+        
+        # Load CFR (Channel Frequency Response) if available
+        # CFR is the channel estimate - critical for positioning
+        cfr_magnitude = self._load_cfr(zarr_idx)
             
-        phy_feat = phy_data.get('features', torch.zeros(8))
-        if len(phy_feat) < 8: phy_feat = torch.cat([phy_feat, torch.zeros(8 - len(phy_feat))], dim=0)
-        elif len(phy_feat) > 8: phy_feat = phy_feat[:8]
-            
-        mac_feat = mac_data.get('features', torch.zeros(6))
-        if len(mac_feat) < 6: mac_feat = torch.cat([mac_feat, torch.zeros(6 - len(mac_feat))], dim=0)
-        elif len(mac_feat) > 6: mac_feat = mac_feat[:6]
+        mac_target_dim = self.DEFAULT_MAC_DIM
+        mac_feat = mac_data.get('features', torch.zeros(mac_target_dim))
+        if len(mac_feat) < mac_target_dim: 
+            mac_feat = torch.cat([mac_feat, torch.zeros(mac_target_dim - len(mac_feat))], dim=0)
+        elif len(mac_feat) > mac_target_dim: 
+            mac_feat = mac_feat[:mac_target_dim]
 
         return {
             'rt_features': rt_feat,
             'phy_features': phy_feat,
             'mac_features': mac_feat,
+            'cfr_magnitude': cfr_magnitude,  # NEW: Channel Frequency Response
             'cell_ids': cell_ids if len(cell_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'beam_ids': beam_ids if len(beam_ids) > 0 else torch.zeros(seq_len, dtype=torch.long),
             'timestamps': timestamps if len(timestamps) > 0 else torch.arange(seq_len, dtype=torch.float32),
             'mask': mask,
         }
+    
+    def _load_cfr(self, idx: int) -> torch.Tensor:
+        """
+        Load Channel Frequency Response (CFR) for the given sample.
+        
+        CFR represents the channel estimate from DMRS symbols - essentially
+        what the UE estimates during channel estimation in the PHY layer.
+        This is a key feature for positioning as it encodes distance and
+        multipath information.
+        
+        Returns:
+            torch.Tensor: CFR magnitude [num_cells, num_subcarriers]
+        """
+        default_cells = 8
+        default_subcarriers = self.DEFAULT_CFR_SUBCARRIERS
+        
+        if 'phy_fapi' not in self.store:
+            return torch.zeros(default_cells, default_subcarriers, dtype=torch.float32)
+        
+        group = self.store['phy_fapi']
+        
+        if 'cfr_magnitude' not in group:
+            # CFR not available - return zeros
+            return torch.zeros(default_cells, default_subcarriers, dtype=torch.float32)
+        
+        try:
+            cfr = group['cfr_magnitude'][idx]
+            cfr = np.array(cfr, dtype=np.float32)
+            
+            # Ensure 2D [cells, subcarriers]
+            if cfr.ndim == 1:
+                cfr = cfr.reshape(1, -1)
+            
+            # Pad/truncate cells dimension
+            if cfr.shape[0] < default_cells:
+                pad = np.zeros((default_cells - cfr.shape[0], cfr.shape[1]), dtype=np.float32)
+                cfr = np.concatenate([cfr, pad], axis=0)
+            elif cfr.shape[0] > default_cells:
+                cfr = cfr[:default_cells, :]
+            
+            # Pad/truncate subcarriers dimension
+            if cfr.shape[1] < default_subcarriers:
+                pad = np.zeros((cfr.shape[0], default_subcarriers - cfr.shape[1]), dtype=np.float32)
+                cfr = np.concatenate([cfr, pad], axis=1)
+            elif cfr.shape[1] > default_subcarriers:
+                cfr = cfr[:, :default_subcarriers]
+            
+            # Normalize CFR (log scale, similar to path gains)
+            cfr = np.log10(cfr + 1e-10)  # dB scale
+            cfr = (cfr + 10) / 20  # Normalize to ~[0, 1] for typical ranges
+            
+            return torch.tensor(cfr, dtype=torch.float32)
+            
+        except Exception as e:
+            logger.debug(f"Failed to load CFR for idx {idx}: {e}")
+            return torch.zeros(default_cells, default_subcarriers, dtype=torch.float32)
     
     def _load_radio_map(self, idx: int) -> torch.Tensor:
         """Load and process a precomputed Sionna radio map."""

@@ -80,18 +80,14 @@ if [ "$USE_OPTUNA" = "true" ]; then
       "$@"
 else
     # Single training mode: Use optimized config
-    # Skip scene/dataset generation, just train on existing dataset
-    if [ ! -f "$TRAIN_DATASET/trajectories/ue_x/.zarray" ]; then
-        echo "❌ Error: Training dataset not found at $TRAIN_DATASET"
-        echo "   Run data generation first or set TRAIN_DATASET to existing dataset"
-        exit 1
-    fi
-    
+    # Run full pipeline (scene + dataset + training) with optimized config
     python run_pipeline.py \
-      --train-only \
+      --scene-config configs/scene_generation/scene_generation.yaml \
+      --data-config configs/data_generation/data_generation_sionna.yaml \
       --config "$TRAINING_CONFIG" \
-      --train-datasets "$TRAIN_DATASET" \
       --run-name "$RUN_NAME" \
+      --eval-dataset "$EVAL_DATASET" \
+      --clean \
       "$@"
 fi
 

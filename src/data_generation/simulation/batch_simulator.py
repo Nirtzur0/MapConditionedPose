@@ -238,12 +238,24 @@ class BatchSimulator:
             if 'path_delays' in rt_native_dict:
                 rt_features.path_delays = rt_native_dict.get('path_delays')
         
-        # Extract Native PHY Features
+        # Extract Native PHY Features (including CFR and PMI)
         if channel_matrix is not None:
             phy_native_dict = self.native_extractor.extract_phy(channel_matrix, batch_size)
             
+            # Standard metrics
             phy_features.capacity_mbps = phy_native_dict.get('on_se') * (self.config.bandwidth_hz / 1e6)
             phy_features.condition_number = phy_native_dict.get('cond_num')
+            
+            # PMI - Precoding Matrix Indicator (SVD-based optimal precoder)
+            if 'pmi' in phy_native_dict:
+                phy_features.pmi = phy_native_dict.get('pmi')
+            
+            # CFR - Channel Frequency Response (channel estimation from DMRS)
+            # This is the key feature representing what the UE estimates from reference signals
+            if 'cfr_magnitude' in phy_native_dict:
+                phy_features.cfr_magnitude = phy_native_dict.get('cfr_magnitude')
+            if 'cfr_phase' in phy_native_dict:
+                phy_features.cfr_phase = phy_native_dict.get('cfr_phase')
     
     def _simulate_mock_batch(
         self,

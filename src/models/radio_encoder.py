@@ -4,14 +4,94 @@ Radio Encoder: Temporal Set Transformer
 Processes sparse temporal measurement sequences with:
 - Embeddings for cell_id, beam_id, time
 - Feature projection for RT/PHY/MAC measurements
+- CFR (Channel Frequency Response) encoder for channel estimates
 - Transformer encoder with masked attention
 - CLS token for sequence representation
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 from typing import Dict, Optional
+
+
+class CFREncoder(nn.Module):
+    """Encoder for Channel Frequency Response (CFR) data.
+    
+    CFR represents the channel estimate from DMRS symbols - a key feature
+    for positioning as it encodes distance and multipath information.
+    
+    Uses 1D convolutions along frequency axis to extract spatial-frequency patterns.
+    
+    Args:
+        num_cells: Number of cells (spatial dimension)
+        num_subcarriers: Number of OFDM subcarriers (frequency dimension)
+        d_model: Output embedding dimension
+        hidden_dim: Hidden dimension for conv layers
+    """
+    
+    def __init__(
+        self,
+        num_cells: int = 8,
+        num_subcarriers: int = 64,
+        d_model: int = 128,
+        hidden_dim: int = 64,
+    ):
+        super().__init__()
+        
+        self.num_cells = num_cells
+        self.num_subcarriers = num_subcarriers
+        
+        # 1D convolutions along frequency axis (per-cell)
+        # Input: [B, cells, subcarriers] -> treat cells as channels
+        self.conv_layers = nn.Sequential(
+            # [B, C, F] -> [B, hidden, F/2]
+            nn.Conv1d(num_cells, hidden_dim, kernel_size=7, stride=2, padding=3),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+            
+            # [B, hidden, F/2] -> [B, hidden*2, F/4]
+            nn.Conv1d(hidden_dim, hidden_dim * 2, kernel_size=5, stride=2, padding=2),
+            nn.GroupNorm(8, hidden_dim * 2),
+            nn.GELU(),
+            
+            # [B, hidden*2, F/4] -> [B, hidden*2, F/8]
+            nn.Conv1d(hidden_dim * 2, hidden_dim * 2, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(8, hidden_dim * 2),
+            nn.GELU(),
+        )
+        
+        # Adaptive pooling + projection
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.projection = nn.Sequential(
+            nn.Linear(hidden_dim * 2, d_model),
+            nn.LayerNorm(d_model),
+        )
+        
+    def forward(self, cfr: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            cfr: Channel Frequency Response [batch, num_cells, num_subcarriers]
+            
+        Returns:
+            CFR embedding [batch, d_model]
+        """
+        if cfr.dim() == 2:
+            # Single sample: [cells, subcarriers] -> [1, cells, subcarriers]
+            cfr = cfr.unsqueeze(0)
+        
+        # Apply convolutions: [B, C, F] -> [B, hidden*2, F/8]
+        x = self.conv_layers(cfr)
+        
+        # Global pooling: [B, hidden*2, F/8] -> [B, hidden*2, 1]
+        x = self.pool(x)
+        x = x.squeeze(-1)  # [B, hidden*2]
+        
+        # Project to output dimension
+        x = self.projection(x)  # [B, d_model]
+        
+        return x
 
 
 class PositionalEncoding(nn.Module):
@@ -65,8 +145,9 @@ class RadioEncoder(nn.Module):
     Architecture:
         1. Embeddings: cell_id, beam_id (learned) + time (sinusoidal)
         2. Feature projection: RT/PHY/MAC features -> d_model
-        3. Transformer encoder: self-attention with masking
-        4. CLS token: aggregates sequence information
+        3. CFR encoder: Channel Frequency Response -> d_model (optional)
+        4. Transformer encoder: self-attention with masking
+        5. CLS token: aggregates sequence information
     
     Args:
         num_cells: Maximum number of unique cell IDs
@@ -79,6 +160,9 @@ class RadioEncoder(nn.Module):
         rt_features_dim: Dimension of RT layer features
         phy_features_dim: Dimension of PHY layer features
         mac_features_dim: Dimension of MAC layer features
+        cfr_enabled: Whether to use CFR features
+        cfr_num_cells: Number of cells for CFR (spatial dimension)
+        cfr_num_subcarriers: Number of subcarriers for CFR (frequency dimension)
     """
     
     def __init__(
@@ -94,12 +178,16 @@ class RadioEncoder(nn.Module):
         phy_features_dim: int = 10,
         mac_features_dim: int = 6,
         time_scale: float = 1.0,
+        cfr_enabled: bool = True,
+        cfr_num_cells: int = 8,
+        cfr_num_subcarriers: int = 64,
     ):
         super().__init__()
         
         self.d_model = d_model
         self.num_cells = num_cells
         self.num_beams = num_beams
+        self.cfr_enabled = cfr_enabled
         
         # Embeddings
         self.cell_embedding = nn.Embedding(num_cells, d_model // 4)
@@ -120,9 +208,21 @@ class RadioEncoder(nn.Module):
             nn.LayerNorm(d_model // 4),
         )
         
-        # Combine embeddings and features
-        # Total: cell_emb + beam_emb + pos_enc + rt + phy + mac + ... -> d_model
-        self.input_projection = nn.Linear(d_model // 4 * 6, d_model)
+        # CFR encoder (Channel Frequency Response)
+        # This encodes the channel estimate - critical for positioning
+        if cfr_enabled:
+            self.cfr_encoder = CFREncoder(
+                num_cells=cfr_num_cells,
+                num_subcarriers=cfr_num_subcarriers,
+                d_model=d_model // 4,
+                hidden_dim=64,
+            )
+            # 7 components: cell, beam, time, rt, phy, mac, cfr
+            self.input_projection = nn.Linear(d_model // 4 * 7, d_model)
+        else:
+            self.cfr_encoder = None
+            # 6 components: cell, beam, time, rt, phy, mac
+            self.input_projection = nn.Linear(d_model // 4 * 6, d_model)
         
         # CLS token (learnable)
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
@@ -179,6 +279,7 @@ class RadioEncoder(nn.Module):
                 - beam_ids: [batch, seq_len]
                 - timestamps: [batch, seq_len]
                 - mask: [batch, seq_len] (True = valid, False = padding/missing)
+                - cfr_magnitude: [batch, num_cells, num_subcarriers] (optional)
         
         Returns:
             CLS token embedding [batch, d_model]
@@ -196,25 +297,48 @@ class RadioEncoder(nn.Module):
         phy_proj = self.phy_projection(measurements['phy_features'])  # [B, L, d/4]
         mac_proj = self.mac_projection(measurements['mac_features'])  # [B, L, d/4]
         
-        # 3. Concatenate all components
-        combined = torch.cat([
-            cell_emb,
-            beam_emb,
-            time_emb,
-            rt_proj,
-            phy_proj,
-            mac_proj,
-        ], dim=-1)  # [B, L, d/4 * 6]
+        # 3. CFR encoding (if enabled)
+        # CFR is the channel estimate - encodes distance and multipath info
+        if self.cfr_enabled and self.cfr_encoder is not None:
+            cfr = measurements.get('cfr_magnitude')
+            if cfr is not None:
+                # CFR is [B, cells, subcarriers] - encode once per sample, broadcast to seq
+                cfr_emb = self.cfr_encoder(cfr)  # [B, d/4]
+                cfr_emb = cfr_emb.unsqueeze(1).expand(-1, seq_len, -1)  # [B, L, d/4]
+            else:
+                # No CFR available - use zeros
+                cfr_emb = torch.zeros(batch_size, seq_len, self.d_model // 4, device=device)
+            
+            # 4. Concatenate all components including CFR
+            combined = torch.cat([
+                cell_emb,
+                beam_emb,
+                time_emb,
+                rt_proj,
+                phy_proj,
+                mac_proj,
+                cfr_emb,
+            ], dim=-1)  # [B, L, d/4 * 7]
+        else:
+            # 4. Concatenate without CFR
+            combined = torch.cat([
+                cell_emb,
+                beam_emb,
+                time_emb,
+                rt_proj,
+                phy_proj,
+                mac_proj,
+            ], dim=-1)  # [B, L, d/4 * 6]
         
-        # 4. Project to d_model
+        # 5. Project to d_model
         tokens = self.input_projection(combined)  # [B, L, d_model]
         tokens = self.dropout(tokens)
         
-        # 5. Prepend CLS token
+        # 6. Prepend CLS token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [B, 1, d_model]
         tokens = torch.cat([cls_tokens, tokens], dim=1)  # [B, L+1, d_model]
         
-        # 6. Create attention mask for transformer
+        # 7. Create attention mask for transformer
         # Extend mask for CLS token (always valid)
         mask = measurements['mask']  # [B, L]
         cls_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=device)
@@ -224,7 +348,7 @@ class RadioEncoder(nn.Module):
         # But also needs key_padding_mask format: True = padding, False = valid
         src_key_padding_mask = ~extended_mask  # [B, L+1]
         
-        # 7. Transformer encoding
+        # 8. Transformer encoding
         encoded = self.transformer(
             tokens,
             src_key_padding_mask=src_key_padding_mask,
@@ -259,10 +383,24 @@ class RadioEncoder(nn.Module):
         phy_proj = self.phy_projection(measurements['phy_features'])
         mac_proj = self.mac_projection(measurements['mac_features'])
         
-        combined = torch.cat([
-            cell_emb, beam_emb, time_emb,
-            rt_proj, phy_proj, mac_proj,
-        ], dim=-1)
+        # CFR encoding (if enabled)
+        if self.cfr_enabled and self.cfr_encoder is not None:
+            cfr = measurements.get('cfr_magnitude')
+            if cfr is not None:
+                cfr_emb = self.cfr_encoder(cfr)
+                cfr_emb = cfr_emb.unsqueeze(1).expand(-1, seq_len, -1)
+            else:
+                cfr_emb = torch.zeros(batch_size, seq_len, self.d_model // 4, device=device)
+            
+            combined = torch.cat([
+                cell_emb, beam_emb, time_emb,
+                rt_proj, phy_proj, mac_proj, cfr_emb,
+            ], dim=-1)
+        else:
+            combined = torch.cat([
+                cell_emb, beam_emb, time_emb,
+                rt_proj, phy_proj, mac_proj,
+            ], dim=-1)
         
         tokens = self.input_projection(combined)
         tokens = self.dropout(tokens)

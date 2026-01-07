@@ -60,9 +60,9 @@ class Scene:
         generate_building_map: bool = True,
         write_ply_ascii: bool = False,
         ground_scale: float = 1.5,
-        ground_material_type="mat-itu_wet_ground",
-        rooftop_material_type="mat-itu_metal",
-        wall_material_type="mat-itu_concrete",
+        ground_material_type="mat-itu_very_dry_ground",
+        rooftop_material_type="mat-itu_concrete",
+        wall_material_type="mat-itu_brick",
         lidar_terrain:bool = False,
         dem_terrain:bool = False,
         gen_lidar_terrain_only:bool = False

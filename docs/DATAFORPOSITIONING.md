@@ -314,6 +314,64 @@ cond_num = tf.reduce_max(s, axis=-1) / tf.reduce_min(s, axis=-1)
 
 ---
 
+### 🔶 Channel Frequency Response (CFR)
+**Purpose:** Full channel estimate across frequency - encodes distance and multipath information. This is what the UE estimates from DMRS (Demodulation Reference Signal) symbols in real 5G NR.
+
+**Why it's important for positioning:**
+- Contains fine-grained frequency-domain channel information
+- Frequency-selective fading patterns encode multipath geometry
+- Phase slope across frequency encodes propagation delay (ToA)
+- Magnitude variations encode environment scattering
+
+**Sionna Source:**
+```python
+paths.cir_to_ofdm_channel()  # CIR → Channel Frequency Response
+# Returns: H[batch, rx_ant, tx_ant, num_ofdm_symbols, num_subcarriers]
+```
+
+**Extraction Method:**
+```python
+# From SionnaNativeKPIExtractor.extract_phy()
+# Compute CFR from channel matrix (already in frequency domain)
+h_spatial_mean = tf.reduce_mean(h, axis=[-2, -1])  # Average over antennas
+cfr_magnitude = tf.abs(h_spatial_mean)  # [B, C, num_subcarriers]
+cfr_phase = tf.math.angle(h_spatial_mean)  # [B, C, num_subcarriers]
+
+# Downsample to manageable size (64 subcarriers)
+cfr_magnitude = _adaptive_downsample(cfr_magnitude, target_size=64)
+```
+
+**Used in our model:** `phy_fapi/cfr_magnitude`, `phy_fapi/cfr_phase`
+
+---
+
+### 🔶 Precoding Matrix Indicator (PMI)
+**Purpose:** Indicates optimal precoding direction - encodes dominant channel eigenvector orientation.
+
+**Why it's important for positioning:**
+- Encodes the dominant propagation direction
+- Related to AoD in codebook quantized form
+- Changes with UE position relative to serving cell
+
+**Derivation:**
+```python
+# From SionnaNativeKPIExtractor.extract_phy()
+# SVD-based: find dominant right singular vector (optimal precoder)
+_, _, v = tf.linalg.svd(h_mean)  # h_mean: [B, C, rx, tx]
+dominant_precoder = v[..., :, 0]  # First right singular vector
+
+# Quantize phase to 4-bit PMI (0-15)
+phase = tf.math.angle(dominant_precoder[..., 0])  # Reference antenna
+pmi = tf.cast(tf.round((phase + np.pi) / (2 * np.pi) * 15), tf.int32)
+pmi = tf.clip_by_value(pmi, 0, 15)
+```
+
+**Used in our model:** `phy_fapi/pmi`
+
+**Note:** Full PMI would use a 3GPP codebook (Type I/II CSI), but this SVD-based approach captures the essential direction information.
+
+---
+
 ## ❌ Not Available in Sionna RT
 
 The following parameters require real network infrastructure or protocol simulation and are **NOT available** in Sionna ray tracing:
@@ -325,7 +383,6 @@ The following parameters require real network infrastructure or protocol simulat
 | **Power Headroom Report (PHR)** | UL power control - requires protocol stack |
 | **RACH Preamble Detection** | Random access protocol - not simulated |
 | **CSI-RS/SSB Configuration** | Network scheduling - not in RT |
-| **PMI (full codebook)** | Requires precoder codebook implementation |
 | **Beamforming Weights** | Can be set but not derived from RT |
 | **MU-MIMO Grouping** | Scheduler decision - not simulated |
 | **Throughput/BLER** | Requires full PHY+MAC simulation |
@@ -358,8 +415,11 @@ The following parameters require real network infrastructure or protocol simulat
 | `sinr` | `signal/(interference+noise)` | `[B, C]` |
 | `cqi` | SINR→CQI mapping | `[B, C]` |
 | `ri` | `rank(H)` | `[B, C]` |
+| `pmi` | SVD dominant eigenvector phase | `[B, C]` |
 | `capacity_mbps` | Shannon capacity | `[B, C]` |
 | `condition_number` | `σ_max/σ_min` | `[B, C]` |
+| `cfr_magnitude` | `\|H(f)\|` downsampled | `[B, C, 64]` |
+| `cfr_phase` | `∠H(f)` downsampled | `[B, C, 64]` |
 
 ### MAC Layer (Simulated/Derived)
 | Feature | Derivation | Shape |
@@ -367,6 +427,33 @@ The following parameters require real network infrastructure or protocol simulat
 | `serving_cell_id` | `argmax(RSRP)` | `[B]` |
 | `neighbor_cell_ids` | sorted by RSRP | `[B, K]` |
 | `timing_advance` | `2*ToA` quantized | `[B, C]` |
+
+---
+
+## 🧠 Feature Interface: FeatureConfig
+
+The `FeatureConfig` class provides a centralized interface for managing feature dimensions across the pipeline:
+
+```python
+from src.config.feature_config import FeatureConfig
+
+# Load configuration
+config = FeatureConfig.from_yaml('configs/features.yaml')
+
+# Get dimensions for model initialization
+rt_dim = config.rt_features_dim    # e.g., 16
+phy_dim = config.phy_features_dim  # e.g., 8
+mac_dim = config.mac_features_dim  # e.g., 6
+
+# CFR configuration
+cfr_enabled = config.cfr_enabled
+cfr_subcarriers = config.cfr_num_subcarriers  # e.g., 64
+```
+
+This ensures consistency between:
+1. **Data generation** - features extracted from Sionna
+2. **Dataset loading** - features loaded from Zarr storage
+3. **Model architecture** - input dimensions for projections
 
 ---
 
@@ -378,3 +465,4 @@ The following parameters require real network infrastructure or protocol simulat
 - **MAC Extraction:** `src/data_generation/features/mac_extractor.py`
 - **Measurement Utils:** `src/data_generation/measurement_utils.py`
 - **Data Structures:** `src/data_generation/features/data_structures.py`
+- **Feature Config:** `src/config/feature_config.py`

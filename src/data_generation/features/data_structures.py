@@ -99,7 +99,7 @@ class PHYFAPILayerFeatures:
     # Link adaptation indicators (3GPP 38.214)
     cqi: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Channel Quality Indicator [0-15]
     ri: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Rank Indicator [1-8]
-    pmi: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Precoding Matrix Indicator
+    pmi: Union[np.ndarray, Any]  # [batch, num_rx, num_cells] Precoding Matrix Indicator (SVD-based)
     
     # Beam management (5G NR specific)
     l1_rsrp_beams: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx, num_beams] per-beam RSRP
@@ -107,6 +107,11 @@ class PHYFAPILayerFeatures:
     
     # Channel matrix (for research/validation)
     channel_matrix: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, ...]
+    
+    # Channel Frequency Response (CFR) - channel estimation from DMRS
+    # This is the key feature for positioning - represents what UE estimates from reference signals
+    cfr_magnitude: Optional[Union[np.ndarray, Any]] = None  # [batch, num_cells, num_subcarriers] |H(f)|
+    cfr_phase: Optional[Union[np.ndarray, Any]] = None  # [batch, num_cells, num_subcarriers] angle(H(f))
     
     # Advanced KPIs
     capacity_mbps: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx]
@@ -128,6 +133,11 @@ class PHYFAPILayerFeatures:
             d['phy_fapi/best_beam_ids'] = _to_numpy(self.best_beam_ids)
         if self.channel_matrix is not None:
             d['phy_fapi/channel_matrix'] = _to_numpy(self.channel_matrix)
+        # CFR features - critical for positioning
+        if self.cfr_magnitude is not None:
+            d['phy_fapi/cfr_magnitude'] = _to_numpy(self.cfr_magnitude)
+        if self.cfr_phase is not None:
+            d['phy_fapi/cfr_phase'] = _to_numpy(self.cfr_phase)
         if self.capacity_mbps is not None:
             d['phy_fapi/capacity_mbps'] = _to_numpy(self.capacity_mbps)
         if self.condition_number is not None:

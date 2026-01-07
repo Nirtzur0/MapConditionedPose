@@ -110,9 +110,9 @@ class MaterialRandomizer:
         """
         if not self.enable_randomization:
             return {
-                'ground': 'mat-itu_wet_ground',
-                'rooftop': 'mat-itu_metal',
-                'wall': 'mat-itu_concrete',
+                'ground': 'mat-itu_very_dry_ground',
+                'rooftop': 'mat-itu_concrete',
+                'wall': 'mat-itu_brick',
             }
         
         # Sample from appropriate categories

@@ -420,10 +420,62 @@ class SionnaNativeKPIExtractor:
         cond_num = tf.reduce_max(s, axis=-1) / (tf.reduce_min(s, axis=-1) + 1e-10)
         rank = tf.reduce_sum(tf.cast(s > 1e-6, tf.float32), axis=-1)
         
+        # 5. PMI (Precoding Matrix Indicator) - SVD-based optimal precoder
+        # For Type I Single-Panel codebook, PMI selects best precoder from codebook.
+        # Here we use a simplified SVD-based approach: PMI = quantized dominant eigenvector
+        # Full codebook search would require matching against 3GPP Type I precoders.
+        _, _, v = tf.linalg.svd(h_mean)  # v: [B, C, Tx, Tx]
+        dominant_precoder = v[..., :, 0]  # First right singular vector [B, C, Tx]
+        # Quantize to PMI index (0-15 for rank-1, simplified)
+        # Use phase of first antenna as simple PMI approximation
+        phase = tf.math.angle(dominant_precoder[..., 0])  # [B, C]
+        pmi = tf.cast(tf.round((phase + np.pi) / (2 * np.pi) * 15), tf.int32)
+        pmi = tf.clip_by_value(pmi, 0, 15)
+        
+        # 6. CFR (Channel Frequency Response) - downsampled for model input
+        # This represents the channel estimate from DMRS symbols
+        # h_perm shape: [B, C, F, Rx, Tx]
+        # Take mean over antennas and downsample frequency
+        h_spatial_mean = tf.reduce_mean(h_perm, axis=[-2, -1])  # [B, C, F]
+        cfr_magnitude = tf.abs(h_spatial_mean)  # [B, C, F]
+        cfr_phase = tf.math.angle(h_spatial_mean)  # [B, C, F]
+        
+        # Downsample CFR to fixed size (e.g., 64 subcarriers)
+        target_subcarriers = 64
+        current_subcarriers = tf.shape(cfr_magnitude)[-1]
+        
+        # Use adaptive pooling via reshape and reduce_mean
+        if current_subcarriers > target_subcarriers:
+            # Reshape and average pool
+            cfr_magnitude = self._adaptive_downsample(cfr_magnitude, target_subcarriers)
+            cfr_phase = self._adaptive_downsample(cfr_phase, target_subcarriers)
+        
         return {
             'rsrp': rsrp_dbm,   # [B, C]
             'sinr': sinr_db,    # [B, C]
             'on_se': se,        # [B, C] (Spectral Efficiency)
             'rank': rank,       # [B, C]
-            'cond_num': cond_num # [B, C]
+            'cond_num': cond_num, # [B, C]
+            'pmi': pmi,         # [B, C] - NEW: Precoding Matrix Indicator
+            'cfr_magnitude': cfr_magnitude,  # [B, C, F_down] - NEW: Channel estimate magnitude
+            'cfr_phase': cfr_phase,          # [B, C, F_down] - NEW: Channel estimate phase
         }
+    
+    def _adaptive_downsample(self, x: tf.Tensor, target_size: int) -> tf.Tensor:
+        """Downsample last dimension to target_size using average pooling."""
+        # x shape: [B, C, F]
+        current_size = tf.shape(x)[-1]
+        
+        # Calculate pool size (integer division)
+        pool_size = current_size // target_size
+        
+        # Truncate to exact multiple
+        truncated_size = pool_size * target_size
+        x_truncated = x[..., :truncated_size]
+        
+        # Reshape for pooling: [B, C, target_size, pool_size]
+        new_shape = tf.concat([tf.shape(x)[:-1], [target_size, pool_size]], axis=0)
+        x_reshaped = tf.reshape(x_truncated, new_shape)
+        
+        # Average pool
+        return tf.reduce_mean(x_reshaped, axis=-1)

@@ -63,6 +63,9 @@ class UELocalizationModel(nn.Module):
             rt_features_dim=radio_cfg['rt_features_dim'],
             phy_features_dim=radio_cfg['phy_features_dim'],
             mac_features_dim=radio_cfg['mac_features_dim'],
+            cfr_enabled=radio_cfg.get('cfr_enabled', False),
+            cfr_num_cells=radio_cfg.get('cfr_num_cells', 8),
+            cfr_num_subcarriers=radio_cfg.get('cfr_num_subcarriers', 64),
         )
         
         # Map encoder: Choose between E2 equivariant and standard ViT
