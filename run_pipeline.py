@@ -1,541 +1,450 @@
 #!/usr/bin/env python3
 """
-End-to-End Pipeline Orchestrator
-Runs the complete transformer-ue-localization pipeline from scene generation to training
+Simplified End-to-End Pipeline
+Direct function calls instead of subprocess wrappers
 
 Usage:
-    # Quick test run
-    python run_pipeline.py --quick-test
-    
-    # Full pipeline with custom parameters
-    python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 3 --epochs 50
-    
-    # Resume from existing scene/dataset
-    python run_pipeline.py --skip-scenes --skip-dataset --train-only
-
-    # Train on multiple locations, evaluate on another
-    python run_pipeline.py --train-datasets data/processed/a.zarr data/processed/b.zarr --eval-dataset data/processed/c.zarr
+    python run_pipeline_v2.py --config experiment.yaml
+    python run_pipeline_v2.py --quick-test
 """
 
 import argparse
 import logging
-import subprocess
 import sys
 import time
 import os
-import re
 from pathlib import Path
-from typing import Dict, Optional
 from datetime import datetime
-import json
-import shutil
+from typing import Dict, List, Optional
+from dataclasses import dataclass, field
 import yaml
-from easydict import EasyDict
 
-from src.utils.logging_utils import setup_logging, print_section, print_success, print_info, print_warning, print_error, console
-from src.training import UELocalizationLightning
-from src.training.optimization import run_optimization
-from src.pipeline.scene_generation import generate_scenes
-from src.pipeline.data_generation import generate_dataset
-from src.pipeline.training import train_model, _apply_optuna_params, _create_training_config
-from src.pipeline.evaluation import evaluate_model
-
+# Setup logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
+# Suppress noisy loggers
+for name in ['matplotlib', 'PIL', 'tensorflow', 'numba']:
+    logging.getLogger(name).setLevel(logging.WARNING)
 
-class PipelineOrchestrator:
-    """Orchestrates the complete ML pipeline"""
+
+@dataclass
+class ExperimentConfig:
+    """Unified configuration for the entire pipeline."""
     
-    def __init__(self, args):
-        self.args = args
+    # Experiment metadata
+    name: str = "experiment"
+    output_dir: Path = field(default_factory=lambda: Path("outputs"))
+    clean: bool = False
+    
+    # Scene generation
+    scenes: Dict = field(default_factory=lambda: {
+        'cities': [{'name': 'Boulder, CO', 'bbox': [-105.28, 40.014, -105.27, 40.020]}],
+        'num_tx': 3,
+        'site_strategy': 'random'
+    })
+    
+    # Data generation
+    data: Dict = field(default_factory=lambda: {
+        'carrier_freq_hz': 3.5e9,
+        'bandwidth_hz': 100e6,
+        'num_ue_per_tile': 100,
+        'num_reports_per_ue': 10,
+        'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
+    })
+    
+    # Training
+    training: Dict = field(default_factory=lambda: {
+        'epochs': 30,
+        'batch_size': 16,
+        'learning_rate': 0.0002,
+        'num_workers': 4
+    })
+    
+    # Pipeline control
+    skip_scenes: bool = False
+    skip_data: bool = False
+    skip_training: bool = False
+    
+    @classmethod
+    def from_yaml(cls, path: Path) -> 'ExperimentConfig':
+        """Load config from YAML file."""
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        return cls(**data)
+    
+    @classmethod
+    def quick_test(cls) -> 'ExperimentConfig':
+        """Create a quick test configuration."""
+        return cls(
+            name="quick_test",
+            scenes={
+                'cities': [{'name': 'Boulder, CO', 'bbox': [-105.275, 40.016, -105.272, 40.018]}],
+                'num_tx': 2,
+                'site_strategy': 'random'
+            },
+            data={
+                'carrier_freq_hz': 3.5e9,
+                'bandwidth_hz': 100e6,
+                'num_ue_per_tile': 20,
+                'num_reports_per_ue': 5,
+                'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
+            },
+            training={
+                'epochs': 3,
+                'batch_size': 8,
+                'learning_rate': 0.0002,
+                'num_workers': 2
+            }
+        )
+
+
+class Pipeline:
+    """Simplified pipeline with direct function calls."""
+    
+    def __init__(self, config: ExperimentConfig):
+        self.config = config
         self.project_root = Path(__file__).parent
         self.start_time = time.time()
         
-        # Pipeline paths
-        self.scene_dir = self.project_root / "data" / "scenes" / args.scene_name
-        self.dataset_dir = self.project_root / "data" / "processed" / f"{args.scene_name}_dataset"
-        self.checkpoint_dir = self.project_root / "checkpoints" / args.run_name
-        self.train_dataset_paths = [Path(p) for p in args.train_datasets] if args.train_datasets else []
-        self.val_dataset_paths = []
-        self.test_dataset_paths = []
-        self.eval_dataset_path = Path(args.eval_dataset) if args.eval_dataset else None
-        self.eval_config_path = None
-        self.optuna_params: Optional[Dict[str, float]] = None
-        self.optuna_config_path: Optional[Path] = None
+        # Derived paths (convention over configuration)
+        self.output_dir = self.project_root / "outputs" / config.name
+        
+        # Use existing scenes if available, otherwise create new
+        existing_scenes = self.project_root / "data" / "scenes"
+        if config.skip_scenes and existing_scenes.exists():
+            self.scene_dir = existing_scenes
+        else:
+            self.scene_dir = self.output_dir / "scenes"
+            
+        self.data_dir = self.output_dir / "data"
+        self.checkpoint_dir = self.output_dir / "checkpoints"
+        
+        # Dataset paths (set during data generation)
+        self.train_path: Optional[Path] = None
+        self.val_path: Optional[Path] = None
+        self.test_path: Optional[Path] = None
         
         # Create directories
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    def _resolve_data_output_path(self, config_path: Path) -> Optional[Path]:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-
-        data_gen = config.get('data_generation', {})
-        output_path = data_gen.get('output', {}).get('path') or config.get('output', {}).get('path')
-        output_dir = config.get('output_dir')
-        if output_path:
-            full_path = self.project_root / output_path
-            if full_path.is_dir():
-                return self._latest_dataset_in_dir(full_path)
-            else:
-                return full_path
-        if output_dir:
-            return self._latest_dataset_in_dir(self.project_root / output_dir)
-        return None
-
-    def _latest_dataset_in_dir(self, output_dir: Path) -> Optional[Path]:
-        if not output_dir.exists():
-            return None
-        zarr_files = sorted(output_dir.glob("dataset_*.zarr"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return zarr_files[0] if zarr_files else None
-
-    def _run_dataset_generation_for_config(self, config_path: Path):
-        cmd = [sys.executable, "scripts/generate_dataset.py", "--config", str(config_path)]
-        dataset_dir = None
-        scene_dir_from_config = None
-        raw_config = None
-        try:
-            with open(config_path, 'r') as f:
-                raw_config = yaml.safe_load(f)
-            if 'data_generation' in raw_config:
-                data_gen = EasyDict(raw_config).data_generation
-                scene_dir_from_config = self.project_root / data_gen.scenes.root_dir
-                dataset_dir = self.project_root / Path(data_gen.output.path).parent
-                cmd.extend(["--scene-dir", str(scene_dir_from_config)])
-                cmd.extend(["--output-dir", str(dataset_dir)])
-            else:
-                scene_dir_from_config = self.project_root / raw_config.get('scene_dir')
-                dataset_dir = self.project_root / raw_config.get('output_dir')
-                if scene_dir_from_config:
-                    cmd.extend(["--scene-dir", str(scene_dir_from_config)])
-                if dataset_dir:
-                    cmd.extend(["--output-dir", str(dataset_dir)])
-        except Exception:
-            pass
-
-        if dataset_dir and self.args.clean and dataset_dir.exists():
-            logger.info(f"Cleaning existing dataset at {dataset_dir}")
-            shutil.rmtree(dataset_dir)
-        if dataset_dir:
-            dataset_dir.mkdir(parents=True, exist_ok=True)
-
-        self.run_command(cmd, "Dataset Generation")
-
-        self._maybe_generate_radio_maps(raw_config, scene_dir_from_config)
-
-    def _maybe_generate_radio_maps(self, raw_config: Optional[Dict], scene_dir: Optional[Path]):
-        if not raw_config or not scene_dir:
-            return
-
-        debug_flag = False
-        output_dir = None
-        if 'data_generation' in raw_config:
-            debug_flag = raw_config['data_generation'].get('debug_radio_maps', False)
-            output_dir = raw_config['data_generation'].get('radio_maps_output_dir')
-        else:
-            debug_flag = raw_config.get('debug_radio_maps', False)
-            output_dir = raw_config.get('radio_maps_output_dir')
-
-        if not debug_flag:
-            return
-
-        output_dir = output_dir or "data/radio_maps_debug"
-        plots_dir = Path(output_dir) / "plots"
-
-        cmd = [
-            sys.executable,
-            "scripts/generate_radio_maps.py",
-            "--scenes-dir",
-            str(scene_dir),
-            "--output-dir",
-            str(self.project_root / output_dir),
-            "--pattern",
-            "**/scene_*/scene.xml",
-            "--save-plots",
-            "--plots-dir",
-            str(self.project_root / plots_dir),
-        ]
-        self.run_command(cmd, "Radio Map Debug Plots")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-    def log_section(self, title):
-        """Log a section header"""
-        print_section(title)
-        
-    def run_command(self, cmd, step_name, check=True):
-        """Run a command and handle errors"""
-        # Show command in dim for debugging without clutter
-        cmd_str = ' '.join(str(c) for c in cmd)
-        if len(cmd_str) > 100:
-            cmd_str = cmd_str[:97] + "..."
-        console.print(f"[dim]→ {cmd_str}[/dim]")
-        
-        start = time.time()
-        
-        try:
-            env = os.environ.copy()
-            env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-            process = subprocess.Popen(
-                cmd,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=self.project_root,
-                env=env
-            )
-            
-            # Stream output in real-time
-            for line in process.stdout:
-                print(line, end='')
-            
-            return_code = process.wait()
-            if check and return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd)
-            
-            duration = time.time() - start
-            print_success(f"{step_name} [dim]({duration:.1f}s)[/dim]")
-            return return_code
-            
-        except subprocess.CalledProcessError as e:
-            duration = time.time() - start
-            print_error(f"{step_name} failed after {duration:.1f}s")
-            raise
+        # Save config
+        with open(self.output_dir / "config.yaml", 'w') as f:
+            yaml.dump({
+                'name': config.name,
+                'scenes': config.scenes,
+                'data': config.data,
+                'training': config.training
+            }, f, default_flow_style=False)
     
-    def step_1_generate_scenes(self):
-        """Generate 3D scenes with transmitter sites using GIS data"""
-        generate_scenes(self.args, self.project_root, self.scene_dir, self.log_section, self.run_command)
-        
-    def step_2_generate_dataset(self):
-        """Generate synthetic dataset from scenes using Sionna ray tracing"""
-        train_paths, val_paths, test_paths = generate_dataset(
-            self.args, self.project_root, self.scene_dir, self.dataset_dir,
-            self.train_dataset_paths, self.eval_dataset_path,
-            self.log_section, self.run_command
-        )
-        # Store all three splits
-        self.train_dataset_paths = train_paths
-        self.val_dataset_paths = val_paths
-        self.test_dataset_paths = test_paths
-        
-    def step_3_train_model(self):
-        """Train the transformer model"""
-        train_model(self.args, self.project_root, self.checkpoint_dir, self.optuna_config_path,
-                   self.optuna_params, self.train_dataset_paths, self.val_dataset_paths, self.test_dataset_paths,
-                   self.args.num_tx, self.log_section, self.run_command)
-
-    def step_3_optimize_model(self):
-        """Run Optuna hyperparameter optimization."""
-        if not self.args.optimize:
-            return
-
-        self.log_section("STEP 3: Optimize Model (Optuna)")
-
-        dataset_paths = self.train_dataset_paths or ([self.dataset_path] if self.dataset_path else [])
-        base_config_path = _create_training_config(self.args, self.project_root, self.checkpoint_dir, dataset_paths, self.eval_dataset_path, self.args.num_tx)
-        self.optuna_params = run_optimization(self.args, base_config_path)
-
-        with open(base_config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        config = _apply_optuna_params(config, self.optuna_params)
-
-        self.optuna_config_path = self.checkpoint_dir / "training_config_optuna.yaml"
-        with open(self.optuna_config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
-
-        logger.info(f"Optuna best config saved to: {self.optuna_config_path}")
-
-    def step_4_eval_model(self):
-        """Evaluate trained model on held-out dataset."""
-        evaluate_model(self.args, self.checkpoint_dir, self.eval_dataset_path,
-                      self.log_section, self.run_command)
-        
-    def step_5_generate_report(self):
-        """Generate pipeline execution report"""
-        step_label = "STEP 6: Generate Report" if self.args.optimize else "STEP 5: Generate Report"
-        self.log_section(step_label)
-        
-        duration = time.time() - self.start_time
-        
-        report = {
-            "pipeline_name": "transformer-ue-localization",
-            "run_name": self.args.run_name,
-            "timestamp": datetime.now().isoformat(),
-            "duration_seconds": duration,
-            "duration_formatted": f"{duration/60:.1f} minutes",
-            "configuration": {
-                "scene_bbox": self.args.bbox,
-                "num_transmitters": self.args.num_tx,
-                "num_ues": self.args.num_ues,
-                "num_trajectories": self.args.num_trajectories,
-                "carrier_freq_ghz": self.args.carrier_freq / 1e9,
-                "epochs": self.args.epochs,
-                "batch_size": self.args.batch_size,
-            },
-            "outputs": {
-                "scenes": str(self.scene_dir),
-                "dataset": str(self.dataset_dir),
-                "checkpoints": str(self.checkpoint_dir),
-                "train_datasets": [str(p) for p in self.train_dataset_paths] if self.train_dataset_paths else None,
-                "eval_dataset": str(self.eval_dataset_path) if self.eval_dataset_path else None,
-            },
-            "steps_completed": []
-        }
-        
-        if not self.args.skip_scenes:
-            report["steps_completed"].append("Scene Generation")
-        if not self.args.skip_dataset:
-            report["steps_completed"].append("Dataset Generation")
-        if self.args.optimize:
-            report["steps_completed"].append("Hyperparameter Optimization")
-        if not self.args.skip_training:
-            report["steps_completed"].append("Model Training")
-        if self.eval_dataset_path is not None and not self.args.skip_eval:
-            report["steps_completed"].append("Model Evaluation")
-            
-        report_path = self.checkpoint_dir / "pipeline_report.json"
-        with open(report_path, 'w') as f:
-            json.dump(report, f, indent=2)
-            
-        print_info(f"Report saved to [bold]{report_path.name}[/bold]")
-        
-        # Print summary using rich table
-        from rich.table import Table
-        
-        console.print()  # Empty line
-        print_section("PIPELINE SUMMARY", f"Run: {self.args.run_name}")
-        
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("Key", style="cyan")
-        table.add_column("Value", style="white")
-        
-        table.add_row("Duration", f"{duration/60:.1f} minutes")
-        table.add_row("Steps", ", ".join(report['steps_completed']))
-        table.add_row("Checkpoints", str(self.checkpoint_dir.relative_to(self.project_root)))
-        if self.train_dataset_paths:
-            datasets_str = ", ".join([p.name for p in self.train_dataset_paths])
-            table.add_row("Datasets", datasets_str)
-        
-        console.print(table)
-        console.print()
-        
-    def run(self):
-        """Execute the complete pipeline"""
+    def log(self, msg: str, level: str = "info"):
+        """Simple logging."""
+        getattr(logger, level)(msg)
+    
+    def run(self) -> int:
+        """Execute the pipeline."""
         try:
-            console.print(f"\n[bold]Starting Pipeline:[/bold] [cyan]{self.args.run_name}[/cyan]")
-            console.print(f"[dim]Project: {self.project_root}[/dim]\n")
+            self.log(f"Starting pipeline: {self.config.name}")
+            self.log(f"Output directory: {self.output_dir}")
             
-            self.step_1_generate_scenes()
-            self.step_2_generate_dataset()
+            if not self.config.skip_scenes:
+                self.generate_scenes()
             
-            if self.args.optimize:
-                self.step_3_optimize_model()
+            if not self.config.skip_data:
+                self.generate_data()
             
-            if not self.args.skip_training:
-                self.step_3_train_model()
-                self.step_4_eval_model()
-            elif self.eval_dataset_path is not None:
-                self.step_4_eval_model()
-                
-            self.step_5_generate_report()
+            if not self.config.skip_training:
+                self.train_model()
             
-            print_success("Pipeline completed successfully!")
+            self.generate_report()
+            
+            duration = time.time() - self.start_time
+            self.log(f"✓ Pipeline completed in {duration/60:.1f} minutes")
             return 0
             
         except Exception as e:
-            print_error(f"Pipeline failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Pipeline failed: {e}", exc_info=True)
             return 1
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="End-to-End Pipeline Orchestrator",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Quick test (small area, few epochs)
-  python run_pipeline.py --quick-test
-  
-  # Full pipeline
-  python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
-  
-  # Skip scene generation (use existing)
-  python run_pipeline.py --skip-scenes --scene-name boulder_test
-  
-  # Training only
-  python run_pipeline.py --skip-scenes --skip-dataset --train-only
-        """
-    )
     
-    # Quick test mode
-    parser.add_argument('--quick-test', action='store_true',
-                       help='Run quick test (small scene, few epochs)')
-    
-    # Pipeline control
-    parser.add_argument('--scene-config', type=Path, default=None,
-                       help='Path to scene generation YAML config file')
-    parser.add_argument('--data-config', type=Path, default=None,
-                       help='Path to data generation YAML config file')
-    parser.add_argument('--train-data-configs', type=Path, nargs='+', default=None,
-                       help='Data generation configs for training (multi-location)')
-    parser.add_argument('--eval-data-config', type=Path, default=None,
-                       help='Data generation config for evaluation-only location')
-    parser.add_argument('--skip-scenes', action='store_true',
-                       help='Skip scene generation')
-    parser.add_argument('--skip-dataset', action='store_true',
-                       help='Skip dataset generation')
-    parser.add_argument('--skip-training', action='store_true',
-                       help='Skip training')
-    parser.add_argument('--skip-eval', action='store_true',
-                       help='Skip evaluation')
-    parser.add_argument('--train-only', action='store_true',
-                       help='Only run training (skip scenes and dataset)')
-    parser.add_argument('--eval-only', action='store_true',
-                       help='Only run evaluation (skip scenes, dataset, training)')
-    parser.add_argument('--clean', action='store_true',
-                       help='Clean existing outputs before running')
-    
-    # Scene parameters
-    parser.add_argument('--bbox', type=float, nargs=4,
-                       metavar=('WEST', 'SOUTH', 'EAST', 'NORTH'),
-                       default=[-105.28, 40.014, -105.27, 40.020],
-                       help='Bounding box coordinates')
-    parser.add_argument('--scene-name', type=str, default='boulder_test',
-                       help='Scene directory name')
-    parser.add_argument('--num-tx', type=int, default=3,
-                       help='Number of transmitters')
-    parser.add_argument('--site-strategy', type=str, default='grid',
-                       choices=['grid', 'random', 'cluster'],
-                       help='Transmitter placement strategy')
-    parser.add_argument('--tiles', action='store_true',
-                       help='Generate multiple tiles')
-    
-    # Dataset parameters
-    parser.add_argument('--carrier-freq', type=float, default=3.5e9,
-                       help='Carrier frequency (Hz)')
-    parser.add_argument('--bandwidth', type=float, default=100e6,
-                       help='Bandwidth (Hz)')
-    parser.add_argument('--num-ues', type=int, default=50,
-                       help='Number of UEs per trajectory')
-    parser.add_argument('--num-trajectories', type=int, default=100,
-                       help='Number of trajectories')
-    parser.add_argument('--num-scenes', type=int, default=None,
-                       help='Limit number of scenes to process')
-    parser.add_argument('--train-datasets', nargs='+', default=None,
-                       help='Paths to training Zarr datasets (skip generation)')
-    parser.add_argument('--eval-dataset', type=Path, default=None,
-                       help='Path to evaluation Zarr dataset (skip generation)')
-    
-    # Training parameters
-    parser.add_argument('--config', type=Path, default=None,
-                       help='Training config file (auto-generated if not provided)')
-    parser.add_argument('--epochs', type=int, default=10,
-                       help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=16,
-                       help='Training batch size')
-    parser.add_argument('--learning-rate', type=float, default=0.0001,
-                       help='Learning rate')
-    parser.add_argument('--num-workers', type=int, default=2,
-                       help='DataLoader workers')
-    parser.add_argument('--resume-checkpoint', type=Path, default=None,
-                       help='Resume from checkpoint')
-    
-    # Logging
-    parser.add_argument('--wandb', action='store_true',
-                       help='Enable Weights & Biases logging')
-    parser.add_argument('--comet', action='store_true',
-                       help='Enable Comet ML logging')
-    parser.add_argument('--comet-api-key', type=str, default='1lc3SG8vCkNzrn5p9ZmZs328K',
-                       help='Comet ML API key (or set COMET_API_KEY env var)')
-    parser.add_argument('--comet-workspace', type=str, default='nirtzur0',
-                       help='Comet ML workspace (or set COMET_WORKSPACE env var)')
-    parser.add_argument('--comet-project', type=str, default='ue-localization',
-                       help='Comet ML project name (or set COMET_PROJECT_NAME env var)')
-    parser.add_argument('--run-name', type=str,
-                       default=f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                       help='Run name for tracking')
-    parser.add_argument('--light-train', action='store_true',
-                       help='Use light training defaults for quick checks')
-
-    # Optimization parameters
-    parser.add_argument('--optimize', action='store_true',
-                          help='Enable hyperparameter optimization with Optuna')
-    parser.add_argument('--n-trials', type=int, default=50,
-                            help='Number of optimization trials to run')
-    parser.add_argument('--study-name', type=str, default='ue-localization-optimization',
-                            help='Name for the Optuna study')
-    parser.add_argument('--storage', type=str, default='sqlite:///optuna_study.db',
-                            help='Database URL for Optuna study storage')
-    
-    args = parser.parse_args()
-    
-    # Handle quick test mode
-    if args.quick_test:
-        args.bbox = [-105.275, 40.016, -105.272, 40.018]  # Tiny area
-        args.num_tx = 2
-        args.num_ues = 20
-        args.num_trajectories = 50
-        args.epochs = 5
-        args.batch_size = 8
-        args.scene_name = 'quick_test'
-        args.run_name = 'quick_test'
-        print_info("Quick test mode enabled")
-
-    if args.light_train:
-        args.epochs = min(args.epochs, 2)
-        args.batch_size = min(args.batch_size, 8)
-        print_info("Light training mode enabled")
-    
-    # Handle train-only mode
-    if args.train_only:
-        args.skip_scenes = True
-        args.skip_dataset = True
-        args.skip_eval = True
-
-    if args.eval_only:
-        args.skip_scenes = True
-        args.skip_dataset = True
-        args.skip_training = True
-        if not (args.eval_dataset or args.eval_data_config):
-            raise ValueError("--eval-only requires --eval-dataset or --eval-data-config")
-    
-    return args
-
-
-def _setup_comet_environment(args):
-    """Set Comet ML environment variables from command-line arguments.
-    
-    Priority order:
-    1. Existing environment variables (from shell scripts like run_full_experiment.sh)
-    2. Command-line arguments / defaults
-    """
-    if args.comet:
-        # Only set from args if env var is not already set (shell script takes precedence)
-        if not os.environ.get('COMET_API_KEY') and args.comet_api_key:
-            os.environ['COMET_API_KEY'] = args.comet_api_key
-        if not os.environ.get('COMET_WORKSPACE') and args.comet_workspace:
-            os.environ['COMET_WORKSPACE'] = args.comet_workspace
-        if not os.environ.get('COMET_PROJECT_NAME') and args.comet_project:
-            os.environ['COMET_PROJECT_NAME'] = args.comet_project
+    def generate_scenes(self):
+        """Generate 3D scenes with transmitter sites."""
+        self.log("=" * 60)
+        self.log("STEP 1: Generate Scenes")
+        self.log("=" * 60)
         
-        # Check if API key is available
-        if not os.environ.get('COMET_API_KEY'):
-            print_warning("Comet ML enabled but no API key found")
-            console.print("[dim]Set via --comet-api-key or COMET_API_KEY env var[/dim]")
+        from src.scene_generation import SceneGenerator, SitePlacer
+        
+        scene_config = self.config.scenes
+        cities = scene_config.get('cities', [])
+        
+        for city in cities:
+            city_name = city.get('name', 'unknown')
+            bbox = city.get('bbox')
+            
+            self.log(f"Generating scene for: {city_name}")
+            
+            # Create scene directory
+            slug = city_name.lower().replace(', ', '_').replace(' ', '_')
+            city_scene_dir = self.scene_dir / slug
+            city_scene_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize generator
+            generator = SceneGenerator(
+                scene_builder_path=str(self.project_root / "src" / "scene_builder"),
+                site_placer=SitePlacer(strategy=scene_config.get('site_strategy', 'random')),
+                output_dir=city_scene_dir
+            )
+            
+            # Convert bbox to polygon
+            if bbox:
+                west, south, east, north = bbox
+                polygon = [(west, south), (east, south), (east, north), (west, north), (west, south)]
+            else:
+                raise ValueError(f"No bbox specified for {city_name}")
+            
+            # Generate scene
+            result = generator.generate(
+                polygon_points=polygon,
+                scene_id=f"scene_{slug}",
+                site_config={'num_tx': scene_config.get('num_tx', 3)}
+            )
+            
+            self.log(f"✓ Generated: {result.get('scene_path', city_scene_dir)}")
+    
+    def generate_data(self):
+        """Generate training data using Sionna ray tracing."""
+        self.log("=" * 60)
+        self.log("STEP 2: Generate Dataset")
+        self.log("=" * 60)
+        
+        from src.data_generation.multi_layer_generator import MultiLayerDataGenerator
+        from src.data_generation.config import DataGenerationConfig
+        
+        data_config = self.config.data
+        
+        # Create data generation config
+        config = DataGenerationConfig(
+            scene_dir=self.scene_dir,
+            scene_metadata_path=self.scene_dir / 'metadata.json',
+            carrier_frequency_hz=data_config.get('carrier_freq_hz', 3.5e9),
+            bandwidth_hz=data_config.get('bandwidth_hz', 100e6),
+            tx_power_dbm=data_config.get('tx_power_dbm', 43.0),
+            noise_figure_db=data_config.get('noise_figure_db', 9.0),
+            num_ue_per_tile=data_config.get('num_ue_per_tile', 100),
+            num_reports_per_ue=data_config.get('num_reports_per_ue', 10),
+            output_dir=self.data_dir,
+        )
+        
+        # Generate dataset
+        generator = MultiLayerDataGenerator(config)
+        
+        split_ratios = data_config.get('split_ratios', {'train': 0.70, 'val': 0.15, 'test': 0.15})
+        
+        output_paths = generator.generate_dataset(
+            create_splits=True,
+            train_ratio=split_ratios['train'],
+            val_ratio=split_ratios['val'],
+            test_ratio=split_ratios['test']
+        )
+        
+        # Store paths
+        if isinstance(output_paths, dict):
+            self.train_path = output_paths.get('train')
+            self.val_path = output_paths.get('val')
+            self.test_path = output_paths.get('test')
+            
+            self.log(f"✓ Train: {self.train_path}")
+            self.log(f"✓ Val: {self.val_path}")
+            self.log(f"✓ Test: {self.test_path}")
         else:
-            workspace = os.environ.get('COMET_WORKSPACE', 'default')
-            print_info(f"Comet ML enabled [dim](workspace: {workspace})[/dim]")
+            self.log(f"✓ Dataset: {output_paths}")
+    
+    def train_model(self):
+        """Train the transformer model."""
+        self.log("=" * 60)
+        self.log("STEP 3: Train Model")
+        self.log("=" * 60)
+        
+        if not self.train_path or not self.val_path:
+            # Try to find existing datasets
+            self.train_path = self._find_latest_dataset('train')
+            self.val_path = self._find_latest_dataset('val')
+            self.test_path = self._find_latest_dataset('test')
+        
+        if not self.train_path:
+            raise RuntimeError("No training dataset found. Run data generation first.")
+        
+        # Load base model config and merge with pipeline settings
+        model_config_path = Path("configs/model.yaml")
+        if model_config_path.exists():
+            with open(model_config_path) as f:
+                base_config = yaml.safe_load(f)
+        else:
+            # Fallback default config
+            base_config = {}
+        
+        # Create training config by merging base config with pipeline settings
+        training_config = {
+            'dataset': {
+                'train_zarr_paths': [str(self.train_path)],
+                'val_zarr_paths': [str(self.val_path)] if self.val_path else [],
+                'test_zarr_paths': [str(self.test_path)] if self.test_path else [],
+                'map_resolution': 1.0,
+                'scene_extent': 512,
+                'normalize_features': True,
+                'handle_missing_values': 'mask'
+            },
+            'training': {
+                **base_config.get('training', {}),
+                **self.config.training,
+            },
+            'infrastructure': {
+                'accelerator': 'auto',
+                'devices': 1,
+                'num_workers': self.config.training.get('num_workers', 4),
+                'precision': '32-true',
+                'checkpoint': {
+                    'dirpath': str(self.checkpoint_dir),
+                    'monitor': 'val_median_error',
+                    'mode': 'min',
+                    'save_top_k': 3
+                },
+                'early_stopping': {
+                    'monitor': 'val_median_error',
+                    'patience': 10,
+                    'mode': 'min'
+                },
+                'logging': {
+                    'use_comet': bool(os.environ.get('COMET_API_KEY')),
+                    'use_wandb': False,
+                    'project': 'ue-localization',
+                    'log_every_n_steps': 50
+                }
+            },
+            # Use full model config from base
+            'model': base_config.get('model', {
+                'name': 'MapConditionedTransformer',
+                'radio_encoder': {'type': 'SetTransformer', 'd_model': 256, 'nhead': 8, 'num_layers': 4, 'num_cells': 512, 'num_beams': 64},
+                'map_encoder': {'d_model': 384, 'nhead': 6, 'num_layers': 6, 'patch_size': 16},
+                'fusion': {'d_fusion': 384, 'nhead': 6},
+                'coarse_head': {'grid_size': 32, 'd_input': 384},
+                'fine_head': {'type': 'heteroscedastic', 'd_input': 512, 'd_hidden': 256, 'top_k': 5, 'patch_size': 64}
+            }),
+            'seed': 42,
+            'deterministic': False
+        }
+        
+        # Save training config
+        config_path = self.checkpoint_dir / "training_config.yaml"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        with open(config_path, 'w') as f:
+            yaml.dump(training_config, f, default_flow_style=False)
+        
+        # Train using Lightning
+        from src.training import UELocalizationLightning
+        import pytorch_lightning as pl
+        from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+        
+        model = UELocalizationLightning(str(config_path))
+        
+        callbacks = [
+            ModelCheckpoint(
+                dirpath=str(self.checkpoint_dir),
+                filename='model-{epoch:02d}-{val_median_error:.2f}',
+                monitor='val_median_error',
+                mode='min',
+                save_top_k=3,
+                save_last=True
+            ),
+            EarlyStopping(
+                monitor='val_median_error',
+                patience=10,
+                mode='min'
+            )
+        ]
+        
+        trainer = pl.Trainer(
+            max_epochs=self.config.training.get('epochs', 30),
+            accelerator='auto',
+            devices=1,
+            callbacks=callbacks,
+            enable_progress_bar=True,
+            log_every_n_steps=50
+        )
+        
+        self.log(f"Training for {self.config.training.get('epochs', 30)} epochs...")
+        trainer.fit(model)
+        
+        if self.test_path:
+            self.log("Running test evaluation...")
+            trainer.test(model)
+        
+        self.log(f"✓ Training complete. Checkpoints: {self.checkpoint_dir}")
+    
+    def _find_latest_dataset(self, split: str) -> Optional[Path]:
+        """Find the latest dataset for a given split."""
+        pattern = f"dataset_{split}_*.zarr"
+        matches = sorted(self.data_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        return matches[0] if matches else None
+    
+    def generate_report(self):
+        """Generate pipeline execution report."""
+        duration = time.time() - self.start_time
+        
+        report = {
+            'name': self.config.name,
+            'timestamp': datetime.now().isoformat(),
+            'duration_seconds': duration,
+            'duration_formatted': f"{duration/60:.1f} minutes",
+            'output_dir': str(self.output_dir),
+            'datasets': {
+                'train': str(self.train_path) if self.train_path else None,
+                'val': str(self.val_path) if self.val_path else None,
+                'test': str(self.test_path) if self.test_path else None
+            },
+            'checkpoints': str(self.checkpoint_dir)
+        }
+        
+        report_path = self.output_dir / "report.yaml"
+        with open(report_path, 'w') as f:
+            yaml.dump(report, f, default_flow_style=False)
+        
+        self.log(f"Report saved: {report_path}")
 
 
 def main():
-    args = parse_args()
-    setup_logging(name=args.run_name)
+    parser = argparse.ArgumentParser(description="Simplified ML Pipeline")
+    parser.add_argument('--config', type=Path, help='Path to experiment YAML config')
+    parser.add_argument('--quick-test', action='store_true', help='Run quick test')
+    parser.add_argument('--skip-scenes', action='store_true', help='Skip scene generation')
+    parser.add_argument('--skip-data', action='store_true', help='Skip data generation')
+    parser.add_argument('--skip-training', action='store_true', help='Skip training')
+    parser.add_argument('--name', type=str, default=None, help='Experiment name')
     
-    # Setup Comet ML environment before running pipeline
-    _setup_comet_environment(args)
-
-    orchestrator = PipelineOrchestrator(args)
-    sys.exit(orchestrator.run())
+    args = parser.parse_args()
+    
+    # Create config
+    if args.quick_test:
+        config = ExperimentConfig.quick_test()
+    elif args.config:
+        config = ExperimentConfig.from_yaml(args.config)
+    else:
+        config = ExperimentConfig()
+    
+    # Apply overrides
+    if args.name:
+        config.name = args.name
+    config.skip_scenes = args.skip_scenes
+    config.skip_data = args.skip_data
+    config.skip_training = args.skip_training
+    
+    # Run pipeline
+    pipeline = Pipeline(config)
+    sys.exit(pipeline.run())
 
 
 if __name__ == "__main__":
