@@ -112,35 +112,35 @@
 % PREDICTION HEADS (Bottom)
 % ============================================
 % Coarse Head
-\node[headbox, font=\scriptsize] (coarse) at (-1.8, -3.5) {\textbf{Coarse Head}\\{\tiny MLP → 32×32}};
-\draw[arrow] (fused.south) -- ++(0, -0.3) -| (coarse.north);
+\node[headbox, font=\scriptsize] (coarse) at (-1.8, -3.8) {\textbf{Coarse Head}\\{\tiny MLP → 32×32}};
+\draw[arrow] (fused.south) -- ++(0, -0.4) -| (coarse.north);
 
 % Fine Head  
-\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.5) {\textbf{Fine Head}\\{\tiny Top-K=5 GMM}};
-\draw[arrow] (fused.south) -- ++(0, -0.3) -| (fine.north);
+\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.8) {\textbf{Fine Head}\\{\tiny Top-K=5 GMM}};
+\draw[arrow] (fused.south) -- ++(0, -0.4) -| (fine.north);
 
 % Coarse outputs
-\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (heatmap) at (-2.8, -4.6) {$\boldsymbol{\pi}$\\{\tiny [1024]}};
-\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (topk) at (-0.8, -4.6) {Top-K\\{\tiny [5]}};
-\draw[arrow, red!50] (coarse.south) -- ++(0, -0.25) -| (heatmap.north);
-\draw[arrow, red!50] (coarse.south) -- ++(0, -0.25) -| (topk.north);
+\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (heatmap) at (-3.0, -5.0) {$\boldsymbol{\pi}$\\{\tiny [1024]}};
+\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (topk) at (-0.8, -5.0) {Top-K\\{\tiny [5]}};
+\draw[arrow, red!50] (coarse.south) -- ++(0, -0.3) -| (heatmap.north);
+\draw[arrow, red!50] (coarse.south) -- ++(0, -0.3) -| (topk.north);
 
 % Arrow from coarse to fine
-\draw[dasharrow, red!40] (topk.east) -- ++(0.4, 0) |- ([yshift=-0.15cm]fine.west);
+\draw[dasharrow, red!40] (topk.east) -- ++(0.5, 0) |- ([yshift=-0.15cm]fine.west);
 
 % Fine outputs
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -4.6) {$\boldsymbol{\mu}_k$\\{\tiny [K,2]}};
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (sigma) at (3.6, -4.6) {$\boldsymbol{\sigma}_k$\\{\tiny [K,2]}};
-\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (offsets.north);
-\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (sigma.north);
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -5.0) {$\boldsymbol{\mu}_k$\\{\tiny [K,2]}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (sigma) at (3.6, -5.0) {$\boldsymbol{\sigma}_k$\\{\tiny [K,2]}};
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.3) -| (offsets.north);
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.3) -| (sigma.north);
 
 % ============================================
 % FINAL OUTPUT
 % ============================================
-\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=3.8cm, thick] (finalpos) at (0.5, -5.8) {$\displaystyle p(\mathbf{y}) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{y}; \boldsymbol{\mu}_k, \mathrm{diag}(\boldsymbol{\sigma}_k^2))$};
-\draw[arrow, thick, teal!60] (heatmap.south) |- (finalpos.west);
-\draw[arrow, thick, teal!60] (offsets.south) |- (finalpos);
-\draw[arrow, thick, teal!60] (sigma.south) |- (finalpos.east);
+\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=3.6cm, thick] (finalpos) at (0.5, -6.2) {$\displaystyle p(\mathbf{y}) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{y}; \boldsymbol{\mu}_k, \mathrm{diag}(\boldsymbol{\sigma}_k^2))$};
+\draw[arrow, thick, teal!60] (heatmap.south) |- ++(0, -0.3) -| (finalpos.west);
+\draw[arrow, thick, teal!60] (offsets.south) |- ++(0, -0.3) -| (finalpos);
+\draw[arrow, thick, teal!60] (sigma.south) |- ++(0, -0.3) -| (finalpos.east);
 
 % ============================================
 % BACKGROUND BOXES

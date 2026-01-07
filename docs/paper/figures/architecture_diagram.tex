@@ -162,35 +162,35 @@
 % BOTTOM: PREDICTION HEADS
 % ============================================
 % Coarse Head
-\node[headbox, fill=coarsered!25] (coarse) at (-1.5, -3.7) {\textbf{Coarse Head}\\{\scriptsize MLP → 32×32 grid}};
-\draw[arrow] (fused.south) -- ++(0, -0.4) -| (coarse.north);
+\node[headbox, fill=coarsered!25] (coarse) at (-1.5, -4.2) {\textbf{Coarse Head}\\{\scriptsize MLP → 32×32 grid}};
+\draw[arrow] (fused.south) -- ++(0, -0.6) -| (coarse.north);
 
 % Fine Head
-\node[headbox, fill=fineyellow!40] (fine) at (4.5, -3.7) {\textbf{Fine Head}\\{\scriptsize Top-K refinement}};
-\draw[arrow] (fused.south) -- ++(0, -0.4) -| (fine.north);
+\node[headbox, fill=fineyellow!40] (fine) at (4.5, -4.2) {\textbf{Fine Head}\\{\scriptsize Top-K refinement}};
+\draw[arrow] (fused.south) -- ++(0, -0.6) -| (fine.north);
 
 % Coarse outputs
-\node[outputbox, fill=coarsered!20, minimum width=2.0cm] (heatmap) at (-2.8, -5.1) {Heatmap\\{\tiny [B, 32, 32]}};
-\node[outputbox, fill=coarsered!20, minimum width=1.8cm] (topk) at (-0.3, -5.1) {Top-K\\{\tiny [B, K]}};
-\draw[arrow, coarsered!70] (coarse.south) -- ++(0, -0.3) -| (heatmap.north);
-\draw[arrow, coarsered!70] (coarse.south) -- ++(0, -0.3) -| (topk.north);
+\node[outputbox, fill=coarsered!20, minimum width=2.0cm] (heatmap) at (-3.2, -5.8) {Heatmap\\{\tiny [B, 32, 32]}};
+\node[outputbox, fill=coarsered!20, minimum width=1.8cm] (topk) at (-0.3, -5.8) {Top-K\\{\tiny [B, K]}};
+\draw[arrow, coarsered!70] (coarse.south) -- ++(0, -0.4) -| (heatmap.north);
+\draw[arrow, coarsered!70] (coarse.south) -- ++(0, -0.4) -| (topk.north);
 
 % Connection from coarse to fine (top-k indices)
-\draw[dasharrow, coarsered!60] (topk.east) -- ++(0.5, 0) |- ([yshift=-0.2cm]fine.west) node[pos=0.3, above, font=\tiny] {indices};
+\draw[dasharrow, coarsered!60] (topk.east) -- ++(0.8, 0) |- ([yshift=-0.2cm]fine.west) node[pos=0.3, above, font=\tiny] {indices};
 
 % Fine outputs
-\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (offsets) at (3.3, -5.1) {Offsets\\{\tiny [B, K, 2]}};
-\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (sigma) at (5.7, -5.1) {Uncertainty\\{\tiny [B, K, 2]}};
-\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.3) -| (offsets.north);
-\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.3) -| (sigma.north);
+\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (offsets) at (3.0, -5.8) {Offsets\\{\tiny [B, K, 2]}};
+\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (sigma) at (5.4, -5.8) {Uncertainty\\{\tiny [B, K, 2]}};
+\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.4) -| (offsets.north);
+\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.4) -| (sigma.north);
 
 % ============================================
 % FINAL OUTPUT
 % ============================================
-\node[outputbox, fill=outputteal!40, minimum width=3.5cm, minimum height=0.9cm, very thick] (finalpos) at (1.5, -6.5) {\textbf{GMM Posterior}\\$p(\mathbf{y}) = \sum_k \pi_k \mathcal{N}(\boldsymbol{\mu}_k, \boldsymbol{\Sigma}_k)$};
-\draw[arrow, thick, outputteal] (heatmap.south) |- (finalpos.west);
-\draw[arrow, thick, outputteal] (offsets.south) |- (finalpos);
-\draw[arrow, thick, outputteal] (sigma.south) |- (finalpos.east);
+\node[outputbox, fill=outputteal!40, minimum width=3.2cm, minimum height=0.8cm, very thick] (finalpos) at (1.5, -7.4) {\textbf{GMM Posterior}\\$p(\mathbf{y}) = \sum_k \pi_k \mathcal{N}(\boldsymbol{\mu}_k, \boldsymbol{\Sigma}_k)$};
+\draw[arrow, thick, outputteal] (heatmap.south) |- ++(0, -0.3) -| (finalpos.west);
+\draw[arrow, thick, outputteal] (offsets.south) |- ++(0, -0.3) -| (finalpos);
+\draw[arrow, thick, outputteal] (sigma.south) |- ++(0, -0.3) -| (finalpos.east);
 
 % ============================================
 % ANNOTATIONS/LEGEND
