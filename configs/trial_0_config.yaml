@@ -6,11 +6,11 @@ dataset:
   test_on_eval: true
   test_zarr_path: /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset_eval/dataset_eval.zarr
   train_zarr_paths:
-  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260106_121828.zarr
+  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260107_080756.zarr
 infrastructure:
   accelerator: auto
   checkpoint:
-    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260106_121741
+    dirpath: /home/ubuntu/projects/CellularPositioningResearch/checkpoints/multi_city_optuna_20260107_080632
     mode: min
     monitor: val_median_error
     save_top_k: 3
@@ -38,23 +38,23 @@ model:
     top_k: 5
   fusion:
     d_fusion: 256
-    dropout: 0.13975601109258742
-    nhead: 8
+    dropout: 0.2886626584386949
+    nhead: 4
   map_encoder:
-    d_model: 128
-    dropout: 0.26418797031493335
+    d_model: 256
+    dropout: 0.18062654923724658
     img_size: 256
     in_channels: 10
-    nhead: 4
+    nhead: 8
     num_layers: 4
     osm_map_channels: 5
-    patch_size: 16
+    patch_size: 32
     radio_map_channels: 5
-    use_e2_equivariant: true
+    use_e2_equivariant: false
   name: MapConditionedTransformer
   radio_encoder:
     d_model: 128
-    dropout: 0.24885618099596998
+    dropout: 0.22601723591591644
     embedding:
       beam_id_embed_dim: 32
       cell_id_embed_dim: 64
@@ -62,10 +62,10 @@ model:
       time_embed_dim: 64
     mac_features_dim: 6
     max_seq_len: 20
-    nhead: 8
+    nhead: 2
     num_beams: 64
     num_cells: 3
-    num_layers: 2
+    num_layers: 4
     phy_features_dim: 8
     rt_features_dim: 16
     type: SetTransformer
@@ -87,7 +87,7 @@ training:
   batch_size: 2
   gradient_clip: 1.0
   gradient_clip_val: 1.0
-  learning_rate: 6.75494621593119e-05
+  learning_rate: 0.00030346346411405553
   loss:
     augmentation:
       feature_dropout: 0.05
@@ -105,4 +105,4 @@ training:
   optimizer: adamw
   scheduler: cosine_with_warmup
   warmup_steps: 2000
-  weight_decay: 0.00020490443859828207
+  weight_decay: 0.0011316655694234238

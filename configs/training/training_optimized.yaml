@@ -1,0 +1,189 @@
+# Optimized Training Configuration for Single Run (No Optuna)
+# Based on critical analysis of model architecture and hyperparameter tuning best practices
+# 
+# Dataset: 70,000 samples from 7 diverse US cities
+# - austin_texas, boulder_colorado, chicago_illinois, los_angeles_california
+# - new_york_new_york, quick_test, seattle_washington
+# Scene extents: 256-560m (normalized internally)
+#
+# Key improvements:
+# 1. Larger model dimensions for better capacity
+# 2. Balanced loss weights (coarse reduced, position aux loss added)
+# 3. Proper warmup scheduling for 70k samples
+# 4. Per-sample augmentation improvements
+# 5. Optimized learning rate and weight decay
+
+model:
+  name: "MapConditionedTransformer"
+  
+  # Radio Encoder - Larger for richer representations
+  radio_encoder:
+    type: "SetTransformer"
+    num_cells: 16          # Support more cells (2 more than dataset for safety)
+    num_beams: 64
+    d_model: 256           # INCREASED from 128 - more capacity for 30 input features
+    nhead: 8               # INCREASED from 4 - better multi-head attention
+    num_layers: 4          # INCREASED from 3 - deeper attention
+    dropout: 0.1
+    max_seq_len: 20
+    rt_features_dim: 16    # Matches RT_SCHEMA (13 features padded to 16)
+    phy_features_dim: 8    # Matches PHY_SCHEMA  
+    mac_features_dim: 6    # Matches MAC_SCHEMA
+    
+    # Token Embedding (for reference, actual dims derived from d_model)
+    embedding:
+      cell_id_embed_dim: 64
+      beam_id_embed_dim: 32
+      time_embed_dim: 64
+      feature_dim: 256
+    
+    use_token_masking: true
+    use_feature_masking: true
+    
+  # Map Encoder - Standard ViT (E2 is too slow for marginal gains)
+  map_encoder:
+    use_e2_equivariant: false  # Standard ViT is faster and sufficient
+    img_size: 256
+    patch_size: 16             # 16x16 patches -> 256 patch tokens
+    in_channels: 10            # 5 radio + 5 OSM channels
+    d_model: 384               # INCREASED from 192 - ViT-Small size
+    nhead: 6                   # Matches d_model (384/6=64 per head)
+    num_layers: 6              # INCREASED from 3 - proper ViT depth
+    dropout: 0.1
+    radio_map_channels: 5
+    osm_map_channels: 5
+    
+  # Cross-Attention Fusion
+  fusion:
+    d_radio: 256               # Must match radio_encoder.d_model
+    d_map: 384                 # Must match map_encoder.d_model
+    d_fusion: 384              # INCREASED - larger fusion space
+    nhead: 6                   # Matches d_fusion
+    dropout: 0.1
+    num_query_tokens: 4        # NEW: Multi-query attention for richer fusion
+    
+  # Coarse Head (Grid Classification)
+  coarse_head:
+    grid_size: 32              # 32x32 = 1024 cells
+    d_input: 384               # Must match fusion.d_fusion
+    dropout: 0.15              # Slightly higher dropout for classification
+    
+  # Fine Head (Offset Regression with Uncertainty)
+  fine_head:
+    type: "heteroscedastic"
+    d_input: 384               # Must match fusion.d_fusion
+    d_hidden: 256
+    top_k: 5                   # Refine top 5 candidates
+    dropout: 0.1
+    # Implicit: sigma_min=0.01 (hardcoded in model)
+
+# Dataset Configuration
+# 70,000 samples total: 70% train (49k), 15% val (10.5k), 15% test (10.5k)
+# 7 cities with varying scene extents (256-560m)
+dataset:
+  # Training dataset - 7 diverse US cities
+  train_zarr_paths:
+    - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260107_080756.zarr
+  
+  # No separate eval dataset - use internal train/val/test splits
+  # The dataset will automatically split by scene to prevent data leakage
+  test_on_eval: false         # Use internal test split (15% of scenes)
+  
+  scene_extent: 512            # Reference extent (actual varies 256-560m per scene)
+  map_resolution: 1.0          # Meters per pixel (256x256 maps)
+  normalize_features: true
+  handle_missing_values: "mask"
+
+# Training Configuration
+# With 49,000 train samples and batch_size=16: ~3,062 steps/epoch
+training:
+  # Batch size - larger for stable gradients with 70k samples
+  batch_size: 16              # 3,062 steps/epoch with 49k train samples
+  num_epochs: 30              # 30 epochs * 3k steps = ~90k total steps (sufficient)
+  
+  # Optimizer - AdamW with transformer-optimized settings
+  optimizer: "adamw"
+  learning_rate: 0.0002       # 2e-4 - balanced for 70k dataset size
+  weight_decay: 0.01          # Standard weight decay for transformers
+  
+  # Learning rate schedule
+  scheduler: "cosine_with_warmup"
+  warmup_steps: 500           # ~1/6 epoch warmup (500/3062)
+  
+  # Gradient clipping
+  gradient_clip: 1.0
+  gradient_clip_val: 1.0
+  
+  # Loss configuration - REBALANCED for multi-city generalization
+  loss:
+    coarse_weight: 0.5        # REDUCED from 1.0 - coarse CE dominates otherwise
+    fine_weight: 1.0          # Gaussian NLL for offset regression
+    position_weight: 0.3      # NEW: Direct position supervision with Smooth L1
+    use_physics_loss: false   # Disable unless you have precomputed radio maps
+    
+    # Augmentation - important for 7-city generalization
+    augmentation:
+      feature_noise: 0.05     # 5% proportional Gaussian noise (realistic measurement noise)
+      feature_dropout: 0.15   # 15% random feature dropout (simulate missing measurements)
+      temporal_dropout: 0.1   # 10% timestep dropout (simulate gaps in reporting)
+      random_flip: true       # 50% horizontal flip
+      random_rotation: true   # Random 90° rotations (city orientations vary)
+      scale_range: [0.9, 1.1] # 10% zoom jitter (scene extents vary 256-560m)
+
+# Physics Loss Configuration (if enabled)
+physics_loss:
+  enabled: false              # Set true if you have precomputed radio maps
+  lambda_phys: 0.1
+  feature_weights:
+    path_gain: 1.0
+    snr: 0.8
+    sinr: 0.8
+    throughput: 0.2
+    bler: 0.2
+  loss_type: "mse"
+  normalize_features: true
+
+# Infrastructure Configuration
+infrastructure:
+  accelerator: "auto"         # Auto-detect GPU/CPU/MPS
+  devices: 1
+  precision: "32-true"        # Full precision for stability
+  num_workers: 4              # DataLoader workers (adjust based on CPU cores)
+  
+  checkpoint:
+    dirpath: "checkpoints/optimized_run"
+    monitor: "val_median_error"
+    mode: "min"
+    save_top_k: 3
+    filename: "epoch={epoch}-val_err={val_median_error:.2f}"
+    
+  early_stopping:
+    monitor: "val_median_error"
+    patience: 8               # 8 epochs patience (~24k steps) - reasonable for 30 epoch run
+    mode: "min"
+    min_delta: 0.5            # Require 0.5m improvement
+    
+  logging:
+    log_every_n_steps: 50     # Log every 50 steps (61 logs/epoch)
+    use_comet: true           # Enable Comet ML logging (requires COMET_API_KEY env var)
+    use_wandb: false
+    project: "ue-localization-7cities"
+    # To use Comet ML, set these environment variables:
+    #   export COMET_API_KEY="your-api-key"
+    #   export COMET_WORKSPACE="your-workspace"
+    # Or source the run_full_experiment.sh which has them configured
+
+# Reproducibility
+seed: 42
+deterministic: false          # True for full reproducibility (slower)
+
+# Evaluation Metrics
+evaluation:
+  metrics:
+    - median_error
+    - rmse
+    - percentile_67
+    - percentile_90
+    - percentile_95
+    - success_rate_5m
+    - success_rate_10m

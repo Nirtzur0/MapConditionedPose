@@ -136,12 +136,14 @@ class FineHead(nn.Module):
     - (σx, σy): Uncertainty estimates
     
     Uses heteroscedastic uncertainty (predicts both mean and variance).
+    Uses 2D sinusoidal positional encoding instead of learned embeddings
+    to better capture spatial structure and enable generalization.
     
     Args:
         d_input: Input dimension from fusion module
         d_hidden: Hidden dimension for refinement network
         top_k: Number of candidate cells to refine
-        num_cells: Total number of cells in the grid (for embedding)
+        num_cells: Total number of cells in the grid (for computing grid_size)
         sigma_min: Minimum standard deviation (meters)
         dropout: Dropout rate
     """
@@ -159,11 +161,17 @@ class FineHead(nn.Module):
         
         self.top_k = top_k
         self.sigma_min = sigma_min
+        self.grid_size = int(num_cells ** 0.5)  # Infer grid size (32 for 1024 cells)
+        self.d_hidden = d_hidden
         
-        # Per-candidate refinement network
-        # Input: fused representation + cell embedding
-        # Replaced single parameter with embedding table indexed by cell id
-        self.cell_embedding = nn.Embedding(num_cells, d_hidden)
+        # 2D positional encoding projection (instead of learned embeddings)
+        # We'll use sinusoidal 2D encoding: sin/cos of x and y coordinates
+        # This captures spatial structure better than arbitrary embeddings
+        self.pos_proj = nn.Sequential(
+            nn.Linear(d_hidden, d_hidden),
+            nn.LayerNorm(d_hidden),
+            nn.GELU(),
+        )
         
         self.refiner = nn.Sequential(
             nn.Linear(d_input + d_hidden, d_hidden),
@@ -180,6 +188,46 @@ class FineHead(nn.Module):
         # Predict scale (std dev) 
         # We predict raw values that will be passed through softplus
         self.scale_head = nn.Linear(d_hidden, 2)
+        
+        # Precompute sinusoidal basis for positional encoding
+        # Using d_hidden/2 frequencies for x and y each
+        freqs = torch.exp(torch.arange(0, d_hidden // 4, dtype=torch.float32) * 
+                          (-torch.log(torch.tensor(10000.0)) / (d_hidden // 4)))
+        self.register_buffer('pos_freqs', freqs)
+    
+    def _compute_2d_pos_encoding(self, indices: torch.Tensor) -> torch.Tensor:
+        """Compute 2D sinusoidal positional encoding for cell indices.
+        
+        Args:
+            indices: [batch, k] flat cell indices
+            
+        Returns:
+            pos_encoding: [batch, k, d_hidden] positional encodings
+        """
+        # Convert flat index to (row, col)
+        rows = indices // self.grid_size  # [B, k]
+        cols = indices % self.grid_size   # [B, k]
+        
+        # Normalize to [0, 1]
+        rows_norm = rows.float() / self.grid_size  # [B, k]
+        cols_norm = cols.float() / self.grid_size  # [B, k]
+        
+        # Compute sinusoidal encoding
+        # freqs: [d_hidden/4]
+        # We want [B, k, d_hidden]
+        
+        # Compute phases: [B, k, 1] * [d_hidden/4] = [B, k, d_hidden/4]
+        phase_x = cols_norm.unsqueeze(-1) * self.pos_freqs * 2 * torch.pi
+        phase_y = rows_norm.unsqueeze(-1) * self.pos_freqs * 2 * torch.pi
+        
+        # Sin and cos for x and y: each [B, k, d_hidden/4]
+        enc_x = torch.cat([torch.sin(phase_x), torch.cos(phase_x)], dim=-1)  # [B, k, d_hidden/2]
+        enc_y = torch.cat([torch.sin(phase_y), torch.cos(phase_y)], dim=-1)  # [B, k, d_hidden/2]
+        
+        # Concatenate x and y encodings
+        pos_enc = torch.cat([enc_x, enc_y], dim=-1)  # [B, k, d_hidden]
+        
+        return pos_enc
     
     def forward(
         self,
@@ -200,17 +248,22 @@ class FineHead(nn.Module):
         # Expand fused representation for each candidate
         fused_expanded = fused.unsqueeze(1).expand(-1, k, -1)  # [B, k, d_input]
         
-        # Get cell-specific embedding using indices
-        cell_emb = self.cell_embedding(top_k_indices)  # [B, k, d_hidden]
+        # Get 2D positional encoding for cell positions
+        pos_enc = self._compute_2d_pos_encoding(top_k_indices)  # [B, k, d_hidden]
+        pos_enc = self.pos_proj(pos_enc)  # [B, k, d_hidden]
         
         # Concatenate
-        combined = torch.cat([fused_expanded, cell_emb], dim=-1)  # [B, k, d_input+d_hidden]
+        combined = torch.cat([fused_expanded, pos_enc], dim=-1)  # [B, k, d_input+d_hidden]
         
         # Refine
         refined = self.refiner(combined)  # [B, k, d_hidden]
         
-        # Predict offset (mean)
-        offsets = self.mean_head(refined)  # [B, k, 2]
+        # Predict offset (mean) - bounded to cell size using tanh
+        # Cell size in normalized coords is 1/grid_size ≈ 0.03 for grid_size=32
+        # Allow offsets up to 1.5x cell size in either direction
+        offset_raw = self.mean_head(refined)  # [B, k, 2]
+        max_offset = 0.05  # ~1.5 cells in normalized [0,1] coords
+        offsets = torch.tanh(offset_raw) * max_offset  # [B, k, 2] bounded to [-0.05, 0.05]
         
         # Predict uncertainty (scale)
         # Use softplus + epsilon to ensure positive and stable sigma

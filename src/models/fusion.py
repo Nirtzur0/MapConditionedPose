@@ -3,6 +3,10 @@ Cross-Attention Fusion Module
 
 Fuses radio encoder output (query) with map encoder spatial tokens (keys/values)
 using multi-head cross-attention mechanism.
+
+Improvements:
+- Uses multiple learnable query tokens for richer fusion
+- Two-stage attention: radio->map, then aggregate
 """
 
 import torch
@@ -15,12 +19,15 @@ class CrossAttentionFusion(nn.Module):
     Radio encoder output acts as query (Q), map spatial tokens as keys/values (K, V).
     This allows the model to attend to relevant map regions based on measurements.
     
+    Uses multiple learnable query tokens for richer fusion capacity.
+    
     Args:
         d_radio: Dimension of radio encoder output
         d_map: Dimension of map encoder tokens
         d_fusion: Output fusion dimension
         nhead: Number of attention heads
         dropout: Dropout rate
+        num_query_tokens: Number of learnable query tokens (default: 4)
     """
     
     def __init__(
@@ -30,6 +37,7 @@ class CrossAttentionFusion(nn.Module):
         d_fusion: int = 768,
         nhead: int = 8,
         dropout: float = 0.1,
+        num_query_tokens: int = 4,
     ):
         super().__init__()
         
@@ -37,9 +45,13 @@ class CrossAttentionFusion(nn.Module):
         self.d_map = d_map
         self.d_fusion = d_fusion
         self.nhead = nhead
+        self.num_query_tokens = num_query_tokens
         
         # Project radio embedding to fusion dimension (for query)
         self.radio_proj = nn.Linear(d_radio, d_fusion)
+        
+        # Learnable query tokens for multi-query attention
+        self.query_tokens = nn.Parameter(torch.randn(1, num_query_tokens, d_fusion) * 0.02)
         
         # Project map tokens if needed (for keys/values)
         self.map_proj = nn.Linear(d_map, d_fusion) if d_map != d_fusion else nn.Identity()
@@ -64,6 +76,10 @@ class CrossAttentionFusion(nn.Module):
         # Layer normalization
         self.norm1 = nn.LayerNorm(d_fusion)
         self.norm2 = nn.LayerNorm(d_fusion)
+        self.norm_out = nn.LayerNorm(d_fusion)
+        
+        # Aggregation: combine radio token with multi-query outputs
+        self.aggregate = nn.Linear(d_fusion * (num_query_tokens + 1), d_fusion)
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -81,30 +97,40 @@ class CrossAttentionFusion(nn.Module):
         Returns:
             Fused representation [batch, d_fusion]
         """
-        # Project to fusion dimension
-        query = self.radio_proj(radio_emb)  # [B, d_fusion]
+        B = radio_emb.shape[0]
+        
+        # Project radio to fusion dimension
+        radio_proj = self.radio_proj(radio_emb)  # [B, d_fusion]
         key_value = self.map_proj(map_tokens)  # [B, num_patches, d_fusion]
         
-        # Add batch dimension for query (to match attention API)
-        query = query.unsqueeze(1)  # [B, 1, d_fusion]
+        # Expand learnable query tokens for batch
+        queries = self.query_tokens.expand(B, -1, -1)  # [B, num_query_tokens, d_fusion]
         
-        # Cross-attention: radio attends to map
-        attn_output, attn_weights = self.cross_attention(
-            query=query,
+        # Condition queries on radio embedding (additive conditioning)
+        queries = queries + radio_proj.unsqueeze(1)  # [B, num_query_tokens, d_fusion]
+        
+        # Cross-attention: queries attend to map
+        attn_output, _ = self.cross_attention(
+            query=queries,
             key=key_value,
             value=key_value,
-            need_weights=True,
-        )  # attn_output: [B, 1, d_fusion], attn_weights: [B, 1, num_patches]
+            need_weights=False,
+        )  # attn_output: [B, num_query_tokens, d_fusion]
         
         # Residual connection + normalization
-        query = self.norm1(query + self.dropout(attn_output))
+        queries = self.norm1(queries + self.dropout(attn_output))
         
         # Feed-forward network
-        ffn_output = self.ffn(query)
-        query = self.norm2(query + ffn_output)
+        ffn_output = self.ffn(queries)
+        queries = self.norm2(queries + ffn_output)  # [B, num_query_tokens, d_fusion]
         
-        # Remove sequence dimension
-        fused = query.squeeze(1)  # [B, d_fusion]
+        # Aggregate all query tokens with radio embedding
+        # Flatten query tokens and concatenate with radio projection
+        queries_flat = queries.flatten(1)  # [B, num_query_tokens * d_fusion]
+        combined = torch.cat([radio_proj, queries_flat], dim=1)  # [B, (1 + num_query_tokens) * d_fusion]
+        
+        fused = self.aggregate(combined)  # [B, d_fusion]
+        fused = self.norm_out(fused)
         
         return fused
     
@@ -117,22 +143,34 @@ class CrossAttentionFusion(nn.Module):
         
         Returns:
             Fused representation [batch, d_fusion]
-            Attention weights [batch, 1, num_patches]
+            Attention weights [batch, num_query_tokens, num_patches]
         """
-        query = self.radio_proj(radio_emb).unsqueeze(1)
+        B = radio_emb.shape[0]
+        
+        radio_proj = self.radio_proj(radio_emb)
         key_value = self.map_proj(map_tokens)
         
+        queries = self.query_tokens.expand(B, -1, -1)
+        queries = queries + radio_proj.unsqueeze(1)
+        
         attn_output, attn_weights = self.cross_attention(
-            query=query,
+            query=queries,
             key=key_value,
             value=key_value,
             need_weights=True,
         )
         
-        query = self.norm1(query + self.dropout(attn_output))
-        ffn_output = self.ffn(query)
-        query = self.norm2(query + ffn_output)
+        queries = self.norm1(queries + self.dropout(attn_output))
+        ffn_output = self.ffn(queries)
+        queries = self.norm2(queries + ffn_output)
         
-        fused = query.squeeze(1)
+        queries_flat = queries.flatten(1)
+        combined = torch.cat([radio_proj, queries_flat], dim=1)
         
-        return fused, attn_weights
+        fused = self.aggregate(combined)
+        fused = self.norm_out(fused)
+        
+        # Average attention weights across query tokens for visualization
+        attn_weights_avg = attn_weights.mean(dim=1, keepdim=True)  # [B, 1, num_patches]
+        
+        return fused, attn_weights_avg

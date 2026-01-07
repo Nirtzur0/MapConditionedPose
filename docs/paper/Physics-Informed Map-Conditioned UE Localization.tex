@@ -132,7 +132,7 @@ Finally, we expose a principled refinement mechanism: when needed, we optimize a
 
 \paragraph{Contributions.}
 \begin{itemize}
-\item \hlsol{Map-conditioned Transformer posterior.} A dual-encoder architecture (set-based radio Transformer + map ViT) fused by cross-attention.
+\item \hlsol{Map-conditioned Transformer posterior.} A dual-encoder architecture (Transformer-based radio encoder with \texttt{[CLS]} pooling + map ViT with optional E(2)-equivariance) fused by multi-query cross-attention.
 \item \hlsol{Coarse-to-fine mixture density head.} A hierarchical discretize-then-refine posterior $p(\mathbf{y})=\sum_c \pi_c\,\mathcal{N}(\mathbf{y};\bm\mu_c,\bm\Sigma_c)$ with a top-$K$ truncation that preserves multi-modality while controlling compute.
 \item \hlsol{Differentiable physics coupling.} A physics-consistency loss derived as a negative log-likelihood under a measurement noise model, computed via \hlsol{differentiable sampling} of precomputed radio fields.
 \item \hlsol{MAP refinement.} An inference-time energy minimization that improves low-confidence predictions while remaining consistent with the learned posterior.
@@ -197,8 +197,8 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \node[block] (x) {Radio measurements\\$\mathcal{X}=\{\mathbf{x}_t\}_{t=1}^T$};
 \node[block, right=2.2cm of x] (m) {Map context\\$\mathcal{M}=(\mathbf{R},\mathbf{O})$};
 
-\node[block, below=0.95cm of x] (re) {Radio encoder\\(set Transformer)};
-\node[block, below=0.95cm of m] (me) {Map encoder\\(ViT over patches)};
+\node[block, below=0.95cm of x] (re) {Radio encoder\\(Transformer + \texttt{[CLS]})};
+\node[block, below=0.95cm of m] (me) {Map encoder\\(ViT / E2-ViT)};
 
 \node[smallblock, below=1.1cm of $(re)!0.5!(me)$] (fusion) {Cross-attention fusion\\$\mathbf{z}_f = \mathrm{Attn}(\mathbf{z}_r, \mathbf{S})$};
 
@@ -222,7 +222,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[arrow] (fine) -- (out);
 \end{tikzpicture}
 \vspace{-0.2cm}
-\caption{Model overview. A set-based radio Transformer produces a global embedding $\mathbf{z}_r$, a ViT encodes map context into spatial tokens $\mathbf{S}$, cross-attention yields a fused embedding $\mathbf{z}_f$, and a coarse-to-fine head outputs a top-$K$ Gaussian mixture posterior over 2D UE position.}
+\caption{Model overview. A Transformer encoder with \texttt{[CLS]} pooling produces a global radio embedding $\mathbf{z}_r$, a ViT (standard or E2-equivariant) encodes map context into spatial tokens $\mathbf{S}$, multi-query cross-attention yields fused embeddings, and a coarse-to-fine head outputs a top-$K$ Gaussian mixture posterior over 2D UE position.}
 \label{fig:architecture}
 \end{figure}
 
@@ -241,7 +241,7 @@ Each measurement event $\mathbf{x}_t=(c_t,b_t,\tau_t,\mathbf{f}_t)$ is mapped to
 = W \Big[\, \underbrace{e_c(c_t)}_{\text{cell ID}} \,\Vert\, \underbrace{e_b(b_t)}_{\text{beam ID}} \,\Vert\, \underbrace{\psi(\tau_t;\bm\tau)}_{\text{time}} \,\Vert\, \underbrace{P\,\mathbf{f}_t}_{\text{features}} \Big],
 \label{eq:radio_token}
 \end{equation}
-where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features, and $\psi$ is a time embedding.
+where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features (RT, PHY, MAC measurements), and $\psi$ is a time embedding.
 In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time axis}:
 \begin{equation}
   \delta_t = \tau_t-\tau_1,\qquad \bar\delta_t=\frac{\delta_t}{\max_s \delta_s + \varepsilon},\qquad \psi(\tau_t;\bm\tau)=\mathrm{PE}(\bar\delta_t),
@@ -249,7 +249,10 @@ In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time
 \end{equation}
 where $\mathrm{PE}$ is a sinusoidal lookup table (as in standard Transformers \cite{vaswani2017transformer}).
 
-A Transformer encoder processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with padding masks) and outputs contextualized embeddings; we use a learnable \texttt{[CLS]} token to pool the sequence into a global representation $\mathbf{z}_r\in\R^{d_r}$.
+A standard Transformer encoder with self-attention processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with padding masks for variable-length sequences) and outputs contextualized embeddings; we use a learnable \texttt{[CLS]} token prepended to the sequence to pool information into a global representation $\mathbf{z}_r\in\R^{d_r}$.
+
+\paragraph{Implementation note: Transformer vs.\ Set Transformer.}
+While the Set Transformer architecture \cite{lee2019settransformer} provides explicit set-processing primitives (Induced Set Attention Blocks, Pooling by Multihead Attention), we employ a standard Transformer encoder with \texttt{[CLS]} pooling for simplicity and compatibility with existing tooling. Both architectures achieve permutation invariance (via the \texttt{[CLS]} aggregation for Transformers, or explicit set functions for Set Transformer), but the standard Transformer offers more straightforward integration with pre-trained weights and is computationally well-optimized. The choice can be configured in the model YAML.
 
 \begin{proposition}[Time affine invariance of the embedding]
 Assume timestamps transform as $\tau_t' = a\,\tau_t + b$ with $a>0$. Then the normalized relative time coordinates $\bar\delta_t$ in Eq.~\eqref{eq:time_norm} are invariant: $\bar\delta_t'=\bar\delta_t$ for all $t$ (up to the stabilizer $\varepsilon$), and therefore $\psi(\tau_t';\bm\tau')=\psi(\tau_t;\bm\tau)$.
@@ -265,28 +268,44 @@ If the encoder does not use index-based positional encodings (only token-local f
 \label{sec:map}
 
 We represent map context as a multi-channel tensor $\mathbf{M}\in\R^{(C_r+C_o)\times H\times W}$ by early fusion of radio-map channels $\mathbf{R}$ and semantic channels $\mathbf{O}$.
-To encode $\mathbf{M}$, we employ an E(2)-Equivariant Vision Transformer (ViT) architecture that explicitly preserves rotational and reflectional symmetries.
-We operate under the discrete group $G=p4m$ (the symmetry group of the square), consisting of 4 rotations and reflections ($|G|=8$).
-The input map $\mathbf{M}$ is first mapped from the planar domain to the group domain via a \emph{lifting self-attention} layer:
+Our implementation provides two encoder options, configurable via the \texttt{use\_e2\_equivariant} flag:
+
+\paragraph{Standard Vision Transformer (default).}
+The default encoder is a standard Vision Transformer (ViT) \cite{dosovitskiy2021vit}. The input $\mathbf{M}$ is partitioned into non-overlapping patches, projected to embeddings via a convolutional layer, and processed by a stack of Transformer encoder layers with learned positional embeddings. A prepended \texttt{[CLS]} token aggregates global context, and the spatial patch embeddings form the token sequence $\mathbf{S}\in\R^{N\times d_m}$ passed to the fusion stage. This encoder is computationally efficient and provides strong baselines, but is \emph{not} equivariant to rotations or reflections of the input map.
+
+\paragraph{E(2)-Equivariant Vision Transformer (optional).}
+For applications where rotation/reflection invariance is important (e.g., datasets with diverse map orientations), we provide an optional E(2)-Equivariant ViT architecture based on GE-ViT \cite{xu2023evit}.
+This encoder explicitly preserves rotational and reflectional symmetries under the discrete group $G=p4m$ (the symmetry group of the square, $|G|=8$).
+The input map $\mathbf{M}$ is first partitioned into patches, then mapped from the planar domain to the group domain via a \emph{lifting self-attention} layer:
 \begin{equation}
-  \mathbf{Z}^{(0)} = \mathrm{LiftAttn}(\mathbf{M}) \in \R^{d_m \times |G| \times H \times W},
+  \mathbf{Z}^{(0)} = \mathrm{LiftAttn}(\mathbf{M}) \in \R^{d_m \times |G| \times H' \times W'},
 \end{equation}
 which lifts features from $\mathbb{R}^2$ to the semidirect product $\mathbb{R}^2 \rtimes G$.
 Subsequent layers employ \emph{group-equivariant self-attention}, ensuring that rotations of the input map result in corresponding permutations of the feature fibers.
-Finally, we obtain spatial context tokens $\mathbf{S}$ by flattening the group and spatial dimensions, preserving local equivariant structure for the fusion stage. These spatial tokens enable the model to reason about relative geometry invariant to the absolute orientation of the map.
+Finally, spatial tokens $\mathbf{S}$ are obtained by flattening the group and spatial dimensions, preserving local equivariant structure for the fusion stage.
+This option is enabled by setting \texttt{use\_e2\_equivariant: true} in the model configuration but incurs additional computational cost.
 
 \subsection{Cross-attention fusion}
 \label{sec:fusion}
 
-We fuse radio and map modalities by cross-attention, using the radio embedding as the query and map tokens as keys/values:
+We fuse radio and map modalities using \emph{multi-query cross-attention}, where multiple learnable query tokens attend to map spatial tokens, conditioned on the radio embedding.
+Specifically, we maintain $K_q$ learnable query tokens $\{\mathbf{q}_i\}_{i=1}^{K_q}$, which are combined with the radio embedding $\mathbf{z}_r$ to form radio-conditioned queries:
 \begin{equation}
-  \mathbf{z}_f
-  = \underbrace{\mathrm{MHA}\big(Q=\mathbf{z}_r W_Q,\;K=\mathbf{S} W_K,\;V=\mathbf{S} W_V\big)}_{\text{cross-attention}}
-  \;\in\;\R^{d_f}.
+  \tilde{\mathbf{q}}_i = \mathbf{q}_i + W_{\text{radio}}\,\mathbf{z}_r, \qquad i=1,\dots,K_q.
+\end{equation}
+These queries attend to the map tokens $\mathbf{S}$ via multi-head cross-attention:
+\begin{equation}
+  \mathbf{z}_i
+  = \underbrace{\mathrm{MHA}\big(Q=\tilde{\mathbf{q}}_i W_Q,\;K=\mathbf{S} W_K,\;V=\mathbf{S} W_V\big)}_{\text{cross-attention}}
+  \;\in\;\R^{d_f}, \qquad i=1,\dots,K_q.
+\end{equation}
+The $K_q$ output embeddings are concatenated and projected to yield the fused representation:
+\begin{equation}
+  \mathbf{z}_f = W_{\text{agg}}\left[\mathbf{z}_1 \,\|\, \cdots \,\|\, \mathbf{z}_{K_q}\right] \in \R^{d_f}.
   \label{eq:crossattn}
 \end{equation}
 A residual MLP refines $\mathbf{z}_f$ (standard Transformer block structure \cite{vaswani2017transformer}).
-Intuitively, cross-attention performs \emph{soft data association} between measurement evidence and spatial map regions, allowing the model to focus on map patches that best explain the observed radio signature.
+This multi-query design (with $K_q=4$ by default) allows the fusion module to capture multiple aspects of the radio-map relationship simultaneously, providing richer context for the downstream heads than single-query attention.
 
 % ---------------------------------------------
 \subsection{Coarse-to-fine mixture posterior}
@@ -488,11 +507,11 @@ We use a multi-channel map tensor with $C_r$ radio channels and $C_o$ semantic c
 
 \begin{table}[t]
 \centering
-\caption{Model architecture and training hyperparameters. We choose a lightweight radio encoder as signal sequences are low-dimensional but require high temporal resolution, while the map encoder is deeper to capture complex spatial geometries. The fusion layer projects map features to the implementation-appropriate latent dimension.}
+\caption{Model architecture and training hyperparameters. We provide two map encoder options: a standard ViT (default) and an E(2)-equivariant ViT for rotation/reflection invariance. The radio encoder uses a standard Transformer with \texttt{[CLS]} pooling for permutation-invariant sequence encoding.}
 \label{tab:hyperparams}
-\begin{tabular}{@{}llp{6.5cm}@{}}
+\begin{tabular}{@{}llp{6.2cm}@{}}
 \toprule
-\textbf{Component} & \textbf{Specification} & \textbf{ intuition / Rationale} \\
+\textbf{Component} & \textbf{Specification} & \textbf{Intuition / Rationale} \\
 \midrule
 \multicolumn{3}{l}{\textit{Data \& Context}} \\
 Map resolution & $256\times 256$ & Covers $\sim$1\,km$^2$ urban area at $\sim$4\,m/px precision. \\
@@ -500,14 +519,15 @@ Coarse grid & $32\times 32$ & $1024$ hypotheses; balances classification difficu
 Max sequence & $T=20$ & Sufficient to capture movement trends without high memory cost. \\
 \midrule
 \multicolumn{3}{l}{\textit{Neural Architecture}} \\
-Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=128$, $L=4$, $H=4$\end{tabular} & \textbf{Lightweight:} Radio features are low-dim sets. Set-attention is sufficient to capture temporal/beam correlations. \\
-Map Encoder & \begin{tabular}[t]{@{}l@{}}$d_m=256$, $L=4$, $H=4$\\\texttt{group}=$p4m$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance for urban grids. \\
-Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=128$, $L=1$, $H=8$\end{tabular} & \textbf{Bottleneck:} Projects rich map context into the signal-focused latent space for efficient querying. \\
-Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: $512\to G^2$\\Fine: $512\to 256 \to 2K$\end{tabular} & \textbf{Hierarchical:} Deep MLP for coarse ambiguity resolution; shallow head for local Gaussian refinement. \\
+Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=256$, $L=4$, $H=8$\\\texttt{[CLS]} pooling\end{tabular} & \textbf{Standard Transformer:} Processes radio token sets with self-attention. \texttt{[CLS]} token provides permutation-invariant pooling. \\
+Map Encoder & \begin{tabular}[t]{@{}l@{}}\textbf{Default:} Standard ViT\\$d_m=384$, $L=6$, $H=6$\\\texttt{patch\_size}=$16$\end{tabular} & \textbf{Efficient:} Standard ViT is computationally efficient and performs well when map orientations are consistent. \\
+(Optional) & \begin{tabular}[t]{@{}l@{}}E2-ViT, \texttt{group}=$p4m$\\$|G|=8$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance; higher compute cost. \\
+Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=256$, $H=8$\\$K_q=4$ query tokens\end{tabular} & \textbf{Multi-query:} Multiple learnable queries attend to map tokens, conditioned on radio features. \\
+Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: MLP$\to G^2$\\Fine: 2D pos.\ enc., GMM\end{tabular} & \textbf{Hierarchical:} Coarse classification over grid cells; fine head outputs cell-conditioned Gaussian means/variances. \\
 \midrule
 \multicolumn{3}{l}{\textit{Training}} \\
 Mixture size & Top-$K=5$ & Covers primary ambiguous modes (e.g., street canyon reflections) while suppressing noise. \\
-Weights & $\lambda_{\text{phys}}=0.1$ & Regularizes without overriding data evidence. \\
+Loss weights & $\lambda_{\text{coarse}}=0.5$, $\lambda_{\text{fine}}=1.0$ & Fine NLL is primary; coarse ensures correct cell is in top-$K$. \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -541,10 +561,10 @@ Figure~\ref{fig:posterior} visualizes the model's predicted posterior density as
 % ---------------------------------------------
 \section{Conclusion and Limitations}
 
-We presented a physics-informed, map-conditioned Transformer for UE localization that outputs a multi-modal posterior over position, coupled to a differentiable radio-map likelihood. The model combines amortized inference (fast prediction, uncertainty) with physics-based consistency (regularization and optional refinement). 
+We presented a physics-informed, map-conditioned Transformer for UE localization that outputs a multi-modal posterior over position, coupled to a differentiable radio-map likelihood. The model combines amortized inference (fast prediction, uncertainty) with physics-based consistency (regularization and optional refinement). The modular architecture supports both standard Vision Transformer and E(2)-equivariant encoders for map processing, allowing practitioners to trade off computational cost for rotational invariance as needed.
 
 \paragraph{Limitations and future work.}
-Our current formulation relies on precomputed radio maps and therefore inherits simulator bias; bridging the sim-to-real gap (e.g., by learning residual corrections or jointly learning material parameters as in differentiable RT) is an important direction. Additional structured priors (e.g., explicit rotation/translation equivariance in the map encoder) and stronger relative positional attention mechanisms are also promising extensions.
+Our current formulation relies on precomputed radio maps and therefore inherits simulator bias; bridging the sim-to-real gap (e.g., by learning residual corrections or jointly learning material parameters as in differentiable RT) is an important direction. While we provide an optional E(2)-equivariant map encoder, evaluating its benefits on diverse real-world datasets with varying map orientations remains future work. Additional structured priors and stronger relative positional attention mechanisms are also promising extensions.
 
 % ---------------------------------------------
 \appendix

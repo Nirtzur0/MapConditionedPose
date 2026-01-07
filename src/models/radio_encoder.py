@@ -106,10 +106,19 @@ class RadioEncoder(nn.Module):
         self.beam_embedding = nn.Embedding(num_beams, d_model // 4)
         self.pos_encoding = PositionalEncoding(d_model // 4, max_len=max_seq_len * 10, time_scale=time_scale)
         
-        # Feature projections
-        self.rt_projection = nn.Linear(rt_features_dim, d_model // 4)
-        self.phy_projection = nn.Linear(phy_features_dim, d_model // 4)
-        self.mac_projection = nn.Linear(mac_features_dim, d_model // 4)
+        # Feature projections with LayerNorm for stable training
+        self.rt_projection = nn.Sequential(
+            nn.Linear(rt_features_dim, d_model // 4),
+            nn.LayerNorm(d_model // 4),
+        )
+        self.phy_projection = nn.Sequential(
+            nn.Linear(phy_features_dim, d_model // 4),
+            nn.LayerNorm(d_model // 4),
+        )
+        self.mac_projection = nn.Sequential(
+            nn.Linear(mac_features_dim, d_model // 4),
+            nn.LayerNorm(d_model // 4),
+        )
         
         # Combine embeddings and features
         # Total: cell_emb + beam_emb + pos_enc + rt + phy + mac + ... -> d_model

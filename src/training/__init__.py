@@ -52,6 +52,7 @@ class UELocalizationLightning(pl.LightningModule):
         self.loss_weights = {
             'coarse_weight': self.config['training']['loss']['coarse_weight'],
             'fine_weight': self.config['training']['loss']['fine_weight'],
+            'position_weight': self.config['training']['loss'].get('position_weight', 0.2),
         }
 
         # Augmentation (GPU)
@@ -252,6 +253,7 @@ class UELocalizationLightning(pl.LightningModule):
         self.log('train_loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_coarse_loss', losses['coarse_loss'], on_step=True, on_epoch=True)
         self.log('train_fine_loss', losses['fine_loss'], on_step=True, on_epoch=True)
+        self.log('train_position_loss', losses.get('position_loss', 0.0), on_step=True, on_epoch=True)
         if self.use_physics_loss:
             self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=True, on_epoch=True)
         

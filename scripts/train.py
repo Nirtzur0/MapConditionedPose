@@ -175,13 +175,13 @@ def main():
                 comet_logger.experiment.set_name(exp_name)
             loggers.append(comet_logger)
             logger.info(f"\n📊 Comet ML logging enabled")
-            logger.info(f"   Project: {project}")
-            logger.info(f"   View at: https://www.comet.com/{os.environ.get('COMET_WORKSPACE', 'your-workspace')}/{project}\n")
+            logger.info(f"   Project: {project_name}")
+            logger.info(f"   View at: https://www.comet.com/{os.environ.get('COMET_WORKSPACE', 'your-workspace')}/{project_name}\n")
         else:
             logger.warning("\n⚠️  Comet ML enabled in config but COMET_API_KEY not found")
             logger.warning("   Get your API key from: https://www.comet.com/api/my/settings/")
             logger.warning("   Set it with: export COMET_API_KEY=your-key-here")
-            raise ValueError("COMET_API_KEY required when use_comet=true")
+            logger.warning("   Continuing without Comet ML logging...\n")
     
     # WandB (optional alternative)
     if config['infrastructure']['logging'].get('use_wandb', False):

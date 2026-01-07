@@ -99,6 +99,7 @@ class UELocalizationModel(nn.Module):
             d_fusion=fusion_cfg['d_fusion'],
             nhead=fusion_cfg['nhead'],
             dropout=fusion_cfg['dropout'],
+            num_query_tokens=fusion_cfg.get('num_query_tokens', 4),  # Multi-query attention
         )
         
         self.coarse_head = CoarseHead(
@@ -283,16 +284,27 @@ class UELocalizationModel(nn.Module):
         
         fine_loss = -log_mixture.mean()
         
+        # 5. Auxiliary position loss (direct distance supervision)
+        # This helps gradient flow and provides direct signal on position error
+        pred_pos = outputs['predicted_position']  # [B, 2]
+        true_pos = targets['position']  # [B, 2]
+        position_loss = nn.functional.smooth_l1_loss(pred_pos, true_pos)
+        
+        # Get position loss weight (default to 0.2 if not specified)
+        position_weight = loss_weights.get('position_weight', 0.2)
+        
         # Total loss
         total_loss = (
             loss_weights['coarse_weight'] * coarse_loss +
-            loss_weights['fine_weight'] * fine_loss
+            loss_weights['fine_weight'] * fine_loss +
+            position_weight * position_loss
         )
         
         return {
             'loss': total_loss,
             'coarse_loss': coarse_loss,
             'fine_loss': fine_loss,
+            'position_loss': position_loss,
         }
     
     def forward_with_attention(
