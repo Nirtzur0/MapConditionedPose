@@ -9,7 +9,7 @@ from .radio_dataset import RadioLocalizationDataset
 
 # LMDB dataset (preferred)
 try:
-    from .lmdb_dataset import LMDBRadioLocalizationDataset, collate_fn as lmdb_collate_fn
-    __all__ = ['RadioLocalizationDataset', 'LMDBRadioLocalizationDataset', 'lmdb_collate_fn']
+    from .lmdb_dataset import LMDBRadioLocalizationDataset
+    __all__ = ['RadioLocalizationDataset', 'LMDBRadioLocalizationDataset']
 except ImportError:
     __all__ = ['RadioLocalizationDataset']

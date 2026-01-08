@@ -14,8 +14,10 @@ but internally uses LMDBRadioDataset.
 """
 
 # Import from LMDB dataset implementation
-from .lmdb_dataset import LMDBRadioDataset as RadioLocalizationDataset
-from .lmdb_dataset import collate_fn
+from .lmdb_dataset import LMDBRadioLocalizationDataset as RadioLocalizationDataset
+
+# Default collate function (use PyTorch's default)
+collate_fn = None
 
 # For backward compatibility, export all necessary components
 __all__ = ['RadioLocalizationDataset', 'collate_fn']
