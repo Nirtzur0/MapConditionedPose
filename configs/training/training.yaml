@@ -6,14 +6,14 @@ model:
   # Radio Encoder (Temporal Transformer)
   radio_encoder:
     type: "SetTransformer"
-    num_cells: 6  # Number of cells in the dataset
+    num_cells: 512  # Number of cells in the dataset (max cell embedding size)
     num_beams: 64
     d_model: 512
     nhead: 8  # Changed from num_heads
     num_layers: 8
     dropout: 0.1
     max_seq_len: 20
-    rt_features_dim: 10
+    rt_features_dim: 16  # Increased to match data
     phy_features_dim: 8
     mac_features_dim: 6
     
@@ -30,14 +30,14 @@ model:
     
   # Map Encoder (Vision Transformer)
   map_encoder:
-    use_e2_equivariant: true  # Use E2 equivariant vision transformer (NEW)
+    use_e2_equivariant: false  # Use standard ViT for faster training
     num_group_elements: 8  # p4m group: 4 rotations x 2 reflections (NEW)
     img_size: 256
     patch_size: 16
     in_channels: 10
-    d_model: 768
-    nhead: 8
-    num_layers: 6
+    d_model: 256  # Reduced for faster training
+    nhead: 4
+    num_layers: 3  # Reduced for faster training
     dropout: 0.1
     radio_map_channels: 5
     osm_map_channels: 5
@@ -64,8 +64,13 @@ model:
 
 # Dataset Configuration (required by model)
 dataset:
-  zarr_path: "data/synthetic/dataset_20251224_134711.zarr"
-  scene_extent: 856  # Scene size in meters (from Boulder scene)
+  train_lmdb_paths:
+    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+  val_lmdb_paths:
+    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+  test_lmdb_paths:
+    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+  scene_extent: 512  # Scene size in meters
   map_resolution: 1.0  # Meters per pixel
   normalize_features: true
   handle_missing_values: "mask"
@@ -74,7 +79,7 @@ dataset:
 training:
   # Data
   batch_size: 32  # Reduced for CPU training
-  num_workers: 4  # Reduced for CPU
+  num_workers: 0  # Use 0 for testing to avoid multiprocessing issues
   pin_memory: false  # False for CPU training
     
   # Optimization
@@ -85,7 +90,7 @@ training:
   scheduler: "cosine_with_warmup"
   warmup_steps: 500
   
-  num_epochs: 10  # Short training for testing
+  num_epochs: 5  # Short training for testing
   gradient_clip: 1.0
   
   loss:
@@ -98,7 +103,7 @@ infrastructure:
   accelerator: "cpu"
   devices: 1
   precision: "32"
-  num_workers: 4
+  num_workers: 0  # Use 0 for testing to avoid multiprocessing issues
   
   checkpoint:
     monitor: "val_median_error"

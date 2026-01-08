@@ -36,14 +36,14 @@
     ]
   ],
   "materials": {
-    "ground": "mat-itu_very_dry_ground",
+    "ground": "mat-itu_medium_dry_ground",
     "rooftop": "mat-itu_metal",
-    "wall": "mat-itu_wood"
+    "wall": "mat-itu_glass"
   },
   "material_properties": {
     "ground": {
-      "epsilon_r": 3.3930065184117644,
-      "sigma": 0.00010564762702295211,
+      "epsilon_r": 5.4547624134458275,
+      "sigma": 0.0014702066080228497,
       "freq_range_ghz": [
         1.0,
         10.0
@@ -52,7 +52,7 @@
     },
     "rooftop": {
       "epsilon_r": 1.0,
-      "sigma": 5908417.680907118,
+      "sigma": 2439905.3119941493,
       "freq_range_ghz": [
         1.0,
         100.0
@@ -60,8 +60,8 @@
       "category": "rooftop"
     },
     "wall": {
-      "epsilon_r": 2.089354892600846,
-      "sigma": 0.003005969078922776,
+      "epsilon_r": 6.110662179852721,
+      "sigma": 0.0,
       "freq_range_ghz": [
         1.0,
         100.0
@@ -74,15 +74,15 @@
       "site_id": "tx_0",
       "site_type": "tx",
       "position": [
-        619414.6702030518,
-        3350486.2181302398,
+        619744.7903224695,
+        3350364.0455331216,
         25.0
       ],
       "height": 25.0,
       "antenna": {
         "pattern": "3gpp_38901",
         "orientation": [
-          331.2932914463782,
+          143.52513931813417,
           10.0,
           0.0
         ],
@@ -96,15 +96,15 @@
       "site_id": "tx_1",
       "site_type": "tx",
       "position": [
-        619804.05551473,
-        3350266.491566394,
+        619668.7906687487,
+        3350726.3170950543,
         25.0
       ],
       "height": 25.0,
       "antenna": {
         "pattern": "3gpp_38901",
         "orientation": [
-          265.4067030152577,
+          310.07049772176146,
           10.0,
           0.0
         ],
@@ -118,15 +118,15 @@
       "site_id": "tx_2",
       "site_type": "tx",
       "position": [
-        619500.3301669568,
-        3350837.0616847076,
+        620127.0437552314,
+        3350467.788771552,
         25.0
       ],
       "height": 25.0,
       "antenna": {
         "pattern": "3gpp_38901",
         "orientation": [
-          348.71457441260327,
+          329.07725609233825,
           10.0,
           0.0
         ],

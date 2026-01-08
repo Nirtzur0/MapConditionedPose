@@ -78,17 +78,18 @@ model:
     # Implicit: sigma_min=0.01 (hardcoded in model)
 
 # Dataset Configuration
-# 70,000 samples total: 70% train (49k), 15% val (10.5k), 15% test (10.5k)
-# 7 cities with varying scene extents (256-560m)
+# LMDB format (multiprocessing-friendly)
 dataset:
-  # Training dataset - 7 diverse US cities
-  train_zarr_paths:
-  - /home/ubuntu/projects/CellularPositioningResearch/data/processed/sionna_dataset/dataset_20260107_144332.zarr
-  # No separate eval dataset - use internal train/val/test splits
-  # The dataset will automatically split by scene to prevent data leakage
-  test_on_eval: false         # Use internal test split (15% of scenes)
+  # Training dataset (LMDB format)
+  train_lmdb_paths:
+  - outputs/quick_test/data/dataset_20260108_125416_test.lmdb
+  val_lmdb_paths:
+  - outputs/quick_test/data/dataset_20260108_125416_test.lmdb
+  test_lmdb_paths:
+  - outputs/quick_test/data/dataset_20260108_125416_test.lmdb
+  test_on_eval: false
   
-  scene_extent: 512            # Reference extent (actual varies 256-560m per scene)
+  scene_extent: 512            # Reference extent
   map_resolution: 1.0          # Meters per pixel (256x256 maps)
   normalize_features: true
   handle_missing_values: "mask"
@@ -147,7 +148,7 @@ infrastructure:
   accelerator: "auto"         # Auto-detect GPU/CPU/MPS
   devices: 1
   precision: "32-true"        # Full precision for stability
-  num_workers: 0  # Disable multiprocessing to avoid Zarr async issues              # DataLoader workers (adjust based on CPU cores)
+  num_workers: 16  # LMDB is multiprocessing-safe - maximize throughput
   
   checkpoint:
     dirpath: "checkpoints/optimized_run"

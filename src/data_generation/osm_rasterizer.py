@@ -45,6 +45,10 @@ class OSMRasterizer:
     2: Footprint (binary)
     3: Road (binary)
     4: Terrain (binary)
+    
+    NOTE: Roads are fetched directly from OSM data since Sionna scenes
+    only contain building geometries. Pass scene_metadata or osm_data
+    to rasterize() to include roads.
     """
     
     # Standard material mapping (can be extended)
@@ -105,16 +109,18 @@ class OSMRasterizer:
         
         return pixels.astype(np.int32)
 
-    def rasterize(self, scene) -> np.ndarray:
+    def rasterize(self, scene, scene_metadata: Dict = None, osm_data: Dict = None) -> np.ndarray:
         """
         Rasterize the scene into a 5-channel map.
+        
+        Args:
+            scene: Sionna scene object
+            scene_metadata: Optional metadata dict with 'bbox' for fetching roads from OSM
+            osm_data: Optional pre-fetched OSM data dict with 'roads' key
         
         Returns:
             map: (5, height, width) np.float32 array
         """
-        # Channels: Height, Material, Footprint, Road, Terrain
-        osm_map = np.zeros((5, self.height, self.width), dtype=np.float32)
-        
         # Channels: Height, Material, Footprint, Road, Terrain
         osm_map = np.zeros((5, self.height, self.width), dtype=np.float32)
 
@@ -303,7 +309,12 @@ class OSMRasterizer:
         if CV2_AVAILABLE:
             self._rasterize_batches_cv2(osm_map, polygons)
         else:
-            logger.warning("CV2 not available, skipping batch sematic rasterization.")
+            logger.warning("CV2 not available, skipping batch semantic rasterization.")
+        
+        # --- Rasterize Roads from OSM ---
+        # Since Sionna scenes don't include road meshes, we fetch and rasterize them separately
+        if scene_metadata or osm_data:
+            self._rasterize_roads(osm_map, scene_metadata, osm_data)
             
         return osm_map
 
@@ -598,4 +609,158 @@ class OSMRasterizer:
              
         return osm_map
 
-
+    def _rasterize_roads(self, osm_map: np.ndarray, scene_metadata: Dict = None, osm_data: Dict = None):
+        """
+        Rasterize roads from OSM data into channel 3.
+        
+        Args:
+            osm_map: Map array to update (modifies in-place)
+            scene_metadata: Metadata dict with 'bbox_wgs84' {lon_min, lat_min, lon_max, lat_max}
+            osm_data: Pre-fetched OSM data with 'roads' key containing LineString geometries
+        """
+        if not CV2_AVAILABLE:
+            logger.warning("OpenCV not available, cannot rasterize roads")
+            return
+        
+        roads_geom = []
+        bbox_wgs84 = None
+        
+        # Get bbox_wgs84 from metadata
+        if scene_metadata:
+            bbox_wgs84 = scene_metadata.get('bbox_wgs84')
+            if bbox_wgs84:
+                # Convert dict to list: [lon_min, lat_min, lon_max, lat_max]
+                bbox_list = [bbox_wgs84['lon_min'], bbox_wgs84['lat_min'], 
+                            bbox_wgs84['lon_max'], bbox_wgs84['lat_max']]
+        
+        # Option 1: Use pre-fetched OSM data
+        if osm_data and 'roads' in osm_data:
+            roads_geom = osm_data['roads']
+        
+        # Option 2: Fetch from OSM using scene metadata
+        elif bbox_list:
+            try:
+                roads_geom = self._fetch_roads_from_osm(bbox_list)
+            except Exception as e:
+                logger.warning(f"Failed to fetch roads from OSM: {e}")
+                return
+        else:
+            # No data source for roads
+            logger.debug("No bbox_wgs84 in metadata, cannot fetch roads")
+            return
+        
+        if not roads_geom:
+            logger.debug("No road geometries found")
+            return
+        
+        # Convert road LineStrings to pixel coordinates and draw
+        try:
+            from shapely.geometry import LineString, MultiLineString
+            import pyproj
+            
+            # Transform from WGS84 to local UTM coordinates
+            center_lon = (bbox_list[0] + bbox_list[2]) / 2
+            center_lat = (bbox_list[1] + bbox_list[3]) / 2
+            
+            # Use appropriate UTM zone
+            utm_zone = int((center_lon + 180) / 6) + 1
+            transformer = pyproj.Transformer.from_crs(
+                "EPSG:4326",  # WGS84
+                f"+proj=utm +zone={utm_zone} +datum=WGS84",
+                always_xy=True
+            )
+            
+            road_polygons = []
+            for road_geom in roads_geom:
+                if isinstance(road_geom, (LineString, MultiLineString)):
+                    # Convert to pixel coordinates
+                    if isinstance(road_geom, LineString):
+                        lines = [road_geom]
+                    else:
+                        lines = list(road_geom.geoms)
+                    
+                    for line in lines:
+                        coords = np.array(line.coords)
+                        
+                        # Transform lon/lat to UTM meters
+                        utm_coords = np.array([transformer.transform(lon, lat) for lon, lat in coords])
+                        
+                        # Convert to pixels using OSMRasterizer's coordinate system
+                        pixels = self._world_to_pixel(utm_coords)
+                        
+                        # Create thick line polygon (buffer the line)
+                        # Typical road width: 3-10 meters, let's use 5 meters
+                        road_width_pixels = int(5.0 / self.resolution_x)  # 5 meters
+                        road_width_pixels = max(2, road_width_pixels)  # At least 2 pixels
+                        
+                        # Draw line with thickness
+                        if len(pixels) >= 2:
+                            # Filter out-of-bounds points
+                            valid_pixels = pixels[
+                                (pixels[:, 0] >= 0) & (pixels[:, 0] < self.width) &
+                                (pixels[:, 1] >= 0) & (pixels[:, 1] < self.height)
+                            ]
+                            if len(valid_pixels) >= 2:
+                                road_polygons.append((valid_pixels, road_width_pixels))
+            
+            # Draw all roads at once
+            if road_polygons:
+                road_mask = np.zeros((self.height, self.width), dtype=np.uint8)
+                for pixels, thickness in road_polygons:
+                    cv2.polylines(road_mask, [pixels], isClosed=False, 
+                                color=1, thickness=thickness, lineType=cv2.LINE_AA)
+                
+                # Update channel 3 (roads)
+                osm_map[3] = np.maximum(osm_map[3], road_mask.astype(np.float32))
+                logger.info(f"Rasterized {len(road_polygons)} road segments")
+        
+        except ImportError as e:
+            logger.warning(f"Missing dependency for road rasterization: {e}")
+        except Exception as e:
+            logger.error(f"Error rasterizing roads: {e}", exc_info=True)
+    
+    def _fetch_roads_from_osm(self, bbox: List[float]) -> List:
+        """
+        Fetch road geometries from OpenStreetMap.
+        
+        Args:
+            bbox: [lon_min, lat_min, lon_max, lat_max]
+        
+        Returns:
+            List of shapely LineString geometries
+        """
+        try:
+            import requests
+            from shapely.geometry import shape
+            
+            lon_min, lat_min, lon_max, lat_max = bbox
+            
+            # Overpass API query for roads (highways)
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            overpass_query = f"""
+            [out:json][timeout:25];
+            (
+              way["highway"]({lat_min},{lon_min},{lat_max},{lon_max});
+            );
+            out geom;
+            """
+            
+            response = requests.get(overpass_url, params={'data': overpass_query}, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            roads = []
+            for element in data.get('elements', []):
+                if element['type'] == 'way' and 'geometry' in element:
+                    # Convert to LineString
+                    coords = [(pt['lon'], pt['lat']) for pt in element['geometry']]
+                    if len(coords) >= 2:
+                        from shapely.geometry import LineString
+                        roads.append(LineString(coords))
+            
+            logger.info(f"Fetched {len(roads)} roads from OSM")
+            return roads
+        
+        except Exception as e:
+            logger.error(f"Failed to fetch roads from OSM: {e}")
+            return []

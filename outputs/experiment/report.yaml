@@ -1,0 +1,10 @@
+checkpoints: /home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/checkpoints
+datasets:
+  test: /home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/data/dataset_test_20260107_183200.zarr
+  train: /home/ubuntu/projects/CellularPositioningResearch/outputs/experiment/data/dataset_train_20260107_183156.zarr
+  val: null
+duration_formatted: 34.5 minutes
+duration_seconds: 2069.87002825737
+name: experiment
+output_dir: /home/ubuntu/projects/CellularPositioningResearch/outputs/experiment
+timestamp: '2026-01-08T13:00:58.011141'

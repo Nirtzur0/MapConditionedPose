@@ -689,7 +689,7 @@ class MultiLayerDataGenerator:
             self.osm_rasterizer.offset = np.array([-x_min, -y_min])
             
             logger.info(f"Generating OSM Map for {scene_id}...")
-            osm_map = self.osm_rasterizer.rasterize(scene)
+            osm_map = self.osm_rasterizer.rasterize(scene, scene_metadata=scene_metadata)
             scene_data['osm_map'] = osm_map
 
             # 2. 2D Map Plots (Radio + OSM)
@@ -1008,8 +1008,8 @@ class MultiLayerDataGenerator:
             scene_id = metadata.get('scene_id', 'unknown')
             logger.info(f"Generating OSM Map for scene {scene_id}...")
             
-            # Rasterize
-            osm_map = self.osm_rasterizer.rasterize(scene)
+            # Rasterize with metadata for road extraction
+            osm_map = self.osm_rasterizer.rasterize(scene, scene_metadata=metadata)
             
             # Save to disk
             # Ensure osm_maps directory exists
