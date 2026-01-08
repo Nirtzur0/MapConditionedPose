@@ -623,7 +623,7 @@ class OSMRasterizer:
             return
         
         roads_geom = []
-        bbox_wgs84 = None
+        bbox_list = None
         
         # Get bbox_wgs84 from metadata
         if scene_metadata:
@@ -670,6 +670,27 @@ class OSMRasterizer:
                 always_xy=True
             )
             
+            # Transform bbox corners to get the UTM bounds of our scene
+            bbox_corners_utm = [
+                transformer.transform(bbox_list[0], bbox_list[1]),  # SW corner
+                transformer.transform(bbox_list[2], bbox_list[3]),  # NE corner
+            ]
+            utm_x_min = bbox_corners_utm[0][0]
+            utm_y_min = bbox_corners_utm[0][1]
+            utm_x_max = bbox_corners_utm[1][0]
+            utm_y_max = bbox_corners_utm[1][1]
+            
+            # Calculate center of UTM bbox for centering
+            utm_center_x = (utm_x_min + utm_x_max) / 2
+            utm_center_y = (utm_y_min + utm_y_max) / 2
+            
+            # Calculate the scene's center in its local coordinate system
+            scene_center_x = (self.x_min + self.x_max) / 2
+            scene_center_y = (self.y_min + self.y_max) / 2
+            
+            logger.info(f"UTM bounds: X[{utm_x_min:.1f}, {utm_x_max:.1f}], Y[{utm_y_min:.1f}, {utm_y_max:.1f}]")
+            logger.info(f"Scene bounds: X[{self.x_min:.1f}, {self.x_max:.1f}], Y[{self.y_min:.1f}, {self.y_max:.1f}]")
+            
             road_polygons = []
             for road_geom in roads_geom:
                 if isinstance(road_geom, (LineString, MultiLineString)):
@@ -685,8 +706,14 @@ class OSMRasterizer:
                         # Transform lon/lat to UTM meters
                         utm_coords = np.array([transformer.transform(lon, lat) for lon, lat in coords])
                         
+                        # Transform from absolute UTM to scene-relative coordinates
+                        # Center the UTM coords around origin, then add scene center
+                        scene_coords = utm_coords.copy()
+                        scene_coords[:, 0] = (utm_coords[:, 0] - utm_center_x) + scene_center_x
+                        scene_coords[:, 1] = (utm_coords[:, 1] - utm_center_y) + scene_center_y
+                        
                         # Convert to pixels using OSMRasterizer's coordinate system
-                        pixels = self._world_to_pixel(utm_coords)
+                        pixels = self._world_to_pixel(scene_coords)
                         
                         # Create thick line polygon (buffer the line)
                         # Typical road width: 3-10 meters, let's use 5 meters
@@ -696,12 +723,18 @@ class OSMRasterizer:
                         # Draw line with thickness
                         if len(pixels) >= 2:
                             # Filter out-of-bounds points
-                            valid_pixels = pixels[
+                            valid_mask = (
                                 (pixels[:, 0] >= 0) & (pixels[:, 0] < self.width) &
                                 (pixels[:, 1] >= 0) & (pixels[:, 1] < self.height)
-                            ]
-                            if len(valid_pixels) >= 2:
-                                road_polygons.append((valid_pixels, road_width_pixels))
+                            )
+                            
+                            # If we have at least 2 valid points or points crossing the boundary
+                            if valid_mask.sum() >= 2 or (valid_mask.sum() > 0 and len(pixels) >= 2):
+                                # Clip to bounds
+                                clipped_pixels = np.clip(pixels, [0, 0], [self.width - 1, self.height - 1])
+                                road_polygons.append((clipped_pixels.astype(np.int32), road_width_pixels))
+            
+            logger.info(f"Processing {len(road_polygons)} road segments for drawing")
             
             # Draw all roads at once
             if road_polygons:
@@ -731,22 +764,37 @@ class OSMRasterizer:
         """
         try:
             import requests
-            from shapely.geometry import shape
+            from shapely.geometry import shape, LineString
+            import time
             
             lon_min, lat_min, lon_max, lat_max = bbox
             
             # Overpass API query for roads (highways)
             overpass_url = "https://overpass-api.de/api/interpreter"
             overpass_query = f"""
-            [out:json][timeout:25];
+            [out:json][timeout:60];
             (
               way["highway"]({lat_min},{lon_min},{lat_max},{lon_max});
             );
             out geom;
             """
             
-            response = requests.get(overpass_url, params={'data': overpass_query}, timeout=30)
-            response.raise_for_status()
+            # Try with retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Fetching roads from OSM (attempt {attempt + 1}/{max_retries})...")
+                    response = requests.get(overpass_url, params={'data': overpass_query}, timeout=90)
+                    response.raise_for_status()
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.HTTPError) as e:
+                    if attempt < max_retries - 1:
+                        wait_time = 5 * (attempt + 1)
+                        logger.warning(f"OSM API request failed: {e}. Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        raise
+            
             data = response.json()
             
             roads = []
@@ -755,7 +803,6 @@ class OSMRasterizer:
                     # Convert to LineString
                     coords = [(pt['lon'], pt['lat']) for pt in element['geometry']]
                     if len(coords) >= 2:
-                        from shapely.geometry import LineString
                         roads.append(LineString(coords))
             
             logger.info(f"Fetched {len(roads)} roads from OSM")
