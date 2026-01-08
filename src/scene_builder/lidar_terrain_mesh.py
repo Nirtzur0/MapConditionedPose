@@ -92,11 +92,11 @@ def generate_terrain_mesh(
 
     # Create Surface Mesh via Delaunay 2D Triangulation
     surface_mesh = point_cloud.delaunay_2d()
-    logger.info(f"Original mesh faces: {surface_mesh.n_faces}")
+    logger.info(f"Original mesh faces: {surface_mesh.n_cells}")
 
     # Decimate mesh to reduce complexity (90% reduction)
     pro_decimated = surface_mesh.decimate_pro(0.90, preserve_topology=True)
-    logger.info(f"Decimated mesh faces: {pro_decimated.n_faces}")
+    logger.info(f"Decimated mesh faces: {pro_decimated.n_cells}")
     
     # Use the decimated mesh
     final_mesh = pro_decimated
