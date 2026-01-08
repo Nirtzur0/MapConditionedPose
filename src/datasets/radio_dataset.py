@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset
 import zarr
 import numpy as np
+import os
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
@@ -122,32 +123,52 @@ class RadioLocalizationDataset(Dataset):
             raise ValueError(f"Invalid zarr_path provided to RadioLocalizationDataset: '{zarr_path}'")
         
         logger.debug(f"Opening Zarr store at: {self.zarr_path}")
+        
+        # CRITICAL FIX: For multiprocessing with fork (default on Linux)
+        # Open store temporarily to get metadata, but mark for reopening in workers
+        self._store = None
+        self._pid = os.getpid()  # Track parent process
+        
+        # Get metadata from temporary store
+        temp_store = zarr.open(str(self.zarr_path), mode='r')
         try:
-            self.store = zarr.open(str(self.zarr_path), mode='r')
-        except Exception as e:
-            logger.error(f"Failed to open Zarr store at {self.zarr_path}: {e}")
-            raise
+            self.indices = self._get_split_indices_from_store(temp_store)
+            self.norm_stats = self._load_normalization_stats_from_store(temp_store)
+            self._dataset_origin = self._infer_dataset_origin_from_store(temp_store)
+            self._initialized = True
+        finally:
+            # Close temp store - workers will reopen
+            try:
+                temp_store.store.close()
+            except:
+                pass
         
-        # Get split indices
-        self.indices = self._get_split_indices()
+        logger.info(f"Loaded {len(self.indices)} samples for {split} split from {zarr_path}")
         
-        # Load normalization stats if available
-        self.norm_stats = self._load_normalization_stats()
-        self._dataset_origin = self._infer_dataset_origin()
-        
-        self._dataset_origin = self._infer_dataset_origin()
-        
-        logger.info(f"Loaded {len(self)} samples for {split} split from {zarr_path}")
+
     
-    def _get_split_indices(self) -> np.ndarray:
-        """Get indices for train/val/test split."""
+    @property
+    def store(self):
+        """Lazy-load Zarr store per worker process to avoid asyncio fork issues."""
+        current_pid = os.getpid()
+        
+        # If in worker process (different PID), reopen the store
+        if self._store is None or self._pid != current_pid:
+            self._store = zarr.open(str(self.zarr_path), mode='r')
+            self._pid = current_pid
+            logger.debug(f"Opened Zarr store in process {current_pid}")
+        
+        return self._store
+    
+    def _get_split_indices_from_store(self, store) -> np.ndarray:
+        """Get indices for train/val/test split from provided store."""
         # Check if pre-split indices exist in metadata
-        if 'metadata' in self.store and f'{self.split}_indices' in self.store['metadata']:
-            return self.store['metadata'][f'{self.split}_indices'][:]
+        if 'metadata' in store and f'{self.split}_indices' in store['metadata']:
+            return store['metadata'][f'{self.split}_indices'][:]
         
         # --- SCENE-BASED SPLIT (Prevents Leakage) ---
-        if 'metadata' in self.store and 'scene_ids' in self.store['metadata']:
-            all_scene_ids = self.store['metadata/scene_ids'][:]
+        if 'metadata' in store and 'scene_ids' in store['metadata']:
+            all_scene_ids = store['metadata/scene_ids'][:]
             unique_scenes = np.unique(all_scene_ids)
             n_scenes = len(unique_scenes)
             
@@ -194,11 +215,11 @@ class RadioLocalizationDataset(Dataset):
                 return np.where(mask)[0]
         
         # --- FALLBACK: RANDOM SPLIT (Single scene or no metadata) ---
-        if 'positions/ue_x' not in self.store:
-            logger.warning(f"No 'positions/ue_x' found in Zarr store. Keys: {list(self.store.keys())}")
+        if 'positions/ue_x' not in store:
+            logger.warning(f"No 'positions/ue_x' found in Zarr store. Keys: {list(store.keys())}")
             return np.array([], dtype=np.int64)
             
-        total_samples = self.store['positions/ue_x'].shape[0]
+        total_samples = store['positions/ue_x'].shape[0]
         indices = np.arange(total_samples)
         
         # Default split: 70% train, 15% val, 15% test
@@ -235,15 +256,15 @@ class RadioLocalizationDataset(Dataset):
             return float(scene_extent[-1])
         return float(scene_extent) if scene_extent is not None else 512.0
     
-    def _load_normalization_stats(self) -> Optional[Dict]:
-        """Load pre-computed normalization statistics."""
+    def _load_normalization_stats_from_store(self, store) -> Optional[Dict]:
+        """Load pre-computed normalization statistics from provided store."""
         if not self.normalize:
             return None
         
-        if 'metadata' not in self.store or 'normalization' not in self.store['metadata']:
+        if 'metadata' not in store or 'normalization' not in store['metadata']:
             return None
             
-        norm_grp = self.store['metadata']['normalization']
+        norm_grp = store['metadata']['normalization']
         stats = {}
         
         # Helper to extract scalar mean/std for a key
@@ -292,12 +313,12 @@ class RadioLocalizationDataset(Dataset):
 
         return stats
 
-    def _infer_dataset_origin(self) -> Optional[Tuple[float, float]]:
-        if 'positions' not in self.store:
+    def _infer_dataset_origin_from_store(self, store) -> Optional[Tuple[float, float]]:
+        if 'positions' not in store:
             return None
         try:
-            ue_x = np.asarray(self.store['positions/ue_x'])
-            ue_y = np.asarray(self.store['positions/ue_y'])
+            ue_x = np.asarray(store['positions/ue_x'])
+            ue_y = np.asarray(store['positions/ue_y'])
             if ue_x.size == 0 or ue_y.size == 0:
                 return None
             

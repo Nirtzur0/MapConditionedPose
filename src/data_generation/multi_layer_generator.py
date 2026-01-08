@@ -33,14 +33,25 @@ from .processing import DataStacker, MeasurementProcessor
 
 logger = logging.getLogger(__name__)
 
-# Try importing Zarr writer (optional)
+# Import dataset writer and OSM rasterizer
 try:
-    from .zarr_writer import ZarrDatasetWriter
+    from .lmdb_writer import LMDBDatasetWriter
     from .osm_rasterizer import OSMRasterizer
-    ZARR_AVAILABLE = True
+    LMDB_AVAILABLE = True
 except ImportError:
-    ZARR_AVAILABLE = False
-    logger.warning("Zarr not available; dataset writing will fail without the zarr package.")
+    LMDB_AVAILABLE = False
+    logger.error("LMDB not available; install with: pip install lmdb")
+
+# Legacy Zarr support (DEPRECATED - has multiprocessing issues)
+ZARR_AVAILABLE = False
+ZarrDatasetWriter = None
+# Uncomment below to enable legacy Zarr support (not recommended)
+# try:
+#     from .zarr_writer import ZarrDatasetWriter
+#     ZARR_AVAILABLE = True
+#     logger.warning("Using deprecated Zarr writer - migrate to LMDB for better multiprocessing")
+# except ImportError:
+#     ZARR_AVAILABLE = False
 
 # Try importing Sionna
 try:
@@ -137,23 +148,38 @@ class MultiLayerDataGenerator:
         self.data_stacker = DataStacker(max_neighbors=config.max_neighbors)
         self.measurement_processor = MeasurementProcessor(config=config)
         
-        # Initialize Zarr writer
-        if ZARR_AVAILABLE:
+        # Initialize LMDB writer (preferred) or Zarr writer (legacy)
+        use_lmdb = config.use_lmdb if hasattr(config, 'use_lmdb') else True
+        
+        if use_lmdb and LMDB_AVAILABLE:
+            logger.info("Using LMDB for dataset storage (multiprocessing-friendly)")
+            self.lmdb_writer = LMDBDatasetWriter(
+                output_dir=config.output_dir,
+                map_size=config.lmdb_map_size if hasattr(config, 'lmdb_map_size') else 100 * 1024**3,
+            )
+            # Set max dimensions
+            self.lmdb_writer.set_max_dimensions({
+                'max_cells': config.max_neighbors,
+                'max_paths': config.max_stored_paths,
+                'max_beams': 64,  # Default
+            })
+            self.zarr_writer = None
+        elif ZARR_AVAILABLE:
+            logger.warning("Using legacy Zarr writer (has multiprocessing issues)")
             self.zarr_writer = ZarrDatasetWriter(
                 output_dir=config.output_dir,
                 chunk_size=config.zarr_chunk_size,
             )
-            
             # Pre-configure Max Dimensions for Variable Length Arrays
-            # This is critical to prevent "Shape Mismatch" errors. A priori knowledge from config.
             self.zarr_writer.set_max_dimensions({
                  # RT Layer - Path metrics [max_sites, max_paths]
                 'rt/path_gains': (config.max_stored_sites, config.max_stored_paths),
                 'rt/path_delays': (config.max_stored_sites, config.max_stored_paths),
                 'rt/path_powers': (config.max_stored_sites, config.max_stored_paths),
             })
+            self.lmdb_writer = None
         else:
-            logger.warning("Zarr writer unavailable; install 'zarr' for dataset writing.")
+            raise ImportError("Neither LMDB nor Zarr available; install with: pip install lmdb")
         
         # Initialize Map Generators
         self.radio_map_generator = None
@@ -411,22 +437,27 @@ class MultiLayerDataGenerator:
         if create_splits:
             return self._create_split_datasets(all_data, train_ratio, val_ratio, test_ratio)
         else:
-            # Create single dataset (legacy behavior)
-            if ZARR_AVAILABLE and self.zarr_writer:
-                for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to Zarr"):
-                    self.zarr_writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
-                    
+            # Create single dataset
+            writer = self.lmdb_writer if self.lmdb_writer else self.zarr_writer
+            
+            if writer:
+                for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to database"):
+                    # Write scene maps first
                     if 'radio_map' in scene_data and 'osm_map' in scene_data:
-                        self.zarr_writer.write_scene_maps(
+                        writer.write_scene_maps(
                             scene_id=scene_id,
                             radio_map=scene_data['radio_map'],
                             osm_map=scene_data['osm_map']
                         )
+                    
+                    # Append sample data
+                    writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
                 
-                output_path = self.zarr_writer.finalize()
+                output_path = writer.finalize()
                 logger.info(f"Dataset saved to: {output_path}")
                 return output_path
             
+            logger.error("No dataset writer available")
             return None
     
     def _create_split_datasets(self, all_data, train_ratio, val_ratio, test_ratio) -> Dict[str, Path]:
@@ -459,18 +490,32 @@ class MultiLayerDataGenerator:
             
             logger.info(f"Creating {split_name} dataset...")
             
-            # Create writer for this split
-            writer = ZarrDatasetWriter(
-                output_dir=self.config.output_dir,
-                chunk_size=self.config.zarr_chunk_size,
-                compression='blosc',
-                compression_level=5,
-                split_name=split_name
-            )
-            
-            # Set max dimensions
-            scene_ids = [scene_id for scene_id, _, _ in split_data]
-            writer.set_max_dimensions(self.compute_max_dimensions(scene_ids))
+            # Create writer for this split - use LMDB (preferred) or Zarr (legacy)
+            if self.lmdb_writer is not None:
+                writer = LMDBDatasetWriter(
+                    output_dir=self.config.output_dir,
+                    map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
+                    split_name=split_name
+                )
+                # Set max dimensions
+                writer.set_max_dimensions({
+                    'max_cells': self.config.max_neighbors,
+                    'max_paths': self.config.max_stored_paths,
+                    'max_beams': 64,
+                })
+            elif self.zarr_writer is not None and ZARR_AVAILABLE:
+                writer = ZarrDatasetWriter(
+                    output_dir=self.config.output_dir,
+                    chunk_size=self.config.zarr_chunk_size,
+                    compression='blosc',
+                    compression_level=5,
+                    split_name=split_name
+                )
+                # Set max dimensions
+                scene_ids = [scene_id for scene_id, _, _ in split_data]
+                writer.set_max_dimensions(self.compute_max_dimensions(scene_ids))
+            else:
+                raise RuntimeError("No dataset writer available (neither LMDB nor Zarr)")
             
             # Write data
             for scene_id, scene_data, scene_metadata in tqdm(split_data, desc=f"Writing {split_name}"):

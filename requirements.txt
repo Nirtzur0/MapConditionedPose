@@ -23,8 +23,13 @@ einops>=0.7.0     # Tensor operations
 # =============================================================================
 # Data Storage & Processing
 # =============================================================================
-zarr>=2.16.0      # Hierarchical array storage
-numcodecs>=0.12.0 # Compression codecs for Zarr
+# Data Storage (LMDB is now preferred for training)
+lmdb>=1.4.0       # Key-value storage with perfect multiprocessing support
+
+# Legacy Zarr support (deprecated, has multiprocessing issues)
+# zarr>=2.16.0    # Hierarchical array storage (DEPRECATED - use LMDB)
+# numcodecs>=0.12.0 # Compression codecs for Zarr (DEPRECATED)
+lmdb>=1.4.0       # Lightning Memory-Mapped Database (primary storage)
 pandas>=2.0.0
 
 # =============================================================================

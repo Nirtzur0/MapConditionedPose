@@ -19,36 +19,42 @@ from .measurement_utils import (
     add_measurement_dropout,
 )
 
-# Zarr writer is optional
+# LMDB writer (preferred)
 try:
-    from .zarr_writer import ZarrDatasetWriter
-    __all__ = [
-        "RTFeatureExtractor",
-        "PHYFAPIFeatureExtractor",
-        "MACRRCFeatureExtractor",
-        "MultiLayerDataGenerator",
-        "RadioMapGenerator",
-        "RadioMapConfig",
-        "ZarrDatasetWriter",
-        # Measurement utils
-        "compute_rsrp",
-        "compute_rsrq",
-        "compute_cqi",
-        "compute_rank_indicator",
-        "compute_timing_advance",
-        "add_measurement_dropout",
-    ]
+    from .lmdb_writer import LMDBDatasetWriter
+    LMDB_AVAILABLE = True
 except ImportError:
-    __all__ = [
-        "RTFeatureExtractor",
-        "PHYFAPIFeatureExtractor",
-        "MACRRCFeatureExtractor",
-        "MultiLayerDataGenerator",
-        # Measurement utils
-        "compute_rsrp",
-        "compute_rsrq",
-        "compute_cqi",
-        "compute_rank_indicator",
-        "compute_timing_advance",
-        "add_measurement_dropout",
-    ]
+    LMDB_AVAILABLE = False
+
+# Zarr writer (DEPRECATED - kept for backward compatibility only)
+ZARR_AVAILABLE = False
+# Uncomment to enable legacy Zarr support:
+# try:
+#     from .zarr_writer import ZarrDatasetWriter
+#     ZARR_AVAILABLE = True
+# except ImportError:
+#     ZARR_AVAILABLE = False
+
+# Build __all__ list
+_base_exports = [
+    "RTFeatureExtractor",
+    "PHYFAPIFeatureExtractor",
+    "MACRRCFeatureExtractor",
+    "MultiLayerDataGenerator",
+    "RadioMapGenerator",
+    "RadioMapConfig",
+    # Measurement utils
+    "compute_rsrp",
+    "compute_rsrq",
+    "compute_cqi",
+    "compute_rank_indicator",
+    "compute_timing_advance",
+    "add_measurement_dropout",
+]
+
+if LMDB_AVAILABLE:
+    _base_exports.append("LMDBDatasetWriter")
+if ZARR_AVAILABLE:
+    _base_exports.append("ZarrDatasetWriter")  # Deprecated
+
+__all__ = _base_exports

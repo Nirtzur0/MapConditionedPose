@@ -18,12 +18,28 @@ import yaml
 from pathlib import Path
 
 from ..models.ue_localization_model import UELocalizationModel
-from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
-from ..datasets.combined_dataset import CombinedRadioLocalizationDataset
+from ..datasets.lmdb_dataset import LMDBRadioLocalizationDataset
+# Legacy Zarr support (kept for backward compatibility)
+try:
+    from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
+    from ..datasets.combined_dataset import CombinedRadioLocalizationDataset
+    ZARR_AVAILABLE = True
+except ImportError:
+    ZARR_AVAILABLE = False
+    logger.warning("Zarr datasets not available (Zarr package not installed)")
 from ..datasets.augmentations import RadioAugmentation
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _worker_init_fn(worker_id):
+    """Initialize each DataLoader worker - must be at module level for pickling with spawn."""
+    import random
+    import numpy as np
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
 
 
 class UELocalizationLightning(pl.LightningModule):
@@ -287,8 +303,10 @@ class UELocalizationLightning(pl.LightningModule):
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
         # Distance in normalized space [0,1] * extent [meters]
-        # sample_extent shape: [batch]
-        extent = batch.get('sample_extent', torch.tensor(512.0, device=pred_pos.device))
+        # scene_extent shape: [batch]
+        extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
+        if isinstance(extent, (int, float)):
+            extent = torch.tensor(extent, device=pred_pos.device)
         errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
 
         # Always visualize the first sample of the first batch for consistency across epochs
@@ -371,7 +389,9 @@ class UELocalizationLightning(pl.LightningModule):
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
         # Distance in normalized space [0,1] * extent [meters]
-        extent = batch.get('sample_extent', torch.tensor(512.0, device=pred_pos.device))
+        extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
+        if isinstance(extent, (int, float)):
+            extent = torch.tensor(extent, device=pred_pos.device)
         errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
         
         # Store results
@@ -670,13 +690,15 @@ class UELocalizationLightning(pl.LightningModule):
         if split == 'train' and 'training' in self.config:
             augmentation = self.config['training'].get('augmentation', None)
         
-        # Simple 3-dataset approach: train_zarr_paths, val_zarr_paths, test_zarr_paths
-        # Each contains the full dataset for that split (no further splitting needed)
+        # Support both LMDB and Zarr paths (prefer LMDB)
+        # LMDB: train_lmdb_paths, val_lmdb_paths, test_lmdb_paths
+        # Zarr (DEPRECATED): train_zarr_paths, val_zarr_paths, test_zarr_paths
         dataset_config = self.config['dataset']
         
-        train_paths = dataset_config.get('train_zarr_paths', [])
-        val_paths = dataset_config.get('val_zarr_paths', [])
-        test_paths = dataset_config.get('test_zarr_paths', [])
+        # Check for LMDB paths first (preferred)
+        train_paths = dataset_config.get('train_lmdb_paths', dataset_config.get('train_zarr_paths', []))
+        val_paths = dataset_config.get('val_lmdb_paths', dataset_config.get('val_zarr_paths', []))
+        test_paths = dataset_config.get('test_lmdb_paths', dataset_config.get('test_zarr_paths', []))
         
         # Select paths based on split
         if split == 'train':
@@ -696,16 +718,49 @@ class UELocalizationLightning(pl.LightningModule):
         if not valid_paths:
             raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
         
-        # Use all data from the split dataset (no further splitting)
-        return CombinedRadioLocalizationDataset(
-            zarr_paths=valid_paths,
-            split='all',  # Use all data from this split's dataset
-            map_resolution=dataset_config['map_resolution'],
-            scene_extent=dataset_config['scene_extent'],
-            normalize=dataset_config['normalize_features'],
-            handle_missing=dataset_config['handle_missing_values'],
-            augmentation=augmentation,
-        )
+        # Check if using LMDB or Zarr
+        use_lmdb = dataset_config.get('use_lmdb', False)
+        first_path = Path(valid_paths[0])
+        
+        # Auto-detect if path is LMDB
+        if str(first_path).endswith('.lmdb') or (first_path.is_dir() and (first_path / 'data.mdb').exists()):
+            use_lmdb = True
+        
+        if use_lmdb:
+            # Use LMDB dataset (multiprocessing-friendly!)
+            logger.info(f"✓ Using LMDB dataset for {split} split (multiprocessing-safe)")
+            if len(valid_paths) > 1:
+                logger.warning(f"Multiple LMDB paths not yet supported, using first: {valid_paths[0]}")
+            
+            return LMDBRadioLocalizationDataset(
+                lmdb_path=str(valid_paths[0]),
+                split='all',  # Use all data from this split's dataset
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+                augmentation=augmentation,
+            )
+        else:
+            # Use Zarr dataset (DEPRECATED - has multiprocessing issues)
+            if not ZARR_AVAILABLE:
+                raise ImportError(
+                    "Zarr dataset requested but Zarr not installed. "
+                    "Either install zarr (pip install zarr) or migrate to LMDB datasets."
+                )
+            
+            logger.warning(f"⚠️  Using deprecated Zarr dataset for {split} split - migrate to LMDB for better multiprocessing")
+            logger.warning("   Set num_workers=0 in config to avoid multiprocessing issues with Zarr")
+            
+            return CombinedRadioLocalizationDataset(
+                zarr_paths=valid_paths,
+                split='all',  # Use all data from this split's dataset
+                map_resolution=dataset_config['map_resolution'],
+                scene_extent=dataset_config['scene_extent'],
+                normalize=dataset_config['normalize_features'],
+                handle_missing=dataset_config['handle_missing_values'],
+                augmentation=augmentation,
+            )
 
     def train_dataloader(self):
         """Create training dataloader."""
@@ -718,12 +773,12 @@ class UELocalizationLightning(pl.LightningModule):
         )
         logger.info(f"Training samples: {len(dataset)} ({num_batches} batches)")
         
-        # Disable pin_memory on MPS to avoid warnings
-        use_pin_memory = True
+        # Use pin_memory for GPU training (unless on MPS which has warnings)
+        num_workers = self.config['infrastructure']['num_workers']
+        use_pin_memory = torch.cuda.is_available()
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             use_pin_memory = False
             
-        num_workers = self.config['infrastructure']['num_workers']
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
@@ -733,6 +788,7 @@ class UELocalizationLightning(pl.LightningModule):
             pin_memory=use_pin_memory,
             persistent_workers=(num_workers > 0),
             prefetch_factor=2 if num_workers > 0 else None,
+            worker_init_fn=_worker_init_fn if num_workers > 0 else None,
         )
     
     def val_dataloader(self):
@@ -746,12 +802,12 @@ class UELocalizationLightning(pl.LightningModule):
         )
         logger.info(f"Validation samples: {len(dataset)} ({num_batches} batches)")
         
-        # Disable pin_memory on MPS to avoid warnings
-        use_pin_memory = True
+        # Use pin_memory for GPU training (unless on MPS which has warnings)
+        num_workers = self.config['infrastructure']['num_workers']
+        use_pin_memory = torch.cuda.is_available()
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             use_pin_memory = False
             
-        num_workers = self.config['infrastructure']['num_workers']
         return DataLoader(
             dataset,
             batch_size=self.config['training']['batch_size'],
@@ -761,6 +817,7 @@ class UELocalizationLightning(pl.LightningModule):
             pin_memory=use_pin_memory,
             persistent_workers=(num_workers > 0),
             prefetch_factor=2 if num_workers > 0 else None,
+            worker_init_fn=_worker_init_fn if num_workers > 0 else None,
         )
     
     def test_dataloader(self):
