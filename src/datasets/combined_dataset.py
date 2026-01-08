@@ -1,5 +1,8 @@
 """
-Combined PyTorch Dataset for Loading from Multiple M2 Zarr Feature Sets
+Combined PyTorch Dataset for Loading from Multiple M2 LMDB/Zarr Feature Sets
+
+This is a legacy module for combining multiple datasets. 
+For production use, prefer LMDBRadioDataset which has better multiprocessing support.
 """
 
 import torch

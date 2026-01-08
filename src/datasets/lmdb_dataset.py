@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
     """LMDB-based dataset for radio localization with perfect multiprocessing support.
     
-    Key differences from Zarr version:
+    Key differences from legacy Zarr version:
     - No async event loops → multiprocessing works perfectly
     - Lazy initialization → only stores path in __init__
     - Per-worker LMDB environment → opened after fork/spawn

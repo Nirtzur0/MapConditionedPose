@@ -139,7 +139,7 @@ def main():
             else:
                 # Auto-generate experiment name with timestamp and scene/model info
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                dataset_path = config.get('dataset', {}).get('zarr_path', '')
+                dataset_path = config.get('dataset', {}).get('lmdb_path', '')
                 
                 # Extract scene name more intelligently from dataset path
                 scene_name = "unknown"
