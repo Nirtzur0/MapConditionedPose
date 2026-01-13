@@ -144,7 +144,8 @@ class FineHead(nn.Module):
         d_hidden: Hidden dimension for refinement network
         top_k: Number of candidate cells to refine
         num_cells: Total number of cells in the grid (for computing grid_size)
-        sigma_min: Minimum standard deviation (meters)
+        sigma_min: Minimum standard deviation (in normalized coords, ~0.001 = 1m at 1km scene)
+        sigma_max: Maximum standard deviation (in normalized coords, ~0.1 = 100m at 1km scene)
         dropout: Dropout rate
     """
     
@@ -154,13 +155,15 @@ class FineHead(nn.Module):
         d_hidden: int = 256,
         top_k: int = 5,
         num_cells: int = 1024,  # Default 32x32
-        sigma_min: float = 0.01,
+        sigma_min: float = 0.001,  # ~1m at 1km scene
+        sigma_max: float = 0.1,    # ~100m at 1km scene (caps overly uncertain predictions)
         dropout: float = 0.1,
     ):
         super().__init__()
         
         self.top_k = top_k
         self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
         self.grid_size = int(num_cells ** 0.5)  # Infer grid size (32 for 1024 cells)
         self.d_hidden = d_hidden
         
@@ -265,10 +268,12 @@ class FineHead(nn.Module):
         max_offset = 0.05  # ~1.5 cells in normalized [0,1] coords
         offsets = torch.tanh(offset_raw) * max_offset  # [B, k, 2] bounded to [-0.05, 0.05]
         
-        # Predict uncertainty (scale)
-        # Use softplus + epsilon to ensure positive and stable sigma
+        # Predict uncertainty (scale) with bounded range [sigma_min, sigma_max]
+        # Use sigmoid to map to [0, 1], then scale to [sigma_min, sigma_max]
+        # This prevents both overly small (degenerate) and overly large (uninformative) predictions
         scale_raw = self.scale_head(refined)
-        uncertainties = F.softplus(scale_raw) + self.sigma_min  # [B, k, 2]
+        sigma_range = self.sigma_max - self.sigma_min
+        uncertainties = torch.sigmoid(scale_raw) * sigma_range + self.sigma_min  # [B, k, 2]
         
         return offsets, uncertainties
 

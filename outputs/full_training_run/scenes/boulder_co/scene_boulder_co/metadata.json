@@ -1,0 +1,157 @@
+{
+  "scene_id": "scene_boulder_co",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/scenes/boulder_co/scene_boulder_co",
+  "bbox_wgs84": {
+    "lon_min": -105.28,
+    "lat_min": 40.014,
+    "lon_max": -105.27,
+    "lat_max": 40.02
+  },
+  "bbox": {
+    "x_min": 476104.1492661217,
+    "x_max": 476959.5915534705,
+    "y_min": 4429345.99249243,
+    "y_max": 4430014.570895791
+  },
+  "polygon": [
+    [
+      -105.28,
+      40.014
+    ],
+    [
+      -105.27,
+      40.014
+    ],
+    [
+      -105.27,
+      40.02
+    ],
+    [
+      -105.28,
+      40.02
+    ],
+    [
+      -105.28,
+      40.014
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_very_dry_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_glass"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 2.8561865942184737,
+      "sigma": 0.0001500157833742706,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 2081545.496666788,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 6.1645589218999834,
+      "sigma": 0.0,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        476463.6024379765,
+        4429865.804781205,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          63.21736319001866,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        476304.1170490569,
+        4429615.276596551,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          215.90059168467272,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_2",
+      "site_type": "tx",
+      "position": [
+        476309.5742434072,
+        4429449.569755458,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          193.32577243672856,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 2,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 3,
+  "bounds": {
+    "x_min": 476104.1492661217,
+    "x_max": 476959.5915534705,
+    "y_min": 4429345.99249243,
+    "y_max": 4430014.570895791,
+    "utm_epsg": "EPSG:32613"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/scenes/boulder_co/scene_boulder_co/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/scenes/boulder_co/scene_boulder_co/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/scenes/boulder_co/scene_boulder_co/metadata.json"
+  }
+}

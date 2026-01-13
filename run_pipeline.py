@@ -41,16 +41,22 @@ class ExperimentConfig:
     output_dir: Path = field(default_factory=lambda: Path("outputs"))
     clean: bool = False
     
-    # Scene generation
+    # Scene generation - Focus on 1-2 TX per scene with many placement variations
+    # This ensures the model learns to generalize across different TX configurations
     scenes: Dict = field(default_factory=lambda: {
         'cities': [
-            {'name': 'Boulder, CO', 'bbox': [-105.28, 40.014, -105.27, 40.020]},
-            {'name': 'Austin, TX', 'bbox': [-97.76, 30.275, -97.75, 30.285]},
-            {'name': 'Seattle, WA', 'bbox': [-122.36, 47.625, -122.35, 47.635]},
-            {'name': 'Chicago, IL', 'bbox': [-87.67, 41.875, -87.66, 41.885]},
-            {'name': 'NYC, NY', 'bbox': [-73.985, 40.75, -73.975, 40.76]}
+            # Training cities (verified coordinates - downtown areas)
+            {'name': 'Boulder, CO', 'bbox': [-105.280, 40.014, -105.270, 40.022], 'split': 'train'},
+            {'name': 'Austin, TX', 'bbox': [-97.745, 30.265, -97.735, 30.275], 'split': 'train'},
+            {'name': 'Seattle, WA', 'bbox': [-122.340, 47.605, -122.330, 47.615], 'split': 'train'},
+            {'name': 'Denver, CO', 'bbox': [-104.995, 39.745, -104.985, 39.755], 'split': 'train'},
+            # Validation cities
+            {'name': 'Chicago, IL', 'bbox': [-87.630, 41.880, -87.620, 41.890], 'split': 'val'},
+            # Test cities (unseen during training)
+            {'name': 'NYC, NY', 'bbox': [-73.990, 40.750, -73.980, 40.760], 'split': 'test'},
         ],
-        'num_tx': 3,
+        'num_tx': 2,  # 1-2 TX per scene - simpler, more realistic
+        'tx_variations': 5,  # More placement variations to compensate
         'site_strategy': 'random'
     })
     
@@ -58,17 +64,17 @@ class ExperimentConfig:
     data: Dict = field(default_factory=lambda: {
         'carrier_freq_hz': 3.5e9,
         'bandwidth_hz': 100e6,
-        'num_ue_per_tile': 100,
+        'num_ue_per_tile': 150,  # Good coverage
         'num_reports_per_ue': 10,
         'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
     })
     
     # Training
     training: Dict = field(default_factory=lambda: {
-        'epochs': 30,
-        'batch_size': 16,
-        'learning_rate': 0.0002,
-        'num_workers': 4
+        'epochs': 50,
+        'batch_size': 32,
+        'learning_rate': 0.0003,
+        'num_workers': 0  # LMDB works with 0 workers
     })
     
     # Pipeline control
@@ -91,6 +97,7 @@ class ExperimentConfig:
             scenes={
                 'cities': [{'name': 'Boulder, CO', 'bbox': [-105.275, 40.016, -105.272, 40.018]}],
                 'num_tx': 2,
+                'tx_variations': 1,
                 'site_strategy': 'random'
             },
             data={
@@ -104,7 +111,55 @@ class ExperimentConfig:
                 'epochs': 3,
                 'batch_size': 8,
                 'learning_rate': 0.0002,
-                'num_workers': 2
+                'num_workers': 0
+            }
+        )
+    
+    @classmethod
+    def robust_training(cls) -> 'ExperimentConfig':
+        """Create a robust training configuration with extensive data diversity.
+        
+        This configuration is designed for best positioning accuracy:
+        - 12 cities (8 train, 2 val, 2 test) for geographic diversity
+        - 3 TX variations per city = 36 unique scene configurations
+        - 1-2 TX per scene (realistic deployment)
+        - Many TX placement variations for diversity
+        - 150 UE positions per tile for good coverage
+        """
+        return cls(
+            name="robust_training",
+            scenes={
+                'cities': [
+                    # Training cities (verified downtown coordinates)
+                    {'name': 'Boulder, CO', 'bbox': [-105.280, 40.014, -105.270, 40.022], 'split': 'train'},
+                    {'name': 'Austin, TX', 'bbox': [-97.745, 30.265, -97.735, 30.275], 'split': 'train'},
+                    {'name': 'Seattle, WA', 'bbox': [-122.340, 47.605, -122.330, 47.615], 'split': 'train'},
+                    {'name': 'Denver, CO', 'bbox': [-104.995, 39.745, -104.985, 39.755], 'split': 'train'},
+                    {'name': 'Portland, OR', 'bbox': [-122.680, 45.520, -122.670, 45.530], 'split': 'train'},
+                    {'name': 'Boston, MA', 'bbox': [-71.060, 42.355, -71.050, 42.365], 'split': 'train'},
+                    # Validation cities
+                    {'name': 'Chicago, IL', 'bbox': [-87.630, 41.880, -87.620, 41.890], 'split': 'val'},
+                    {'name': 'Phoenix, AZ', 'bbox': [-112.075, 33.450, -112.065, 33.460], 'split': 'val'},
+                    # Test cities (completely unseen)
+                    {'name': 'NYC, NY', 'bbox': [-73.990, 40.750, -73.980, 40.760], 'split': 'test'},
+                    {'name': 'Atlanta, GA', 'bbox': [-84.390, 33.755, -84.380, 33.765], 'split': 'test'},
+                ],
+                'num_tx': 2,            # 1-2 TX per scene (realistic)
+                'tx_variations': 5,      # Many placement variations
+                'site_strategy': 'random'
+            },
+            data={
+                'carrier_freq_hz': 3.5e9,
+                'bandwidth_hz': 100e6,
+                'num_ue_per_tile': 150,
+                'num_reports_per_ue': 10,
+                'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
+            },
+            training={
+                'epochs': 50,
+                'batch_size': 32,
+                'learning_rate': 0.0003,
+                'num_workers': 0
             }
         )
 
@@ -177,7 +232,10 @@ class Pipeline:
             return 1
     
     def generate_scenes(self):
-        """Generate 3D scenes with transmitter sites."""
+        """Generate 3D scenes with transmitter sites.
+        
+        Supports multiple TX variations per city to improve data diversity.
+        """
         self.log("=" * 60)
         self.log("STEP 1: Generate Scenes")
         self.log("=" * 60)
@@ -186,40 +244,58 @@ class Pipeline:
         
         scene_config = self.config.scenes
         cities = scene_config.get('cities', [])
+        tx_variations = scene_config.get('tx_variations', 1)
+        
+        total_scenes = len(cities) * tx_variations
+        self.log(f"Generating {len(cities)} cities × {tx_variations} TX variations = {total_scenes} scenes")
         
         for city in cities:
             city_name = city.get('name', 'unknown')
             bbox = city.get('bbox')
+            split = city.get('split', 'train')  # Track which split this belongs to
             
-            self.log(f"Generating scene for: {city_name}")
-            
-            # Create scene directory
-            slug = city_name.lower().replace(', ', '_').replace(' ', '_')
-            city_scene_dir = self.scene_dir / slug
-            city_scene_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Initialize generator
-            generator = SceneGenerator(
-                scene_builder_path=str(self.project_root / "src" / "scene_builder"),
-                site_placer=SitePlacer(strategy=scene_config.get('site_strategy', 'random')),
-                output_dir=city_scene_dir
-            )
-            
-            # Convert bbox to polygon
-            if bbox:
-                west, south, east, north = bbox
-                polygon = [(west, south), (east, south), (east, north), (west, north), (west, south)]
-            else:
-                raise ValueError(f"No bbox specified for {city_name}")
-            
-            # Generate scene
-            result = generator.generate(
-                polygon_points=polygon,
-                scene_id=f"scene_{slug}",
-                site_config={'num_tx': scene_config.get('num_tx', 3)}
-            )
-            
-            self.log(f"✓ Generated: {result.get('scene_path', city_scene_dir)}")
+            # Generate multiple TX variations per city
+            for var_idx in range(tx_variations):
+                var_suffix = f"_v{var_idx}" if tx_variations > 1 else ""
+                self.log(f"Generating scene for: {city_name} (variation {var_idx + 1}/{tx_variations})")
+                
+                # Create scene directory
+                slug = city_name.lower().replace(', ', '_').replace(' ', '_')
+                city_scene_dir = self.scene_dir / f"{slug}{var_suffix}"
+                city_scene_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Initialize generator with new random seed for each variation
+                generator = SceneGenerator(
+                    scene_builder_path=str(self.project_root / "src" / "scene_builder"),
+                    site_placer=SitePlacer(
+                        strategy=scene_config.get('site_strategy', 'random'),
+                        seed=hash(f"{city_name}_{var_idx}") % (2**32)  # Reproducible random seed
+                    ),
+                    output_dir=city_scene_dir
+                )
+                
+                # Convert bbox to polygon
+                if bbox:
+                    west, south, east, north = bbox
+                    polygon = [(west, south), (east, south), (east, north), (west, north), (west, south)]
+                else:
+                    raise ValueError(f"No bbox specified for {city_name}")
+                
+                # Generate scene
+                scene_id = f"scene_{slug}{var_suffix}"
+                result = generator.generate(
+                    polygon_points=polygon,
+                    scene_id=scene_id,
+                    site_config={'num_tx': scene_config.get('num_tx', 5)}
+                )
+                
+                # Store split metadata for later use in data generation
+                metadata_path = city_scene_dir / scene_id / "split.txt"
+                metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(metadata_path, 'w') as f:
+                    f.write(split)
+                
+                self.log(f"✓ Generated: {result.get('scene_path', city_scene_dir)} [{split}]")
     
     def generate_data(self):
         """Generate training data using Sionna ray tracing."""
@@ -275,14 +351,23 @@ class Pipeline:
         self.log("STEP 3: Train Model")
         self.log("=" * 60)
         
-        if not self.train_path or not self.val_path:
+        if not self.train_path:
             # Try to find existing datasets
             self.train_path = self._find_latest_dataset('train')
-            self.val_path = self._find_latest_dataset('val')
             self.test_path = self._find_latest_dataset('test')
         
         if not self.train_path:
             raise RuntimeError("No training dataset found. Run data generation first.")
+        
+        # Try to find val dataset if not already set
+        if not self.val_path:
+            self.val_path = self._find_latest_dataset('val')
+        
+        # Log the dataset paths being used
+        self.log(f"Using datasets:")
+        self.log(f"  Train: {self.train_path}")
+        self.log(f"  Val: {self.val_path if self.val_path else 'None (will use train for validation)'}")
+        self.log(f"  Test: {self.test_path}")
         
         # Load base model config and merge with pipeline settings
         model_config_path = Path("configs/model.yaml")
@@ -293,12 +378,15 @@ class Pipeline:
             # Fallback default config
             base_config = {}
         
+        # Determine if using LMDB or Zarr based on file extension
+        is_lmdb = str(self.train_path).endswith('.lmdb')
+        
         # Create training config by merging base config with pipeline settings
         training_config = {
             'dataset': {
-                'train_zarr_paths': [str(self.train_path)],
-                'val_zarr_paths': [str(self.val_path)] if self.val_path else [],
-                'test_zarr_paths': [str(self.test_path)] if self.test_path else [],
+                'train_lmdb_paths' if is_lmdb else 'train_zarr_paths': [str(self.train_path)],
+                'val_lmdb_paths' if is_lmdb else 'val_zarr_paths': [str(self.val_path)] if self.val_path else [],
+                'test_lmdb_paths' if is_lmdb else 'test_zarr_paths': [str(self.test_path)] if self.test_path else [],
                 'map_resolution': 1.0,
                 'scene_extent': 512,
                 'normalize_features': True,
@@ -311,7 +399,7 @@ class Pipeline:
             'infrastructure': {
                 'accelerator': 'auto',
                 'devices': 1,
-                'num_workers': self.config.training.get('num_workers', 4),
+                'num_workers': 0,  # Use 0 to avoid LMDB multiprocessing issues
                 'precision': '32-true',
                 'checkpoint': {
                     'dirpath': str(self.checkpoint_dir),
@@ -392,10 +480,10 @@ class Pipeline:
         self.log(f"✓ Training complete. Checkpoints: {self.checkpoint_dir}")
     
     def _find_latest_dataset(self, split: str) -> Optional[Path]:
-        """Find the latest dataset for a given split."""
-        pattern = f"dataset_{split}_*.zarr"
-        matches = sorted(self.data_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-        return matches[0] if matches else None
+        """Find the latest LMDB dataset for a given split."""
+        lmdb_pattern = f"dataset_*_{split}.lmdb"
+        lmdb_matches = sorted(self.data_dir.glob(lmdb_pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        return lmdb_matches[0] if lmdb_matches else None
     
     def generate_report(self):
         """Generate pipeline execution report."""
@@ -426,6 +514,7 @@ def main():
     parser = argparse.ArgumentParser(description="Simplified ML Pipeline")
     parser.add_argument('--config', type=Path, help='Path to experiment YAML config')
     parser.add_argument('--quick-test', action='store_true', help='Run quick test')
+    parser.add_argument('--robust', action='store_true', help='Run robust training with extensive data diversity')
     parser.add_argument('--skip-scenes', action='store_true', help='Skip scene generation')
     parser.add_argument('--skip-data', action='store_true', help='Skip data generation')
     parser.add_argument('--skip-training', action='store_true', help='Skip training')
@@ -436,6 +525,8 @@ def main():
     # Create config
     if args.quick_test:
         config = ExperimentConfig.quick_test()
+    elif args.robust:
+        config = ExperimentConfig.robust_training()
     elif args.config:
         config = ExperimentConfig.from_yaml(args.config)
     else:

@@ -1,0 +1,104 @@
+data:
+  bandwidth_hz: 100000000.0
+  carrier_freq_hz: 3500000000.0
+  num_reports_per_ue: 10
+  num_ue_per_tile: 200
+  split_ratios:
+    test: 0.15
+    train: 0.7
+    val: 0.15
+name: robust_training
+scenes:
+  cities:
+  - bbox:
+    - -105.28
+    - 40.014
+    - -105.27
+    - 40.02
+    name: Boulder, CO
+    split: train
+  - bbox:
+    - -97.76
+    - 30.275
+    - -97.75
+    - 30.285
+    name: Austin, TX
+    split: train
+  - bbox:
+    - -122.36
+    - 47.625
+    - -122.35
+    - 47.635
+    name: Seattle, WA
+    split: train
+  - bbox:
+    - -87.67
+    - 41.875
+    - -87.66
+    - 41.885
+    name: Chicago, IL
+    split: train
+  - bbox:
+    - -104.995
+    - 39.745
+    - -104.985
+    - 39.755
+    name: Denver, CO
+    split: train
+  - bbox:
+    - -122.685
+    - 45.515
+    - -122.675
+    - 45.525
+    name: Portland, OR
+    split: train
+  - bbox:
+    - -122.42
+    - 37.785
+    - -122.41
+    - 37.795
+    name: San Francisco, CA
+    split: train
+  - bbox:
+    - -71.065
+    - 42.355
+    - -71.055
+    - 42.365
+    name: Boston, MA
+    split: train
+  - bbox:
+    - -112.08
+    - 33.45
+    - -112.07
+    - 33.46
+    name: Phoenix, AZ
+    split: val
+  - bbox:
+    - -84.395
+    - 33.755
+    - -84.385
+    - 33.765
+    name: Atlanta, GA
+    split: val
+  - bbox:
+    - -73.985
+    - 40.75
+    - -73.975
+    - 40.76
+    name: NYC, NY
+    split: test
+  - bbox:
+    - -80.2
+    - 25.77
+    - -80.19
+    - 25.78
+    name: Miami, FL
+    split: test
+  num_tx: 5
+  site_strategy: random
+  tx_variations: 3
+training:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.0003
+  num_workers: 0

@@ -300,6 +300,14 @@ class UELocalizationModel(nn.Module):
         true_pos = targets['position']  # [B, 2]
         position_loss = nn.functional.smooth_l1_loss(pred_pos, true_pos)
         
+        # 6. Variance regularization loss - penalize large variances to encourage confident predictions
+        # This encourages the model to predict smaller, more confident ellipses
+        # We regularize log(sigma) to encourage smaller sigma values, weighted by mixture probability
+        variance_reg_weight = loss_weights.get('variance_reg_weight', 0.1)
+        # Weight each component's variance by its probability (focus on top predictions)
+        weighted_log_sigma = (pi.detach() * torch.log(sigma + eps)).sum(dim=1)  # [B, 2]
+        variance_loss = weighted_log_sigma.mean()  # Scalar, penalizes large sigma
+        
         # Get position loss weight (default to 0.2 if not specified)
         position_weight = loss_weights.get('position_weight', 0.2)
         
@@ -307,7 +315,8 @@ class UELocalizationModel(nn.Module):
         total_loss = (
             loss_weights['coarse_weight'] * coarse_loss +
             loss_weights['fine_weight'] * fine_loss +
-            position_weight * position_loss
+            position_weight * position_loss +
+            variance_reg_weight * variance_loss
         )
         
         return {
@@ -315,6 +324,7 @@ class UELocalizationModel(nn.Module):
             'coarse_loss': coarse_loss,
             'fine_loss': fine_loss,
             'position_loss': position_loss,
+            'variance_loss': variance_loss,
         }
     
     def forward_with_attention(

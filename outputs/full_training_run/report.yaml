@@ -1,0 +1,10 @@
+checkpoints: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/checkpoints
+datasets:
+  test: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/data/dataset_20260112_094027_test.lmdb
+  train: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run/data/dataset_20260112_094014_train.lmdb
+  val: null
+duration_formatted: 11.4 minutes
+duration_seconds: 686.2034916877747
+name: full_training_run
+output_dir: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_training_run
+timestamp: '2026-01-12T09:46:40.337228'

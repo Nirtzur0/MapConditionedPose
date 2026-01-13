@@ -19,7 +19,7 @@ model:
   # Radio Encoder - Larger for richer representations
   radio_encoder:
     type: "SetTransformer"
-    num_cells: 16          # Support more cells (2 more than dataset for safety)
+    num_cells: 2          # Max cells in dataset
     num_beams: 64
     d_model: 256           # INCREASED from 128 - more capacity for 30 input features
     nhead: 8               # INCREASED from 4 - better multi-head attention

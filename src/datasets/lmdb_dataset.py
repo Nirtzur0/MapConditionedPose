@@ -262,10 +262,10 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         # Process measurements
         measurements = self._process_measurements(sample)
         
-        # Get maps for this scene
-        scene_idx = sample.get('scene_index', 0)
-        radio_map = self._get_radio_map(scene_idx)
-        osm_map = self._get_osm_map(scene_idx)
+        # Get maps for this scene - use scene_id for lookup
+        scene_id = sample.get('scene_id', '')
+        radio_map = self._get_radio_map(scene_id)
+        osm_map = self._get_osm_map(scene_id)
         
         # Ground truth position - handle tuple or numpy array
         # Only use x, y (first 2 elements), ignore z if present
@@ -276,9 +276,22 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             pos_array = np.asarray(pos).flatten()
             position = torch.from_numpy(pos_array[:2]).float()  # x, y only
         
+        # Get actual scene extent from metadata (more accurate than config default)
+        scene_metadata = sample.get('scene_metadata', {})
+        bbox = scene_metadata.get('bbox', {})
+        if 'x_max' in bbox and 'x_min' in bbox:
+            # Use actual scene dimensions from metadata
+            actual_width = bbox['x_max'] - bbox['x_min']
+            actual_height = bbox['y_max'] - bbox['y_min']
+            scene_extent = max(actual_width, actual_height)  # Use larger dimension for square normalization
+        else:
+            scene_extent = sample.get('scene_extent', self.scene_extent)
+        
         # Normalize position to [0, 1] to match model's normalized coordinate system
-        scene_extent = sample.get('scene_extent', self.scene_extent)
         position = position / scene_extent  # Normalize to [0, 1]
+        
+        # Clamp to [0, 1] to handle edge cases
+        position = torch.clamp(position, 0.0, 1.0)
         
         # Compute coarse grid cell (uses normalized position)
         cell_grid = self._compute_grid_cell(position, 1.0)  # Use normalized extent of 1.0
@@ -294,7 +307,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
     
     def _process_measurements(self, sample: dict) -> Dict[str, torch.Tensor]:
         """Process RT, PHY, MAC features into model input format."""
-        max_cells = 20  # Model expects up to 20 cells
+        max_cells = 2  # Model expects up to 2 cells (matching dataset)
         
         # Support both old key names ('rt', 'phy', 'mac') and new ones ('rt_features', 'phy_features', 'mac_features')
         rt_data = sample.get('rt_features', sample.get('rt', {}))
@@ -311,7 +324,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         mac_features = self._build_mac_features(mac_data, max_cells)
         
         # Cell/beam IDs
-        n_actual_cells = sample.get('actual_num_cells', rt_features.shape[0] if rt_features.sum() > 0 else 16)
+        n_actual_cells = sample.get('actual_num_cells', rt_features.shape[0] if rt_features.sum() > 0 else 2)
         cell_ids = torch.zeros(max_cells, dtype=torch.long)
         cell_ids[:min(n_actual_cells, max_cells)] = torch.arange(min(n_actual_cells, max_cells))
         
@@ -341,7 +354,24 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         }
     
     def _build_rt_features(self, rt_data: dict, max_cells: int) -> torch.Tensor:
-        """Build RT feature tensor [max_cells, 16]."""
+        """Build RT feature tensor [max_cells, 16].
+        
+        Feature mapping (aligned with RT_SCHEMA):
+            0: toa - Time of Arrival (seconds)
+            1: mean_path_gain - Mean path gain (linear)
+            2: max_path_gain - Max path gain (linear)
+            3: mean_path_delay - Mean path delay (seconds)
+            4: num_paths - Number of multipath components
+            5: rms_delay_spread - RMS delay spread (seconds)
+            6: rms_angular_spread - RMS angular spread (radians)
+            7: total_power - Sum of squared path gains (linear power)
+            8: n_significant_paths - Paths with gain > 1% of max
+            9: delay_range - Max delay - min delay (seconds)
+            10: dominant_path_gain - Gain of strongest path
+            11: dominant_path_delay - Delay of strongest path
+            12: is_nlos - Is non-line-of-sight (0 or 1)
+            13-15: Reserved
+        """
         features = torch.zeros(max_cells, 16)
         
         if not rt_data:
@@ -360,50 +390,96 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         if n_cells == 0:
             return features
         
-        # ToA feature
+        # Feature 0: ToA
         if toa.ndim > 1:
-            features[:n_cells, 0] = torch.from_numpy(toa[:n_cells, 0]).float()
+            features[:n_cells, 0] = torch.from_numpy(toa[:n_cells, 0].astype(np.float32))
         elif toa.ndim == 1:
-            features[:n_cells, 0] = torch.from_numpy(toa[:n_cells]).float()
+            features[:n_cells, 0] = torch.from_numpy(toa[:n_cells].astype(np.float32))
         
-        # Path gains/delays aggregation
+        # Process path_gains for features 1, 2, 7, 8, 10
+        path_gains = None
         if 'path_gains' in rt_data and rt_data['path_gains'] is not None:
             path_gains = np.asarray(rt_data['path_gains'])
             if path_gains.size > 0:
                 if path_gains.ndim >= 2:
                     n = min(path_gains.shape[0], n_cells)
-                    features[:n, 1] = torch.from_numpy(np.mean(path_gains[:n], axis=-1)).float()
-                    features[:n, 2] = torch.from_numpy(np.max(path_gains[:n], axis=-1)).float()
+                    # Feature 1: mean path gain
+                    features[:n, 1] = torch.from_numpy(np.mean(path_gains[:n], axis=-1).astype(np.float32))
+                    # Feature 2: max path gain
+                    max_gains = np.max(np.abs(path_gains[:n]), axis=-1)
+                    features[:n, 2] = torch.from_numpy(max_gains.astype(np.float32))
+                    # Feature 7: total power (sum of squared gains)
+                    total_power = np.sum(path_gains[:n] ** 2, axis=-1)
+                    features[:n, 7] = torch.from_numpy(total_power.astype(np.float32))
+                    # Feature 8: number of significant paths (> 1% of max)
+                    for i in range(n):
+                        threshold = 0.01 * max_gains[i] if max_gains[i] > 0 else 0
+                        n_sig = np.sum(np.abs(path_gains[i]) > threshold)
+                        features[i, 8] = float(n_sig)
+                    # Feature 10: dominant path gain (strongest path)
+                    dom_idx = np.argmax(np.abs(path_gains[:n]), axis=-1)
+                    for i in range(n):
+                        features[i, 10] = float(np.abs(path_gains[i, dom_idx[i]]))
                 elif path_gains.ndim == 1:
                     features[0, 1] = float(np.mean(path_gains))
-                    features[0, 2] = float(np.max(path_gains))
+                    features[0, 2] = float(np.max(np.abs(path_gains)))
+                    features[0, 7] = float(np.sum(path_gains ** 2))
+                    max_g = np.max(np.abs(path_gains))
+                    features[0, 8] = float(np.sum(np.abs(path_gains) > 0.01 * max_g))
+                    features[0, 10] = float(max_g)
         
+        # Process path_delays for features 3, 9, 11
+        path_delays = None
         if 'path_delays' in rt_data and rt_data['path_delays'] is not None:
             path_delays = np.asarray(rt_data['path_delays'])
             if path_delays.size > 0:
                 if path_delays.ndim >= 2:
                     n = min(path_delays.shape[0], n_cells)
-                    features[:n, 3] = torch.from_numpy(np.mean(path_delays[:n], axis=-1)).float()
+                    # Feature 3: mean path delay
+                    features[:n, 3] = torch.from_numpy(np.mean(path_delays[:n], axis=-1).astype(np.float32))
+                    # Feature 9: delay range (max - min for non-zero delays)
+                    for i in range(n):
+                        nonzero_delays = path_delays[i][path_delays[i] > 0]
+                        if len(nonzero_delays) > 1:
+                            features[i, 9] = float(np.max(nonzero_delays) - np.min(nonzero_delays))
+                    # Feature 11: dominant path delay (delay of strongest path)
+                    if path_gains is not None and path_gains.ndim >= 2:
+                        dom_idx = np.argmax(np.abs(path_gains[:n]), axis=-1)
+                        for i in range(n):
+                            features[i, 11] = float(path_delays[i, dom_idx[i]])
                 elif path_delays.ndim == 1:
                     features[0, 3] = float(np.mean(path_delays))
+                    nonzero_d = path_delays[path_delays > 0]
+                    if len(nonzero_d) > 1:
+                        features[0, 9] = float(np.max(nonzero_d) - np.min(nonzero_d))
         
+        # Feature 4: num_paths
         if 'num_paths' in rt_data and rt_data['num_paths'] is not None:
             num_paths = np.asarray(rt_data['num_paths'])
             if num_paths.size > 0:
                 n = min(len(num_paths.flatten()), n_cells)
-                features[:n, 4] = torch.from_numpy(num_paths.flatten()[:n]).float()
+                features[:n, 4] = torch.from_numpy(num_paths.flatten()[:n].astype(np.float32))
         
+        # Feature 5: rms_delay_spread
         if 'rms_delay_spread' in rt_data and rt_data['rms_delay_spread'] is not None:
             rms_ds = np.asarray(rt_data['rms_delay_spread'])
             if rms_ds.size > 0:
                 n = min(len(rms_ds.flatten()), n_cells)
-                features[:n, 5] = torch.from_numpy(rms_ds.flatten()[:n]).float()
+                features[:n, 5] = torch.from_numpy(rms_ds.flatten()[:n].astype(np.float32))
         
+        # Feature 6: rms_angular_spread
         if 'rms_angular_spread' in rt_data and rt_data['rms_angular_spread'] is not None:
             rms_as = np.asarray(rt_data['rms_angular_spread'])
             if rms_as.size > 0:
                 n = min(len(rms_as.flatten()), n_cells)
-                features[:n, 6] = torch.from_numpy(rms_as.flatten()[:n]).float()
+                features[:n, 6] = torch.from_numpy(rms_as.flatten()[:n].astype(np.float32))
+        
+        # Feature 12: is_nlos
+        if 'is_nlos' in rt_data and rt_data['is_nlos'] is not None:
+            is_nlos = np.asarray(rt_data['is_nlos'])
+            if is_nlos.size > 0:
+                n = min(len(is_nlos.flatten()), n_cells)
+                features[:n, 12] = torch.from_numpy(is_nlos.flatten()[:n].astype(np.float32))
         
         # Normalize if enabled
         if self.normalize and self.norm_stats and 'rt' in self.norm_stats:
@@ -552,29 +628,66 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         
         return features
     
-    def _get_radio_map(self, scene_idx: int) -> torch.Tensor:
-        """Get radio map for scene [5, 256, 256]."""
+    def _get_radio_map(self, scene_id: str) -> torch.Tensor:
+        """Get radio map for scene [5, 256, 256].
+        
+        Args:
+            scene_id: Scene identifier (e.g., 'denver_co_v4/scene_denver_co_v4')
+        """
+        # First try loading from cached metadata
         radio_maps = self._metadata.get('radio_maps', None)
-        if radio_maps is None:
-            return torch.zeros(5, 256, 256)
+        if radio_maps is not None:
+            # Legacy format: radio_maps indexed by scene_idx
+            if isinstance(scene_id, int):
+                return torch.from_numpy(radio_maps[scene_id]).float()
         
-        radio_map = radio_maps[scene_idx]
-        return torch.from_numpy(radio_map).float()
+        # New format: load from scene-specific key
+        scene_key = f'__scene_map_{scene_id}__'.encode()
+        with self._env.begin() as txn:
+            scene_data = txn.get(scene_key)
+            if scene_data is not None:
+                scene_map = pickle.loads(scene_data)
+                radio_map = scene_map.get('radio_map', None)
+                if radio_map is not None:
+                    return torch.from_numpy(radio_map).float()
+        
+        # Fallback: return zeros
+        logger.warning(f"No radio map found for scene: {scene_id}")
+        return torch.zeros(5, 256, 256)
     
-    def _get_osm_map(self, scene_idx: int) -> torch.Tensor:
-        """Get OSM map for scene [5, 256, 256] or selected channels."""
+    def _get_osm_map(self, scene_id: str) -> torch.Tensor:
+        """Get OSM map for scene [5, 256, 256] or selected channels.
+        
+        Args:
+            scene_id: Scene identifier (e.g., 'denver_co_v4/scene_denver_co_v4')
+        """
+        # First try loading from cached metadata
         osm_maps = self._metadata.get('osm_maps', None)
-        if osm_maps is None:
-            return torch.zeros(5, 256, 256)
+        if osm_maps is not None:
+            # Legacy format: osm_maps indexed by scene_idx
+            if isinstance(scene_id, int):
+                osm_map = osm_maps[scene_id]
+                osm_tensor = torch.from_numpy(osm_map).float()
+                if self.osm_channels is not None:
+                    osm_tensor = osm_tensor[self.osm_channels]
+                return osm_tensor
         
-        osm_map = osm_maps[scene_idx]
-        osm_tensor = torch.from_numpy(osm_map).float()
+        # New format: load from scene-specific key
+        scene_key = f'__scene_map_{scene_id}__'.encode()
+        with self._env.begin() as txn:
+            scene_data = txn.get(scene_key)
+            if scene_data is not None:
+                scene_map = pickle.loads(scene_data)
+                osm_map = scene_map.get('osm_map', None)
+                if osm_map is not None:
+                    osm_tensor = torch.from_numpy(osm_map).float()
+                    if self.osm_channels is not None:
+                        osm_tensor = osm_tensor[self.osm_channels]
+                    return osm_tensor
         
-        # Channel selection
-        if self.osm_channels is not None:
-            osm_tensor = osm_tensor[self.osm_channels]
-        
-        return osm_tensor
+        # Fallback: return zeros
+        logger.warning(f"No OSM map found for scene: {scene_id}")
+        return torch.zeros(5, 256, 256)
     
     def _compute_grid_cell(self, position: torch.Tensor, scene_extent: float) -> torch.Tensor:
         """Compute 32x32 grid cell index for position."""

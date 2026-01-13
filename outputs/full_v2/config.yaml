@@ -1,0 +1,62 @@
+data:
+  bandwidth_hz: 100000000.0
+  carrier_freq_hz: 3500000000.0
+  num_reports_per_ue: 10
+  num_ue_per_tile: 150
+  split_ratios:
+    test: 0.15
+    train: 0.7
+    val: 0.15
+name: full_v2
+scenes:
+  cities:
+  - bbox:
+    - -105.28
+    - 40.014
+    - -105.27
+    - 40.022
+    name: Boulder, CO
+    split: train
+  - bbox:
+    - -97.745
+    - 30.265
+    - -97.735
+    - 30.275
+    name: Austin, TX
+    split: train
+  - bbox:
+    - -122.34
+    - 47.605
+    - -122.33
+    - 47.615
+    name: Seattle, WA
+    split: train
+  - bbox:
+    - -104.995
+    - 39.745
+    - -104.985
+    - 39.755
+    name: Denver, CO
+    split: train
+  - bbox:
+    - -87.63
+    - 41.88
+    - -87.62
+    - 41.89
+    name: Chicago, IL
+    split: val
+  - bbox:
+    - -73.99
+    - 40.75
+    - -73.98
+    - 40.76
+    name: NYC, NY
+    split: test
+  num_tx: 2
+  site_strategy: random
+  tx_variations: 5
+training:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.0003
+  num_workers: 0

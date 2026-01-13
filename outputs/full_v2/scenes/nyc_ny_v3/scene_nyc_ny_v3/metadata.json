@@ -1,0 +1,135 @@
+{
+  "scene_id": "scene_nyc_ny_v3",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/nyc_ny_v3/scene_nyc_ny_v3",
+  "bbox_wgs84": {
+    "lon_min": -73.99,
+    "lat_min": 40.75,
+    "lon_max": -73.98,
+    "lat_max": 40.76
+  },
+  "bbox": {
+    "x_min": 585250.5724799193,
+    "x_max": 586107.5533014337,
+    "y_min": 4511495.872732702,
+    "y_max": 4512615.709795199
+  },
+  "polygon": [
+    [
+      -73.99,
+      40.75
+    ],
+    [
+      -73.98,
+      40.75
+    ],
+    [
+      -73.98,
+      40.76
+    ],
+    [
+      -73.99,
+      40.76
+    ],
+    [
+      -73.99,
+      40.75
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_wet_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_concrete"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 10.48341715408126,
+      "sigma": 0.017744625692563937,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 3804526.699699905,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 5.071791142043887,
+      "sigma": 0.024433372448249974,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        585641.2759752248,
+        4511872.100604102,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          346.96167088656495,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        585372.2826659534,
+        4512202.356527901,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          186.8711840997589,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 2,
+  "bounds": {
+    "x_min": 585250.5724799193,
+    "x_max": 586107.5533014337,
+    "y_min": 4511495.872732702,
+    "y_max": 4512615.709795199,
+    "utm_epsg": "EPSG:32618"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/nyc_ny_v3/scene_nyc_ny_v3/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/nyc_ny_v3/scene_nyc_ny_v3/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/nyc_ny_v3/scene_nyc_ny_v3/metadata.json"
+  }
+}

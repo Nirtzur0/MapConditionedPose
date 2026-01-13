@@ -1,0 +1,135 @@
+{
+  "scene_id": "scene_denver_co_v2",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/denver_co_v2/scene_denver_co_v2",
+  "bbox_wgs84": {
+    "lon_min": -104.995,
+    "lat_min": 39.745,
+    "lon_max": -104.985,
+    "lat_max": 39.755
+  },
+  "bbox": {
+    "x_min": 500428.3199102531,
+    "x_max": 501285.1455280274,
+    "y_min": 4399455.3491203375,
+    "y_max": 4400565.298937419
+  },
+  "polygon": [
+    [
+      -104.995,
+      39.745
+    ],
+    [
+      -104.985,
+      39.745
+    ],
+    [
+      -104.985,
+      39.755
+    ],
+    [
+      -104.995,
+      39.755
+    ],
+    [
+      -104.995,
+      39.745
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_very_dry_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_concrete"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 2.934502808257059,
+      "sigma": 0.0004478771178564312,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 9270196.062275982,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 7.176954908092949,
+      "sigma": 0.08308894645325823,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        500878.71567789424,
+        4400352.328641926,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          309.59002212321985,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        500882.0320942435,
+        4400148.253360616,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          351.87765406506855,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 2,
+  "bounds": {
+    "x_min": 500428.3199102531,
+    "x_max": 501285.1455280274,
+    "y_min": 4399455.3491203375,
+    "y_max": 4400565.298937419,
+    "utm_epsg": "EPSG:32613"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/denver_co_v2/scene_denver_co_v2/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/denver_co_v2/scene_denver_co_v2/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/denver_co_v2/scene_denver_co_v2/metadata.json"
+  }
+}

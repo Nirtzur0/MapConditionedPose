@@ -3,7 +3,7 @@
 model:
   # Radio Encoder (Temporal Set Transformer)
   radio_encoder:
-    num_cells: 512  # Max number of unique cell IDs
+    num_cells: 2  # Max number of cells in dataset
     num_beams: 64   # Max number of beam IDs
     d_model: 128    # Hidden dimension (Reduced for memory)
     nhead: 4        # Attention heads
@@ -17,9 +17,9 @@ model:
     mac_features_dim: 6   # serving_cell_id, timing_advance, phr, throughput, bler, + padding
     
     # Channel Frequency Response (CFR) - channel estimate from DMRS
-    cfr_enabled: true        # Enable CFR feature encoding
-    cfr_num_cells: 8         # Max cells in CFR
-    cfr_num_subcarriers: 64  # Subcarriers per cell (downsampled from full BW)
+    cfr_enabled: false       # Disabled - CFR not in current dataset
+    cfr_num_cells: 8         # Max cells in CFR (unused when disabled)
+    cfr_num_subcarriers: 64  # Subcarriers per cell (unused when disabled)
   
   # Map Encoder (Vision Transformer)
   map_encoder:
@@ -59,19 +59,21 @@ model:
     patch_size: 64   # High-res patch size (pixels)
     dropout: 0.1
 
-# Training configuration
+# Training configuration - ENHANCED for positioning
 training:
-  batch_size: 4
+  batch_size: 32
   num_epochs: 100
-  learning_rate: 0.0001
+  learning_rate: 0.0003
   weight_decay: 0.01
-  warmup_steps: 1000
+  warmup_steps: 500
   
-  # Loss weights
+  # Loss weights - Emphasize position accuracy
   loss:
-    coarse_weight: 1.0
+    coarse_weight: 1.5       # Increase coarse weight for grid prediction
     fine_weight: 1.0
-    use_physics_loss: false  # Disable physics loss to avoid radio maps
+    position_weight: 0.5     # Add direct position supervision
+    variance_reg_weight: 0.1 # Regularize variance to encourage confident predictions
+    use_physics_loss: false
   
   # Optimizer
   optimizer: adamw
@@ -81,17 +83,17 @@ training:
   dropout: 0.1
   gradient_clip: 1.0
   
-  # Data augmentation (training only)
+  # Data augmentation (training only) - More aggressive for generalization
   augmentation:
     # Feature-level augmentations
-    feature_noise: 0.1         # Gaussian noise std (proportional to feature magnitude)
-    feature_dropout: 0.15      # Probability of zeroing individual features
-    temporal_dropout: 0.2      # Probability of dropping time steps
+    feature_noise: 0.05        # Lower noise (features are already noisy)
+    feature_dropout: 0.1       # Less dropout
+    temporal_dropout: 0.1      # Less temporal dropout
     
     # Map-level augmentations
     random_flip: true          # Random horizontal flip
     random_rotation: true      # Random 90° rotations
-    scale_range: [0.9, 1.1]    # Random scale jitter [min, max]
+    scale_range: [0.95, 1.05]  # Smaller scale jitter
 
 # Dataset configuration
 dataset:
@@ -102,7 +104,7 @@ dataset:
   
   # Map parameters
   map_resolution: 2.0  # meters per pixel
-  scene_extent: [0.0, 0.0, 512.0, 512.0]  # [x_min, y_min, x_max, y_max] in meters
+  scene_extent: [0.0, 0.0, 1200.0, 1200.0]  # [x_min, y_min, x_max, y_max] in meters - FIXED to match actual scene sizes
   
   # Preprocessing
   normalize_features: true
@@ -183,6 +185,6 @@ infrastructure:
   # Logging
   logging:
     use_wandb: false
-    use_comet: false
+    use_comet: true   # Enable Comet ML logging (requires COMET_API_KEY env var)
     project: "transformer-ue-localization"
     log_every_n_steps: 50

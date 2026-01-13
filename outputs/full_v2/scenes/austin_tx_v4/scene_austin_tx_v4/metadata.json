@@ -1,0 +1,135 @@
+{
+  "scene_id": "scene_austin_tx_v4",
+  "scene_dir": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/austin_tx_v4/scene_austin_tx_v4",
+  "bbox_wgs84": {
+    "lon_min": -97.745,
+    "lat_min": 30.265,
+    "lon_max": -97.735,
+    "lat_max": 30.275
+  },
+  "bbox": {
+    "x_min": 620711.5042691091,
+    "x_max": 621685.7621029454,
+    "y_min": 3348816.527610753,
+    "y_max": 3349935.4523925935
+  },
+  "polygon": [
+    [
+      -97.745,
+      30.265
+    ],
+    [
+      -97.735,
+      30.265
+    ],
+    [
+      -97.735,
+      30.275
+    ],
+    [
+      -97.745,
+      30.275
+    ],
+    [
+      -97.745,
+      30.265
+    ]
+  ],
+  "materials": {
+    "ground": "mat-itu_wet_ground",
+    "rooftop": "mat-itu_metal",
+    "wall": "mat-itu_wood"
+  },
+  "material_properties": {
+    "ground": {
+      "epsilon_r": 15.681765188308997,
+      "sigma": 0.031092284541169052,
+      "freq_range_ghz": [
+        1.0,
+        10.0
+      ],
+      "category": "ground"
+    },
+    "rooftop": {
+      "epsilon_r": 1.0,
+      "sigma": 2264926.9565139557,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "rooftop"
+    },
+    "wall": {
+      "epsilon_r": 2.1875378938063976,
+      "sigma": 0.004997934521441412,
+      "freq_range_ghz": [
+        1.0,
+        100.0
+      ],
+      "category": "building"
+    }
+  },
+  "sites": [
+    {
+      "site_id": "tx_0",
+      "site_type": "tx",
+      "position": [
+        620846.306510331,
+        3349041.484514101,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          34.40104585860738,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 0,
+      "sector_id": null,
+      "power_dbm": 43.0
+    },
+    {
+      "site_id": "tx_1",
+      "site_type": "tx",
+      "position": [
+        620902.5753756734,
+        3349456.155936012,
+        25.0
+      ],
+      "height": 25.0,
+      "antenna": {
+        "pattern": "3gpp_38901",
+        "orientation": [
+          198.9219870219959,
+          10.0,
+          0.0
+        ],
+        "polarization": "dual"
+      },
+      "cell_id": 1,
+      "sector_id": null,
+      "power_dbm": 43.0
+    }
+  ],
+  "num_sites": 2,
+  "bounds": {
+    "x_min": 620711.5042691091,
+    "x_max": 621685.7621029454,
+    "y_min": 3348816.527610753,
+    "y_max": 3349935.4523925935,
+    "utm_epsg": "EPSG:32614"
+  },
+  "terrain": {
+    "type": "flat",
+    "config": {}
+  },
+  "files": {
+    "xml": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/austin_tx_v4/scene_austin_tx_v4/scene.xml",
+    "building_map": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/austin_tx_v4/scene_austin_tx_v4/building_map.png",
+    "metadata": "/home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/scenes/austin_tx_v4/scene_austin_tx_v4/metadata.json"
+  }
+}

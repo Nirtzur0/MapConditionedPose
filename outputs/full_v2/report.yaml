@@ -1,0 +1,10 @@
+checkpoints: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/checkpoints
+datasets:
+  test: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/data/dataset_20260112_103706_test.lmdb
+  train: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/data/dataset_20260112_103429_train.lmdb
+  val: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2/data/dataset_20260112_103641_val.lmdb
+duration_formatted: 59.7 minutes
+duration_seconds: 3580.6134991645813
+name: full_v2
+output_dir: /home/ubuntu/projects/CellularPositioningResearch/outputs/full_v2
+timestamp: '2026-01-12T11:03:57.263078'

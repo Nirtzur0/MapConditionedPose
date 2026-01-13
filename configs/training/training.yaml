@@ -6,7 +6,7 @@ model:
   # Radio Encoder (Temporal Transformer)
   radio_encoder:
     type: "SetTransformer"
-    num_cells: 512  # Number of cells in the dataset (max cell embedding size)
+    num_cells: 2  # Max cells in dataset
     num_beams: 64
     d_model: 512
     nhead: 8  # Changed from num_heads
