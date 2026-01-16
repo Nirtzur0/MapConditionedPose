@@ -463,7 +463,8 @@ class TestPredictionHeads:
         fused = torch.randn(batch_size, 768)
         top_k_indices = torch.randint(0, 1024, (batch_size, cfg['top_k']))
         
-        offsets, uncertainties = fine_head(fused, top_k_indices)
+        cell_size = 1.0 / config['model']['coarse_head']['grid_size']
+        offsets, uncertainties = fine_head(fused, top_k_indices, cell_size=cell_size)
         
         assert offsets.shape == (batch_size, cfg['top_k'], 2)
         assert uncertainties.shape == (batch_size, cfg['top_k'], 2)

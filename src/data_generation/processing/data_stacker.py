@@ -47,6 +47,10 @@ class DataStacker:
         if len(all_data['positions']) > 0:
             stacked['positions'] = np.concatenate(all_data['positions'], axis=0)
             stacked['timestamps'] = np.concatenate(all_data['timestamps'], axis=0)
+            if all_data.get('ue_ids'):
+                stacked['ue_ids'] = np.concatenate(all_data['ue_ids'], axis=0)
+            if all_data.get('t_steps'):
+                stacked['t_steps'] = np.concatenate(all_data['t_steps'], axis=0)
         else:
             return {}
 

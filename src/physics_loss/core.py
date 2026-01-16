@@ -10,6 +10,8 @@ import torch.nn as nn
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
+from ..config.feature_schema import RADIO_MAP_CHANNELS
+
 from .differentiable_lookup import differentiable_lookup
 
 
@@ -36,20 +38,17 @@ class PhysicsLossConfig:
     padding_mode: str = 'border'
     
     # Ordered list of channel names in the radio map
-    channel_names: Tuple[str, ...] = (
-        'rsrp', 'rsrq', 'sinr', 'cqi', 'throughput', 
-        'path_gain', 'snr', 'rms_ds', 'mean_delay', 'k_factor'
-    )
+    channel_names: Tuple[str, ...] = RADIO_MAP_CHANNELS
     
     def __post_init__(self):
         if self.feature_weights is None:
-            # Default weights from IMPLEMENTATION_GUIDE.md
+            # Defaults aligned with RADIO_MAP_CHANNELS ordering
             self.feature_weights = {
-                'path_gain': 1.0,   # High weight, most reliable
-                'snr': 0.8,         # High, good signal quality indicator
+                'rsrp': 1.0,        # High weight, most reliable
+                'rsrq': 0.5,        # Medium, affected by NLOS bias
                 'sinr': 0.8,        # High, good signal quality indicator
+                'cqi': 0.3,         # Lower, quantized and noisy
                 'throughput': 0.2,  # Lower, depends on scheduler/load
-                'bler': 0.2,        # Lower, depends on channel conditions
             }
 
 
@@ -95,7 +94,7 @@ class PhysicsLoss(nn.Module):
         Args:
             predicted_xy: (batch, 2) predicted UE positions in meters [x, y]
             observed_features: (batch, C) observed radio features from measurements
-                Features: [path_gain, toa, aoa, snr, sinr, throughput, bler]
+                Features: [rsrp, rsrq, sinr, cqi, throughput] by default
             radio_maps: (batch, C, H, W) precomputed radio map features
                 Same feature channels as observed_features
                 

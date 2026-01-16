@@ -71,7 +71,7 @@ def differentiable_lookup(
     Args:
         predicted_xy: (batch, 2) predicted positions in meters [x, y]
         radio_maps: (batch, C, H, W) precomputed feature grids where:
-            - C: number of features (e.g., 7: path_gain, toa, aoa, snr, sinr, throughput, bler)
+            - C: number of features (e.g., rsrp, rsrq, sinr, cqi, throughput)
             - H, W: spatial resolution (e.g., 512x512 for 1m/pixel)
         map_extent: (x_min, y_min, x_max, y_max) in meters
         padding_mode: How to handle out-of-bounds coordinates

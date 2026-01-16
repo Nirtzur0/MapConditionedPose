@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import logging
 
 from .tensor_ops import _to_numpy
+from src.config.feature_schema import RT_ZARR_KEYS, PHY_ZARR_KEYS, MAC_ZARR_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,8 @@ class RTLayerFeatures:
         n_paths = _to_numpy(self.num_paths)
         
         result = {
-            'rt/rms_delay_spread': rms_ds,
-            'rt/num_paths': n_paths,
+            RT_ZARR_KEYS['rms_delay_spread']: rms_ds,
+            RT_ZARR_KEYS['num_paths']: n_paths,
         }
         
         # Only include K-factor if computed
@@ -62,24 +63,24 @@ class RTLayerFeatures:
              if hasattr(k_fac, 'size') and k_fac.size > 0:
                  result['rt/k_factor'] = k_fac
              elif not hasattr(k_fac, 'size'): # Scalar
-                 result['rt/k_factor'] = k_fac
+                 result[RT_ZARR_KEYS['k_factor']] = k_fac
 
         if self.rms_angular_spread is not None:
-             result['rt/rms_angular_spread'] = _to_numpy(self.rms_angular_spread)
+             result[RT_ZARR_KEYS['rms_angular_spread']] = _to_numpy(self.rms_angular_spread)
         
         if self.toa is not None:
-             result['rt/toa'] = _to_numpy(self.toa)
+             result[RT_ZARR_KEYS['toa']] = _to_numpy(self.toa)
              
         if self.is_nlos is not None:
              # Convert boolean to int for zarr storage? Or keep bool.
-             result['rt/is_nlos'] = _to_numpy(self.is_nlos)
+             result[RT_ZARR_KEYS['is_nlos']] = _to_numpy(self.is_nlos)
              
         # Add path-level features for validation
         if self.path_gains is not None:
-             result['rt/path_gains'] = _to_numpy(self.path_gains)
+             result[RT_ZARR_KEYS['path_gains']] = _to_numpy(self.path_gains)
              
         if self.path_delays is not None:
-             result['rt/path_delays'] = _to_numpy(self.path_delays)
+             result[RT_ZARR_KEYS['path_delays']] = _to_numpy(self.path_delays)
              
         # logger.debug(f"Skipping path-level arrays for Zarr storage (num_paths: {self.num_paths})")
         return result
@@ -120,28 +121,28 @@ class PHYFAPILayerFeatures:
     def to_dict(self) -> Dict[str, np.ndarray]:
         """Convert to dictionary for Zarr storage."""
         d = {
-            'phy_fapi/rsrp': _to_numpy(self.rsrp),
-            'phy_fapi/rsrq': _to_numpy(self.rsrq),
-            'phy_fapi/sinr': _to_numpy(self.sinr),
-            'phy_fapi/cqi': _to_numpy(self.cqi),
-            'phy_fapi/ri': _to_numpy(self.ri),
-            'phy_fapi/pmi': _to_numpy(self.pmi),
+            PHY_ZARR_KEYS['rsrp']: _to_numpy(self.rsrp),
+            PHY_ZARR_KEYS['rsrq']: _to_numpy(self.rsrq),
+            PHY_ZARR_KEYS['sinr']: _to_numpy(self.sinr),
+            PHY_ZARR_KEYS['cqi']: _to_numpy(self.cqi),
+            PHY_ZARR_KEYS['ri']: _to_numpy(self.ri),
+            PHY_ZARR_KEYS['pmi']: _to_numpy(self.pmi),
         }
         if self.l1_rsrp_beams is not None:
-            d['phy_fapi/l1_rsrp_beams'] = _to_numpy(self.l1_rsrp_beams)
+            d[PHY_ZARR_KEYS['l1_rsrp_beams']] = _to_numpy(self.l1_rsrp_beams)
         if self.best_beam_ids is not None:
-            d['phy_fapi/best_beam_ids'] = _to_numpy(self.best_beam_ids)
+            d[PHY_ZARR_KEYS['best_beam_ids']] = _to_numpy(self.best_beam_ids)
         if self.channel_matrix is not None:
-            d['phy_fapi/channel_matrix'] = _to_numpy(self.channel_matrix)
+            d[PHY_ZARR_KEYS['channel_matrix']] = _to_numpy(self.channel_matrix)
         # CFR features - critical for positioning
         if self.cfr_magnitude is not None:
-            d['phy_fapi/cfr_magnitude'] = _to_numpy(self.cfr_magnitude)
+            d[PHY_ZARR_KEYS['cfr_magnitude']] = _to_numpy(self.cfr_magnitude)
         if self.cfr_phase is not None:
-            d['phy_fapi/cfr_phase'] = _to_numpy(self.cfr_phase)
+            d[PHY_ZARR_KEYS['cfr_phase']] = _to_numpy(self.cfr_phase)
         if self.capacity_mbps is not None:
-            d['phy_fapi/capacity_mbps'] = _to_numpy(self.capacity_mbps)
+            d[PHY_ZARR_KEYS['capacity_mbps']] = _to_numpy(self.capacity_mbps)
         if self.condition_number is not None:
-            d['phy_fapi/condition_number'] = _to_numpy(self.condition_number)
+            d[PHY_ZARR_KEYS['condition_number']] = _to_numpy(self.condition_number)
         return d
 
 
@@ -173,21 +174,21 @@ class MACRRCLayerFeatures:
     def to_dict(self) -> Dict[str, np.ndarray]:
         """Convert to dictionary for Zarr storage."""
         d = {
-            'mac_rrc/serving_cell_id': _to_numpy(self.serving_cell_id),
-            'mac_rrc/neighbor_cell_ids': _to_numpy(self.neighbor_cell_ids),
-            'mac_rrc/timing_advance': _to_numpy(self.timing_advance),
+            MAC_ZARR_KEYS['serving_cell_id']: _to_numpy(self.serving_cell_id),
+            MAC_ZARR_KEYS['neighbor_cell_ids']: _to_numpy(self.neighbor_cell_ids),
+            MAC_ZARR_KEYS['timing_advance']: _to_numpy(self.timing_advance),
         }
         
         if self.tracking_area_code is not None:
-            d['mac_rrc/tracking_area_code'] = _to_numpy(self.tracking_area_code)
+            d[MAC_ZARR_KEYS['tracking_area_code']] = _to_numpy(self.tracking_area_code)
         if self.dl_throughput_mbps is not None:
-            d['mac_rrc/dl_throughput_mbps'] = _to_numpy(self.dl_throughput_mbps)
+            d[MAC_ZARR_KEYS['dl_throughput_mbps']] = _to_numpy(self.dl_throughput_mbps)
         if self.ul_throughput_mbps is not None:
-            d['mac_rrc/ul_throughput_mbps'] = _to_numpy(self.ul_throughput_mbps)
+            d[MAC_ZARR_KEYS['ul_throughput_mbps']] = _to_numpy(self.ul_throughput_mbps)
         if self.bler is not None:
-            d['mac_rrc/bler'] = _to_numpy(self.bler)
+            d[MAC_ZARR_KEYS['bler']] = _to_numpy(self.bler)
         if self.handover_events is not None:
-            d['mac_rrc/handover_events'] = _to_numpy(self.handover_events)
+            d[MAC_ZARR_KEYS['handover_events']] = _to_numpy(self.handover_events)
         if self.time_since_handover is not None:
-            d['mac_rrc/time_since_handover'] = _to_numpy(self.time_since_handover)
+            d[MAC_ZARR_KEYS['time_since_handover']] = _to_numpy(self.time_since_handover)
         return d

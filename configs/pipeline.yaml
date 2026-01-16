@@ -1,0 +1,217 @@
+# Unified pipeline configuration
+
+experiment:
+  name: experiment
+  output_dir: outputs
+  clean: false
+
+pipeline:
+  skip_scenes: false
+  skip_data: false
+  skip_training: false
+
+scenes:
+  cities:
+    - name: Boulder, CO
+      bbox: [-105.280, 40.014, -105.270, 40.022]
+      split: train
+    - name: Austin, TX
+      bbox: [-97.745, 30.265, -97.735, 30.275]
+      split: train
+    - name: Seattle, WA
+      bbox: [-122.340, 47.605, -122.330, 47.615]
+      split: train
+    - name: Denver, CO
+      bbox: [-104.995, 39.745, -104.985, 39.755]
+      split: train
+    - name: Chicago, IL
+      bbox: [-87.630, 41.880, -87.620, 41.890]
+      split: val
+    - name: NYC, NY
+      bbox: [-73.990, 40.750, -73.980, 40.760]
+      split: test
+  num_tx: 2
+  tx_variations: 5
+  site_strategy: random
+
+data_generation:
+  carrier_frequency_hz: 3500000000.0
+  bandwidth_hz: 100000000.0
+  tx_power_dbm: 43.0
+  noise_figure_db: 9.0
+  use_mock_mode: false
+  max_depth: 5
+  num_samples: 1000000
+  enable_diffraction: true
+  num_ue_per_tile: 150
+  ue_height_range: [1.5, 1.5]
+  ue_velocity_range: [0.0, 1.5]
+  num_reports_per_ue: 10
+  report_interval_ms: 200.0
+  enable_k_factor: false
+  enable_beam_management: true
+  num_beams: 64
+  max_neighbors: 8
+  measurement_dropout_rates: {}
+  measurement_dropout_seed: 42
+  quantization_enabled: true
+  zarr_chunk_size: 100
+  max_stored_paths: 256
+  max_stored_sites: 16
+  split_ratios:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+
+model:
+  radio_encoder:
+    num_cells: 2
+    num_beams: 64
+    d_model: 128
+    nhead: 4
+    num_layers: 3
+    dropout: 0.1
+    max_seq_len: 20
+    rt_features_dim: 16
+    phy_features_dim: 8
+    mac_features_dim: 6
+    cfr_enabled: false
+    cfr_num_cells: 8
+    cfr_num_subcarriers: 64
+  map_encoder:
+    use_e2_equivariant: false
+    num_group_elements: 8
+    img_size: 256
+    patch_size: 16
+    in_channels: 10
+    d_model: 192
+    nhead: 4
+    num_layers: 3
+    dropout: 0.1
+    radio_map_channels: 5
+    osm_map_channels: 5
+    cache_size: 32
+    cache_mode: eval
+  fusion:
+    d_fusion: 256
+    nhead: 4
+    dropout: 0.1
+    num_query_tokens: 4
+  coarse_head:
+    grid_size: 32
+    d_input: 256
+    dropout: 0.1
+  fine_head:
+    d_input: 256
+    d_hidden: 256
+    top_k: 5
+    patch_size: 64
+    use_local_map: true
+    offset_scale: 1.5
+    sigma_min_ratio: 0.03
+    sigma_max_ratio: 3.2
+    dropout: 0.1
+
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  warmup_steps: 500
+  loss:
+    coarse_weight: 1.5
+    fine_weight: 1.0
+    position_weight: 0.5
+    variance_reg_weight: 0.1
+    use_physics_loss: false
+    auxiliary:
+      enabled: true
+      weight: 0.1
+      input: radio
+      tasks:
+        nlos: 1.0
+        num_paths: 0.5
+        timing_advance: 0.5
+  optimizer: adamw
+  scheduler: cosine_with_warmup
+  dropout: 0.1
+  gradient_clip: 1.0
+  gradient_clip_val: 1.0
+  augmentation:
+    feature_noise: 0.05
+    feature_dropout: 0.1
+    temporal_dropout: 0.1
+    random_flip: true
+    random_rotation: true
+    scale_range: [0.95, 1.05]
+
+dataset:
+  train_lmdb_paths: []
+  val_lmdb_paths: []
+  test_lmdb_paths: []
+  train_zarr_paths: []
+  val_zarr_paths: []
+  test_zarr_paths: []
+  map_resolution: 1.0
+  scene_extent: 512
+  normalize_features: true
+  handle_missing_values: mask
+  split_seed: 42
+  map_cache_size: 16
+  sequence_length: 10
+  max_cells: 2
+
+physics_loss:
+  enabled: false
+  lambda_phys: 0.1
+  feature_weights:
+    rsrp: 1.0
+    rsrq: 0.5
+    sinr: 0.8
+    cqi: 0.3
+    throughput: 0.2
+  loss_type: mse
+  huber_delta: 1.0
+  normalize_features: true
+  radio_maps_dir: data/radio_maps
+  refinement:
+    enabled: false
+    num_steps: 10
+    learning_rate: 0.1
+    min_confidence_threshold: 0.6
+    clip_to_extent: true
+
+evaluation:
+  metrics:
+    - median_error
+    - rmse
+    - percentile_67
+    - percentile_90
+    - percentile_95
+    - success_rate_5m
+    - success_rate_10m
+  error_bins: [0, 5, 10, 20, 50, 100, 200, 500]
+  viz_frequency: 5
+
+infrastructure:
+  accelerator: gpu
+  devices: 1
+  precision: 16-mixed
+  num_workers: 0
+  checkpoint:
+    dirpath: checkpoints
+    save_top_k: 3
+    monitor: val_median_error
+    mode: min
+  early_stopping:
+    patience: 10
+    monitor: val_median_error
+    mode: min
+  logging:
+    use_wandb: false
+    use_comet: true
+    project: transformer-ue-localization
+    log_every_n_steps: 50
+
+seed: 42
+deterministic: false

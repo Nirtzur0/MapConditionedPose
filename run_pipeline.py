@@ -15,9 +15,15 @@ import time
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
-from dataclasses import dataclass, field
+from typing import Optional
 import yaml
+from omegaconf import OmegaConf
+
+from src.config.schema import (
+    load_pipeline_config,
+    apply_quick_test_overrides,
+    apply_robust_overrides,
+)
 
 # Setup logging first
 logging.basicConfig(
@@ -32,152 +38,20 @@ for name in ['matplotlib', 'PIL', 'tensorflow', 'numba']:
     logging.getLogger(name).setLevel(logging.WARNING)
 
 
-@dataclass
-class ExperimentConfig:
-    """Unified configuration for the entire pipeline."""
-    
-    # Experiment metadata
-    name: str = "experiment"
-    output_dir: Path = field(default_factory=lambda: Path("outputs"))
-    clean: bool = False
-    
-    # Scene generation - Focus on 1-2 TX per scene with many placement variations
-    # This ensures the model learns to generalize across different TX configurations
-    scenes: Dict = field(default_factory=lambda: {
-        'cities': [
-            # Training cities (verified coordinates - downtown areas)
-            {'name': 'Boulder, CO', 'bbox': [-105.280, 40.014, -105.270, 40.022], 'split': 'train'},
-            {'name': 'Austin, TX', 'bbox': [-97.745, 30.265, -97.735, 30.275], 'split': 'train'},
-            {'name': 'Seattle, WA', 'bbox': [-122.340, 47.605, -122.330, 47.615], 'split': 'train'},
-            {'name': 'Denver, CO', 'bbox': [-104.995, 39.745, -104.985, 39.755], 'split': 'train'},
-            # Validation cities
-            {'name': 'Chicago, IL', 'bbox': [-87.630, 41.880, -87.620, 41.890], 'split': 'val'},
-            # Test cities (unseen during training)
-            {'name': 'NYC, NY', 'bbox': [-73.990, 40.750, -73.980, 40.760], 'split': 'test'},
-        ],
-        'num_tx': 2,  # 1-2 TX per scene - simpler, more realistic
-        'tx_variations': 5,  # More placement variations to compensate
-        'site_strategy': 'random'
-    })
-    
-    # Data generation
-    data: Dict = field(default_factory=lambda: {
-        'carrier_freq_hz': 3.5e9,
-        'bandwidth_hz': 100e6,
-        'num_ue_per_tile': 150,  # Good coverage
-        'num_reports_per_ue': 10,
-        'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
-    })
-    
-    # Training
-    training: Dict = field(default_factory=lambda: {
-        'epochs': 50,
-        'batch_size': 32,
-        'learning_rate': 0.0003,
-        'num_workers': 0  # LMDB works with 0 workers
-    })
-    
-    # Pipeline control
-    skip_scenes: bool = False
-    skip_data: bool = False
-    skip_training: bool = False
-    
-    @classmethod
-    def from_yaml(cls, path: Path) -> 'ExperimentConfig':
-        """Load config from YAML file."""
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        return cls(**data)
-    
-    @classmethod
-    def quick_test(cls) -> 'ExperimentConfig':
-        """Create a quick test configuration."""
-        return cls(
-            name="quick_test",
-            scenes={
-                'cities': [{'name': 'Boulder, CO', 'bbox': [-105.275, 40.016, -105.272, 40.018]}],
-                'num_tx': 2,
-                'tx_variations': 1,
-                'site_strategy': 'random'
-            },
-            data={
-                'carrier_freq_hz': 3.5e9,
-                'bandwidth_hz': 100e6,
-                'num_ue_per_tile': 20,
-                'num_reports_per_ue': 5,
-                'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
-            },
-            training={
-                'epochs': 3,
-                'batch_size': 8,
-                'learning_rate': 0.0002,
-                'num_workers': 0
-            }
-        )
-    
-    @classmethod
-    def robust_training(cls) -> 'ExperimentConfig':
-        """Create a robust training configuration with extensive data diversity.
-        
-        This configuration is designed for best positioning accuracy:
-        - 12 cities (8 train, 2 val, 2 test) for geographic diversity
-        - 3 TX variations per city = 36 unique scene configurations
-        - 1-2 TX per scene (realistic deployment)
-        - Many TX placement variations for diversity
-        - 150 UE positions per tile for good coverage
-        """
-        return cls(
-            name="robust_training",
-            scenes={
-                'cities': [
-                    # Training cities (verified downtown coordinates)
-                    {'name': 'Boulder, CO', 'bbox': [-105.280, 40.014, -105.270, 40.022], 'split': 'train'},
-                    {'name': 'Austin, TX', 'bbox': [-97.745, 30.265, -97.735, 30.275], 'split': 'train'},
-                    {'name': 'Seattle, WA', 'bbox': [-122.340, 47.605, -122.330, 47.615], 'split': 'train'},
-                    {'name': 'Denver, CO', 'bbox': [-104.995, 39.745, -104.985, 39.755], 'split': 'train'},
-                    {'name': 'Portland, OR', 'bbox': [-122.680, 45.520, -122.670, 45.530], 'split': 'train'},
-                    {'name': 'Boston, MA', 'bbox': [-71.060, 42.355, -71.050, 42.365], 'split': 'train'},
-                    # Validation cities
-                    {'name': 'Chicago, IL', 'bbox': [-87.630, 41.880, -87.620, 41.890], 'split': 'val'},
-                    {'name': 'Phoenix, AZ', 'bbox': [-112.075, 33.450, -112.065, 33.460], 'split': 'val'},
-                    # Test cities (completely unseen)
-                    {'name': 'NYC, NY', 'bbox': [-73.990, 40.750, -73.980, 40.760], 'split': 'test'},
-                    {'name': 'Atlanta, GA', 'bbox': [-84.390, 33.755, -84.380, 33.765], 'split': 'test'},
-                ],
-                'num_tx': 2,            # 1-2 TX per scene (realistic)
-                'tx_variations': 5,      # Many placement variations
-                'site_strategy': 'random'
-            },
-            data={
-                'carrier_freq_hz': 3.5e9,
-                'bandwidth_hz': 100e6,
-                'num_ue_per_tile': 150,
-                'num_reports_per_ue': 10,
-                'split_ratios': {'train': 0.70, 'val': 0.15, 'test': 0.15}
-            },
-            training={
-                'epochs': 50,
-                'batch_size': 32,
-                'learning_rate': 0.0003,
-                'num_workers': 0
-            }
-        )
-
-
 class Pipeline:
     """Simplified pipeline with direct function calls."""
     
-    def __init__(self, config: ExperimentConfig):
+    def __init__(self, config):
         self.config = config
         self.project_root = Path(__file__).parent
         self.start_time = time.time()
         
         # Derived paths (convention over configuration)
-        self.output_dir = self.project_root / "outputs" / config.name
+        self.output_dir = Path(self.config.experiment.output_dir) / self.config.experiment.name
         
         # Use existing scenes if available, otherwise create new
         existing_scenes = self.project_root / "data" / "scenes"
-        if config.skip_scenes and existing_scenes.exists():
+        if self.config.pipeline.skip_scenes and existing_scenes.exists():
             self.scene_dir = existing_scenes
         else:
             self.scene_dir = self.output_dir / "scenes"
@@ -194,13 +68,12 @@ class Pipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Save config
-        with open(self.output_dir / "config.yaml", 'w') as f:
-            yaml.dump({
-                'name': config.name,
-                'scenes': config.scenes,
-                'data': config.data,
-                'training': config.training
-            }, f, default_flow_style=False)
+        self._save_config()
+
+    def _save_config(self):
+        config_path = self.output_dir / "config.yaml"
+        with open(config_path, 'w') as f:
+            yaml.safe_dump(OmegaConf.to_container(self.config, resolve=True), f, sort_keys=False)
     
     def log(self, msg: str, level: str = "info"):
         """Simple logging."""
@@ -209,16 +82,16 @@ class Pipeline:
     def run(self) -> int:
         """Execute the pipeline."""
         try:
-            self.log(f"Starting pipeline: {self.config.name}")
+            self.log(f"Starting pipeline: {self.config.experiment.name}")
             self.log(f"Output directory: {self.output_dir}")
             
-            if not self.config.skip_scenes:
+            if not self.config.pipeline.skip_scenes:
                 self.generate_scenes()
             
-            if not self.config.skip_data:
+            if not self.config.pipeline.skip_data:
                 self.generate_data()
             
-            if not self.config.skip_training:
+            if not self.config.pipeline.skip_training:
                 self.train_model()
             
             self.generate_report()
@@ -243,16 +116,16 @@ class Pipeline:
         from src.scene_generation import SceneGenerator, SitePlacer
         
         scene_config = self.config.scenes
-        cities = scene_config.get('cities', [])
-        tx_variations = scene_config.get('tx_variations', 1)
+        cities = scene_config.cities
+        tx_variations = scene_config.tx_variations
         
         total_scenes = len(cities) * tx_variations
         self.log(f"Generating {len(cities)} cities × {tx_variations} TX variations = {total_scenes} scenes")
         
         for city in cities:
-            city_name = city.get('name', 'unknown')
-            bbox = city.get('bbox')
-            split = city.get('split', 'train')  # Track which split this belongs to
+            city_name = city.name
+            bbox = city.bbox
+            split = city.split  # Track which split this belongs to
             
             # Generate multiple TX variations per city
             for var_idx in range(tx_variations):
@@ -268,7 +141,7 @@ class Pipeline:
                 generator = SceneGenerator(
                     scene_builder_path=str(self.project_root / "src" / "scene_builder"),
                     site_placer=SitePlacer(
-                        strategy=scene_config.get('site_strategy', 'random'),
+                        strategy=scene_config.site_strategy,
                         seed=hash(f"{city_name}_{var_idx}") % (2**32)  # Reproducible random seed
                     ),
                     output_dir=city_scene_dir
@@ -286,7 +159,7 @@ class Pipeline:
                 result = generator.generate(
                     polygon_points=polygon,
                     scene_id=scene_id,
-                    site_config={'num_tx': scene_config.get('num_tx', 5)}
+                    site_config={'num_tx': scene_config.num_tx}
                 )
                 
                 # Store split metadata for later use in data generation
@@ -306,25 +179,42 @@ class Pipeline:
         from src.data_generation.multi_layer_generator import MultiLayerDataGenerator
         from src.data_generation.config import DataGenerationConfig
         
-        data_config = self.config.data
+        data_config = self.config.data_generation
         
         # Create data generation config
         config = DataGenerationConfig(
             scene_dir=self.scene_dir,
             scene_metadata_path=self.scene_dir / 'metadata.json',
-            carrier_frequency_hz=data_config.get('carrier_freq_hz', 3.5e9),
-            bandwidth_hz=data_config.get('bandwidth_hz', 100e6),
-            tx_power_dbm=data_config.get('tx_power_dbm', 43.0),
-            noise_figure_db=data_config.get('noise_figure_db', 9.0),
-            num_ue_per_tile=data_config.get('num_ue_per_tile', 100),
-            num_reports_per_ue=data_config.get('num_reports_per_ue', 10),
+            carrier_frequency_hz=data_config.carrier_frequency_hz,
+            bandwidth_hz=data_config.bandwidth_hz,
+            tx_power_dbm=data_config.tx_power_dbm,
+            noise_figure_db=data_config.noise_figure_db,
+            use_mock_mode=data_config.use_mock_mode,
+            max_depth=data_config.max_depth,
+            num_samples=data_config.num_samples,
+            enable_diffraction=data_config.enable_diffraction,
+            num_ue_per_tile=data_config.num_ue_per_tile,
+            ue_height_range=tuple(data_config.ue_height_range),
+            ue_velocity_range=tuple(data_config.ue_velocity_range),
+            num_reports_per_ue=data_config.num_reports_per_ue,
+            report_interval_ms=data_config.report_interval_ms,
+            enable_k_factor=data_config.enable_k_factor,
+            enable_beam_management=data_config.enable_beam_management,
+            num_beams=data_config.num_beams,
+            max_neighbors=data_config.max_neighbors,
+            measurement_dropout_rates=data_config.measurement_dropout_rates,
+            measurement_dropout_seed=data_config.measurement_dropout_seed,
+            quantization_enabled=data_config.quantization_enabled,
             output_dir=self.data_dir,
+            zarr_chunk_size=data_config.zarr_chunk_size,
+            max_stored_paths=data_config.max_stored_paths,
+            max_stored_sites=data_config.max_stored_sites,
         )
         
         # Generate dataset
         generator = MultiLayerDataGenerator(config)
         
-        split_ratios = data_config.get('split_ratios', {'train': 0.70, 'val': 0.15, 'test': 0.15})
+        split_ratios = data_config.split_ratios
         
         output_paths = generator.generate_dataset(
             create_splits=True,
@@ -369,74 +259,25 @@ class Pipeline:
         self.log(f"  Val: {self.val_path if self.val_path else 'None (will use train for validation)'}")
         self.log(f"  Test: {self.test_path}")
         
-        # Load base model config and merge with pipeline settings
-        model_config_path = Path("configs/model.yaml")
-        if model_config_path.exists():
-            with open(model_config_path) as f:
-                base_config = yaml.safe_load(f)
-        else:
-            # Fallback default config
-            base_config = {}
-        
         # Determine if using LMDB or Zarr based on file extension
         is_lmdb = str(self.train_path).endswith('.lmdb')
-        
-        # Create training config by merging base config with pipeline settings
-        training_config = {
-            'dataset': {
-                'train_lmdb_paths' if is_lmdb else 'train_zarr_paths': [str(self.train_path)],
-                'val_lmdb_paths' if is_lmdb else 'val_zarr_paths': [str(self.val_path)] if self.val_path else [],
-                'test_lmdb_paths' if is_lmdb else 'test_zarr_paths': [str(self.test_path)] if self.test_path else [],
-                'map_resolution': 1.0,
-                'scene_extent': 512,
-                'normalize_features': True,
-                'handle_missing_values': 'mask'
-            },
-            'training': {
-                **base_config.get('training', {}),
-                **self.config.training,
-            },
-            'infrastructure': {
-                'accelerator': 'auto',
-                'devices': 1,
-                'num_workers': 0,  # Use 0 to avoid LMDB multiprocessing issues
-                'precision': '32-true',
-                'checkpoint': {
-                    'dirpath': str(self.checkpoint_dir),
-                    'monitor': 'val_median_error',
-                    'mode': 'min',
-                    'save_top_k': 3
-                },
-                'early_stopping': {
-                    'monitor': 'val_median_error',
-                    'patience': 10,
-                    'mode': 'min'
-                },
-                'logging': {
-                    'use_comet': bool(os.environ.get('COMET_API_KEY')),
-                    'use_wandb': False,
-                    'project': 'ue-localization',
-                    'log_every_n_steps': 50
-                }
-            },
-            # Use full model config from base
-            'model': base_config.get('model', {
-                'name': 'MapConditionedTransformer',
-                'radio_encoder': {'type': 'SetTransformer', 'd_model': 256, 'nhead': 8, 'num_layers': 4, 'num_cells': 512, 'num_beams': 64},
-                'map_encoder': {'d_model': 384, 'nhead': 6, 'num_layers': 6, 'patch_size': 16},
-                'fusion': {'d_fusion': 384, 'nhead': 6},
-                'coarse_head': {'grid_size': 32, 'd_input': 384},
-                'fine_head': {'type': 'heteroscedastic', 'd_input': 512, 'd_hidden': 256, 'top_k': 5, 'patch_size': 64}
-            }),
-            'seed': 42,
-            'deterministic': False
-        }
-        
-        # Save training config
-        config_path = self.checkpoint_dir / "training_config.yaml"
+
+        dataset_cfg = self.config.dataset
+        if is_lmdb:
+            dataset_cfg.train_lmdb_paths = [str(self.train_path)]
+            dataset_cfg.val_lmdb_paths = [str(self.val_path)] if self.val_path else []
+            dataset_cfg.test_lmdb_paths = [str(self.test_path)] if self.test_path else []
+        else:
+            dataset_cfg.train_zarr_paths = [str(self.train_path)]
+            dataset_cfg.val_zarr_paths = [str(self.val_path)] if self.val_path else []
+            dataset_cfg.test_zarr_paths = [str(self.test_path)] if self.test_path else []
+
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_path, 'w') as f:
-            yaml.dump(training_config, f, default_flow_style=False)
+        self.config.infrastructure.checkpoint.dirpath = str(self.checkpoint_dir)
+
+        # Save updated config (includes dataset paths)
+        self._save_config()
+        config_path = self.output_dir / "config.yaml"
         
         # Train using Lightning
         from src.training import UELocalizationLightning
@@ -445,32 +286,36 @@ class Pipeline:
         
         model = UELocalizationLightning(str(config_path))
         
+        checkpoint_cfg = self.config.infrastructure.checkpoint
+        early_cfg = self.config.infrastructure.early_stopping
+
         callbacks = [
             ModelCheckpoint(
                 dirpath=str(self.checkpoint_dir),
                 filename='model-{epoch:02d}-{val_median_error:.2f}',
-                monitor='val_median_error',
-                mode='min',
-                save_top_k=3,
+                monitor=checkpoint_cfg.monitor,
+                mode=checkpoint_cfg.mode,
+                save_top_k=checkpoint_cfg.save_top_k,
                 save_last=True
             ),
             EarlyStopping(
-                monitor='val_median_error',
-                patience=10,
-                mode='min'
+                monitor=early_cfg.monitor,
+                patience=early_cfg.patience,
+                mode=early_cfg.mode
             )
         ]
         
         trainer = pl.Trainer(
-            max_epochs=self.config.training.get('epochs', 30),
-            accelerator='auto',
-            devices=1,
+            max_epochs=self.config.training.num_epochs,
+            accelerator=self.config.infrastructure.accelerator,
+            devices=self.config.infrastructure.devices,
+            precision=self.config.infrastructure.precision,
             callbacks=callbacks,
             enable_progress_bar=True,
-            log_every_n_steps=50
+            log_every_n_steps=self.config.infrastructure.logging.log_every_n_steps
         )
         
-        self.log(f"Training for {self.config.training.get('epochs', 30)} epochs...")
+        self.log(f"Training for {self.config.training.num_epochs} epochs...")
         trainer.fit(model)
         
         if self.test_path:
@@ -490,7 +335,7 @@ class Pipeline:
         duration = time.time() - self.start_time
         
         report = {
-            'name': self.config.name,
+            'name': self.config.experiment.name,
             'timestamp': datetime.now().isoformat(),
             'duration_seconds': duration,
             'duration_formatted': f"{duration/60:.1f} minutes",
@@ -522,22 +367,21 @@ def main():
     
     args = parser.parse_args()
     
-    # Create config
+    default_config_path = Path("configs/pipeline.yaml")
+    config_path = args.config or default_config_path
+    config = load_pipeline_config(config_path)
+
     if args.quick_test:
-        config = ExperimentConfig.quick_test()
-    elif args.robust:
-        config = ExperimentConfig.robust_training()
-    elif args.config:
-        config = ExperimentConfig.from_yaml(args.config)
-    else:
-        config = ExperimentConfig()
+        config = apply_quick_test_overrides(config)
+    if args.robust:
+        config = apply_robust_overrides(config)
     
     # Apply overrides
     if args.name:
-        config.name = args.name
-    config.skip_scenes = args.skip_scenes
-    config.skip_data = args.skip_data
-    config.skip_training = args.skip_training
+        config.experiment.name = args.name
+    config.pipeline.skip_scenes = args.skip_scenes
+    config.pipeline.skip_data = args.skip_data
+    config.pipeline.skip_training = args.skip_training
     
     # Run pipeline
     pipeline = Pipeline(config)

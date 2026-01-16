@@ -29,6 +29,7 @@ except ImportError:
     logger.warning("Zarr datasets not available (Zarr package not installed)")
 from ..datasets.augmentations import RadioAugmentation
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
+from ..config.feature_schema import RTFeatureIndex, PHYFeatureIndex, MACFeatureIndex
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,20 @@ class UELocalizationLightning(pl.LightningModule):
             'position_weight': self.config['training']['loss'].get('position_weight', 0.2),
         }
 
+        aux_cfg = self.config['training']['loss'].get('auxiliary', {})
+        self.aux_enabled = aux_cfg.get('enabled', False)
+        self.aux_weight = aux_cfg.get('weight', 0.0)
+        self.aux_task_weights = aux_cfg.get('tasks', {}) or {}
+
         # Augmentation (GPU)
         augmentation_config = self.config['training'].get('augmentation', None)
         self.augmentor = RadioAugmentation(augmentation_config)
         
         # Physics loss (if enabled)
-        self.use_physics_loss = self.config['training']['loss'].get('use_physics_loss', False)
+        self.use_physics_loss = (
+            self.config['training']['loss'].get('use_physics_loss', False)
+            or self.config.get('physics_loss', {}).get('enabled', False)
+        )
         if self.use_physics_loss:
             scene_extent = self.config['dataset']['scene_extent']
             if isinstance(scene_extent, (list, tuple)):
@@ -174,6 +183,7 @@ class UELocalizationLightning(pl.LightningModule):
             batch['measurements'],
             batch['radio_map'],
             batch['osm_map'],
+            scene_idx=batch.get('scene_idx'),
         )
     
     def _extract_observed_features(self, measurements: Dict) -> torch.Tensor:
@@ -181,32 +191,76 @@ class UELocalizationLightning(pl.LightningModule):
         Extract and summarize observed radio features from measurements.
         
         Returns:
-            Aggregated features: [batch, 5] (path_gain, snr, sinr, throughput, bler)
+            Aggregated features: [batch, 5] (rsrp, rsrq, sinr, cqi, throughput)
         """
-        batch_size = measurements['rt_features'].shape[0]
-        device = measurements['rt_features'].device
-        
         # Extract features (use mean across temporal dimension, ignoring masked values)
         mask = measurements['mask']  # (batch, seq_len)
+        mask_f = mask.float()
+        denom = mask_f.sum(dim=1) + 1e-6
         
-        # RT features: path_gain (0)
-        rt_features = measurements['rt_features']  # (batch, seq_len, 10 or 8)
-        path_gain = (rt_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        
-        # PHY features: snr (2), sinr (3)
+        # PHY features: rsrp, rsrq, sinr, cqi
         phy_features = measurements['phy_features']  # (batch, seq_len, 8)
-        snr = (phy_features[:, :, 2] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        sinr = (phy_features[:, :, 3] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        rsrp = (phy_features[:, :, PHYFeatureIndex.RSRP] * mask_f).sum(dim=1) / denom
+        rsrq = (phy_features[:, :, PHYFeatureIndex.RSRQ] * mask_f).sum(dim=1) / denom
+        sinr = (phy_features[:, :, PHYFeatureIndex.SINR] * mask_f).sum(dim=1) / denom
+        cqi = (phy_features[:, :, PHYFeatureIndex.CQI] * mask_f).sum(dim=1) / denom
         
-        # MAC features: throughput (0), bler (1)
+        # MAC features: throughput
         mac_features = measurements['mac_features']  # (batch, seq_len, 6)
-        throughput = (mac_features[:, :, 0] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
-        bler = (mac_features[:, :, 1] * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+        throughput = (mac_features[:, :, MACFeatureIndex.DL_THROUGHPUT] * mask_f).sum(dim=1) / denom
         
         # Stack into (batch, 5)
-        observed = torch.stack([path_gain, snr, sinr, throughput, bler], dim=1)
+        observed = torch.stack([rsrp, rsrq, sinr, cqi, throughput], dim=1)
         
         return observed
+
+    def _extract_aux_targets(self, measurements: Dict) -> Dict[str, torch.Tensor]:
+        """Extract auxiliary targets from measurement sequences."""
+        mask = measurements['mask']  # (batch, seq_len)
+        mask_f = mask.float()
+        denom = mask_f.sum(dim=1) + 1e-6
+
+        rt_features = measurements['rt_features']
+        mac_features = measurements['mac_features']
+
+        nlos = (rt_features[:, :, RTFeatureIndex.IS_NLOS] * mask_f).sum(dim=1) / denom
+        num_paths = (rt_features[:, :, RTFeatureIndex.NUM_PATHS] * mask_f).sum(dim=1) / denom
+        timing_advance = (mac_features[:, :, MACFeatureIndex.TIMING_ADVANCE] * mask_f).sum(dim=1) / denom
+
+        return {
+            'nlos': nlos,
+            'num_paths': num_paths,
+            'timing_advance': timing_advance,
+        }
+
+    def _compute_aux_loss(self, aux_outputs: Dict[str, torch.Tensor], aux_targets: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Compute auxiliary multi-task loss."""
+        losses = []
+        if aux_outputs is None:
+            return torch.tensor(0.0, device=self.device)
+
+        if 'nlos' in aux_outputs and 'nlos' in aux_targets:
+            weight = self.aux_task_weights.get('nlos', 1.0)
+            losses.append(weight * torch.nn.functional.binary_cross_entropy_with_logits(
+                aux_outputs['nlos'],
+                aux_targets['nlos'],
+            ))
+        if 'num_paths' in aux_outputs and 'num_paths' in aux_targets:
+            weight = self.aux_task_weights.get('num_paths', 1.0)
+            losses.append(weight * torch.nn.functional.smooth_l1_loss(
+                aux_outputs['num_paths'],
+                aux_targets['num_paths'],
+            ))
+        if 'timing_advance' in aux_outputs and 'timing_advance' in aux_targets:
+            weight = self.aux_task_weights.get('timing_advance', 1.0)
+            losses.append(weight * torch.nn.functional.smooth_l1_loss(
+                aux_outputs['timing_advance'],
+                aux_targets['timing_advance'],
+            ))
+
+        if not losses:
+            return torch.tensor(0.0, device=self.device)
+        return torch.stack(losses).sum()
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         """Run a single training step."""
@@ -250,16 +304,23 @@ class UELocalizationLightning(pl.LightningModule):
             'cell_grid': batch['cell_grid'],
         }
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
+
+        if self.aux_enabled:
+            aux_targets = self._extract_aux_targets(batch['measurements'])
+            aux_loss = self._compute_aux_loss(outputs.get('aux_outputs'), aux_targets)
+            losses['aux_loss'] = aux_loss
+            losses['loss'] = losses['loss'] + self.aux_weight * aux_loss
         
         # Add physics loss if enabled
-        if self.use_physics_loss and 'radio_maps' in batch:
+        radio_maps = batch.get('radio_maps', batch.get('radio_map'))
+        if self.use_physics_loss and radio_maps is not None:
             pred_position = outputs['predicted_position']
             observed_features = batch.get('observed_features', self._extract_observed_features(batch['measurements']))
             
             physics_loss = self.physics_loss_fn(
                 predicted_xy=pred_position,
                 observed_features=observed_features,
-                radio_maps=batch['radio_maps'],
+                radio_maps=radio_maps,
             )
             
             losses['physics_loss'] = physics_loss
@@ -272,6 +333,8 @@ class UELocalizationLightning(pl.LightningModule):
         self.log('train_position_loss', losses.get('position_loss', 0.0), on_step=True, on_epoch=True)
         if self.use_physics_loss:
             self.log('train_physics_loss', losses.get('physics_loss', 0.0), on_step=True, on_epoch=True)
+        if self.aux_enabled:
+            self.log('train_aux_loss', losses.get('aux_loss', 0.0), on_step=True, on_epoch=True)
         
         return losses['loss']
     
@@ -284,16 +347,23 @@ class UELocalizationLightning(pl.LightningModule):
             'cell_grid': batch['cell_grid'],
         }
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
+
+        if self.aux_enabled:
+            aux_targets = self._extract_aux_targets(batch['measurements'])
+            aux_loss = self._compute_aux_loss(outputs.get('aux_outputs'), aux_targets)
+            losses['aux_loss'] = aux_loss
+            losses['loss'] = losses['loss'] + self.aux_weight * aux_loss
         
         # Add physics loss if enabled
-        if self.use_physics_loss and 'radio_maps' in batch:
+        radio_maps = batch.get('radio_maps', batch.get('radio_map'))
+        if self.use_physics_loss and radio_maps is not None:
             pred_position = outputs['predicted_position']
             observed_features = batch.get('observed_features', self._extract_observed_features(batch['measurements']))
             
             physics_loss = self.physics_loss_fn(
                 predicted_xy=pred_position,
                 observed_features=observed_features,
-                radio_maps=batch['radio_maps'],
+                radio_maps=radio_maps,
             )
             losses['physics_loss'] = physics_loss
             losses['loss'] = losses['loss'] + self.lambda_phys * physics_loss
@@ -331,6 +401,8 @@ class UELocalizationLightning(pl.LightningModule):
         }
         if self.use_physics_loss:
             output_dict['physics_loss'] = losses.get('physics_loss', torch.tensor(0.0))
+        if self.aux_enabled:
+            output_dict['aux_loss'] = losses.get('aux_loss', torch.tensor(0.0))
         
         self.validation_step_outputs.append(output_dict)
         
@@ -349,6 +421,9 @@ class UELocalizationLightning(pl.LightningModule):
         if self.use_physics_loss:
             avg_phys = torch.stack([x['physics_loss'] for x in self.validation_step_outputs]).mean()
             self.log('val_physics_loss', avg_phys)
+        if self.aux_enabled:
+            avg_aux = torch.stack([x['aux_loss'] for x in self.validation_step_outputs]).mean()
+            self.log('val_aux_loss', avg_aux)
         
         # Aggregate errors
         all_errors = torch.cat([x['errors'] for x in self.validation_step_outputs])
@@ -734,12 +809,16 @@ class UELocalizationLightning(pl.LightningModule):
             
             return LMDBRadioLocalizationDataset(
                 lmdb_path=str(valid_paths[0]),
-                split='all',  # Use all data from this split's dataset
+                split=split,
                 map_resolution=dataset_config['map_resolution'],
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
                 augmentation=augmentation,
+                split_seed=dataset_config.get('split_seed', 42),
+                map_cache_size=dataset_config.get('map_cache_size', 0),
+                sequence_length=dataset_config.get('sequence_length', 0),
+                max_cells=dataset_config.get('max_cells', 2),
             )
         else:
             # Use Zarr dataset (DEPRECATED - has multiprocessing issues)
@@ -754,12 +833,16 @@ class UELocalizationLightning(pl.LightningModule):
             
             return CombinedRadioLocalizationDataset(
                 zarr_paths=valid_paths,
-                split='all',  # Use all data from this split's dataset
+                split=split,
                 map_resolution=dataset_config['map_resolution'],
                 scene_extent=dataset_config['scene_extent'],
                 normalize=dataset_config['normalize_features'],
                 handle_missing=dataset_config['handle_missing_values'],
                 augmentation=augmentation,
+                split_seed=dataset_config.get('split_seed', 42),
+                map_cache_size=dataset_config.get('map_cache_size', 0),
+                sequence_length=dataset_config.get('sequence_length', 0),
+                max_cells=dataset_config.get('max_cells', 2),
             )
 
     def train_dataloader(self):

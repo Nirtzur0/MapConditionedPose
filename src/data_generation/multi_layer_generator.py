@@ -156,6 +156,7 @@ class MultiLayerDataGenerator:
             self.lmdb_writer = LMDBDatasetWriter(
                 output_dir=config.output_dir,
                 map_size=config.lmdb_map_size if hasattr(config, 'lmdb_map_size') else 100 * 1024**3,
+                sequence_length=config.num_reports_per_ue,
             )
             # Set max dimensions
             self.lmdb_writer.set_max_dimensions({
@@ -441,6 +442,11 @@ class MultiLayerDataGenerator:
             writer = self.lmdb_writer if self.lmdb_writer else self.zarr_writer
             
             if writer:
+                if hasattr(writer, "set_split_ratios"):
+                    writer.set_split_ratios(
+                        {'train': train_ratio, 'val': val_ratio, 'test': test_ratio},
+                        split_seed=42,
+                    )
                 for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to database"):
                     # Write scene maps first
                     if 'radio_map' in scene_data and 'osm_map' in scene_data:
@@ -495,7 +501,8 @@ class MultiLayerDataGenerator:
                 writer = LMDBDatasetWriter(
                     output_dir=self.config.output_dir,
                     map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
-                    split_name=split_name
+                    split_name=split_name,
+                    sequence_length=self.config.num_reports_per_ue,
                 )
                 # Set max dimensions
                 writer.set_max_dimensions({
@@ -768,14 +775,20 @@ class MultiLayerDataGenerator:
     ) -> Dict[str, List]:
         """Process UE trajectories in batches."""
         all_features = {
-            'rt': [], 'phy_fapi': [], 'mac_rrc': [], 'positions': [], 'timestamps': []
+            'rt': [],
+            'phy_fapi': [],
+            'mac_rrc': [],
+            'positions': [],
+            'timestamps': [],
+            'ue_ids': [],
+            't_steps': [],
         }
         
         # Flatten all trajectory points
         all_points = []
-        for traj_global in trajectories_global:
+        for ue_id, traj_global in enumerate(trajectories_global):
             for t_step, ue_pos_global in enumerate(traj_global):
-                all_points.append((t_step, ue_pos_global))
+                all_points.append((ue_id, t_step, ue_pos_global))
         
         batch_size = 128  # Increased from 32 for better GPU utilization
         total_reports = 0
@@ -785,7 +798,7 @@ class MultiLayerDataGenerator:
             batch = all_points[i:i + batch_size]
             
             # Prepare batch inputs
-            ue_positions_sim, ue_positions_store, t_steps = self._prepare_batch_positions(
+            ue_positions_sim, ue_positions_store, t_steps, ue_ids = self._prepare_batch_positions(
                 batch, sim_offset_x, sim_offset_y, store_offset_x, store_offset_y
             )
             
@@ -803,6 +816,8 @@ class MultiLayerDataGenerator:
             all_features['mac_rrc'].append(mac_batch.to_dict())
             all_features['positions'].append(ue_positions_store)
             all_features['timestamps'].append(np.array(t_steps) * self.config.report_interval_ms / 1000.0)
+            all_features['ue_ids'].append(np.array(ue_ids))
+            all_features['t_steps'].append(np.array(t_steps))
             
             total_reports += len(batch)
             if (i // batch_size) % 10 == 0:
@@ -817,13 +832,14 @@ class MultiLayerDataGenerator:
         sim_offset_y: float,
         store_offset_x: float,
         store_offset_y: float
-    ) -> Tuple[np.ndarray, List, List]:
+    ) -> Tuple[np.ndarray, List, List, List]:
         """Prepare batch positions in simulation and storage frames."""
         ue_positions_sim = []
         ue_positions_store = []
         t_steps = []
+        ue_ids = []
         
-        for t_step, ue_pos_global in batch:
+        for ue_id, t_step, ue_pos_global in batch:
             # Sim frame
             pos_sim = ue_pos_global.copy()
             pos_sim[0] -= sim_offset_x
@@ -837,8 +853,9 @@ class MultiLayerDataGenerator:
             ue_positions_store.append(pos_store)
             
             t_steps.append(t_step)
+            ue_ids.append(ue_id)
         
-        return np.array(ue_positions_sim), ue_positions_store, t_steps
+        return np.array(ue_positions_sim), ue_positions_store, t_steps, ue_ids
     
     def _clamp_ue_to_ground(
         self,

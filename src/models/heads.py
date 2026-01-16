@@ -8,7 +8,7 @@ Fine Head: Predicts offset within cell with uncertainty for top-K candidates
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 class CoarseHead(nn.Module):
@@ -144,8 +144,11 @@ class FineHead(nn.Module):
         d_hidden: Hidden dimension for refinement network
         top_k: Number of candidate cells to refine
         num_cells: Total number of cells in the grid (for computing grid_size)
-        sigma_min: Minimum standard deviation (in normalized coords, ~0.001 = 1m at 1km scene)
-        sigma_max: Maximum standard deviation (in normalized coords, ~0.1 = 100m at 1km scene)
+        d_map: Dimension of local map patch embeddings (if used)
+        use_local_map: Whether to condition refinement on local map patches
+        offset_scale: Max offset scale relative to cell size
+        sigma_min_ratio: Minimum std dev as ratio of cell size
+        sigma_max_ratio: Maximum std dev as ratio of cell size
         dropout: Dropout rate
     """
     
@@ -155,17 +158,22 @@ class FineHead(nn.Module):
         d_hidden: int = 256,
         top_k: int = 5,
         num_cells: int = 1024,  # Default 32x32
-        sigma_min: float = 0.001,  # ~1m at 1km scene
-        sigma_max: float = 0.1,    # ~100m at 1km scene (caps overly uncertain predictions)
+        d_map: int = 0,
+        use_local_map: bool = False,
+        offset_scale: float = 1.5,
+        sigma_min_ratio: float = 0.03,
+        sigma_max_ratio: float = 3.2,
         dropout: float = 0.1,
     ):
         super().__init__()
         
         self.top_k = top_k
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
+        self.offset_scale = offset_scale
+        self.sigma_min_ratio = sigma_min_ratio
+        self.sigma_max_ratio = sigma_max_ratio
         self.grid_size = int(num_cells ** 0.5)  # Infer grid size (32 for 1024 cells)
         self.d_hidden = d_hidden
+        self.use_local_map = use_local_map and d_map > 0
         
         # 2D positional encoding projection (instead of learned embeddings)
         # We'll use sinusoidal 2D encoding: sin/cos of x and y coordinates
@@ -176,8 +184,17 @@ class FineHead(nn.Module):
             nn.GELU(),
         )
         
+        map_dim = d_hidden if self.use_local_map else 0
+        self.map_proj = None
+        if self.use_local_map:
+            self.map_proj = nn.Sequential(
+                nn.Linear(d_map, d_hidden),
+                nn.LayerNorm(d_hidden),
+                nn.GELU(),
+            )
+
         self.refiner = nn.Sequential(
-            nn.Linear(d_input + d_hidden, d_hidden),
+            nn.Linear(d_input + d_hidden + map_dim, d_hidden),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_hidden, d_hidden),
@@ -236,15 +253,19 @@ class FineHead(nn.Module):
         self,
         fused: torch.Tensor,
         top_k_indices: torch.Tensor,
+        cell_size: float,
+        local_map_embeddings: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             fused: [batch, d_input] fused representation
             top_k_indices: [batch, k] top-K cell indices
+            cell_size: Size of each grid cell in normalized coords
+            local_map_embeddings: [batch, k, d_map] optional patch embeddings
         
         Returns:
-            offsets: [batch, k, 2] (Δx, Δy) in meters
-            uncertainties: [batch, k, 2] (σx, σy) in meters
+            offsets: [batch, k, 2] (Δx, Δy) in normalized coords
+            uncertainties: [batch, k, 2] (σx, σy) in normalized coords
         """
         batch_size, k = top_k_indices.shape
         
@@ -255,25 +276,39 @@ class FineHead(nn.Module):
         pos_enc = self._compute_2d_pos_encoding(top_k_indices)  # [B, k, d_hidden]
         pos_enc = self.pos_proj(pos_enc)  # [B, k, d_hidden]
         
-        # Concatenate
-        combined = torch.cat([fused_expanded, pos_enc], dim=-1)  # [B, k, d_input+d_hidden]
+        combined_parts = [fused_expanded, pos_enc]
+
+        if self.use_local_map:
+            if local_map_embeddings is None:
+                local_map_embeddings = fused_expanded.new_zeros(
+                    (batch_size, k, self.map_proj[0].in_features)
+                )
+            if local_map_embeddings.shape[:2] != (batch_size, k):
+                raise ValueError("local_map_embeddings must have shape [batch, k, d_map]")
+            if local_map_embeddings.shape[2] != self.map_proj[0].in_features:
+                raise ValueError("local_map_embeddings last dimension must match d_map")
+            map_enc = self.map_proj(local_map_embeddings)
+            combined_parts.append(map_enc)
+
+        combined = torch.cat(combined_parts, dim=-1)  # [B, k, d_input+d_hidden(+d_hidden)]
         
         # Refine
         refined = self.refiner(combined)  # [B, k, d_hidden]
         
         # Predict offset (mean) - bounded to cell size using tanh
-        # Cell size in normalized coords is 1/grid_size ≈ 0.03 for grid_size=32
-        # Allow offsets up to 1.5x cell size in either direction
         offset_raw = self.mean_head(refined)  # [B, k, 2]
-        max_offset = 0.05  # ~1.5 cells in normalized [0,1] coords
-        offsets = torch.tanh(offset_raw) * max_offset  # [B, k, 2] bounded to [-0.05, 0.05]
+        cell_size_t = torch.as_tensor(cell_size, device=refined.device, dtype=refined.dtype)
+        max_offset = cell_size_t * self.offset_scale
+        offsets = torch.tanh(offset_raw) * max_offset  # [B, k, 2] bounded by cell size
         
         # Predict uncertainty (scale) with bounded range [sigma_min, sigma_max]
         # Use sigmoid to map to [0, 1], then scale to [sigma_min, sigma_max]
         # This prevents both overly small (degenerate) and overly large (uninformative) predictions
         scale_raw = self.scale_head(refined)
-        sigma_range = self.sigma_max - self.sigma_min
-        uncertainties = torch.sigmoid(scale_raw) * sigma_range + self.sigma_min  # [B, k, 2]
+        sigma_min = cell_size_t * self.sigma_min_ratio
+        sigma_max = cell_size_t * self.sigma_max_ratio
+        sigma_range = torch.clamp(sigma_max - sigma_min, min=1e-6)
+        uncertainties = torch.sigmoid(scale_raw) * sigma_range + sigma_min  # [B, k, 2]
         
         return offsets, uncertainties
 

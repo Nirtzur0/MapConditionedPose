@@ -27,6 +27,8 @@ class MeasurementProcessor:
             config: Data generation configuration
         """
         self.config = config
+        seed = getattr(config, 'measurement_dropout_seed', 42)
+        self._dropout_rng = np.random.default_rng(seed)
         
     def apply_realism(self, scene_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """
@@ -61,7 +63,7 @@ class MeasurementProcessor:
         }
         
         # Apply dropout
-        phy_fapi_dropped = self._add_measurement_dropout(phy_fapi_dict, dropout_rates, seed=42)
+        phy_fapi_dropped = self._add_measurement_dropout(phy_fapi_dict, dropout_rates)
         
         # Update scene_data
         scene_data.update(phy_fapi_dropped)
@@ -71,8 +73,7 @@ class MeasurementProcessor:
     def _add_measurement_dropout(
         self,
         data_dict: Dict[str, np.ndarray],
-        dropout_rates: Dict[str, float],
-        seed: int = 42
+        dropout_rates: Dict[str, float]
     ) -> Dict[str, np.ndarray]:
         """
         Add measurement dropout to data.
@@ -80,7 +81,6 @@ class MeasurementProcessor:
         Args:
             data_dict: Dictionary of measurement arrays
             dropout_rates: Dropout rate for each measurement type
-            seed: Random seed for reproducibility
             
         Returns:
             Dictionary with dropout applied
@@ -88,7 +88,7 @@ class MeasurementProcessor:
         # Import the actual dropout function
         try:
             from ..measurement_utils import add_measurement_dropout
-            return add_measurement_dropout(data_dict, dropout_rates, seed)
+            return add_measurement_dropout(data_dict, dropout_rates, rng=self._dropout_rng)
         except ImportError:
             logger.warning("measurement_utils not available, skipping dropout")
             return data_dict

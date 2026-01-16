@@ -32,6 +32,7 @@ class DataGenerationConfig:
         num_beams: Number of SSB beams.
         max_neighbors: Max neighbor cells to report.
         measurement_dropout_rates: Dictionary of dropout rates for measurements.
+        measurement_dropout_seed: Seed for measurement dropout randomness.
         quantization_enabled: Enable 3GPP quantization.
         output_dir: Output directory for the Zarr dataset.
         zarr_chunk_size: Zarr chunk size (samples per chunk).
@@ -56,6 +57,7 @@ class DataGenerationConfig:
     num_beams: int = 64
     max_neighbors: int = 8
     measurement_dropout_rates: Optional[Dict[str, float]] = None
+    measurement_dropout_seed: int = 42
     quantization_enabled: bool = True
     output_dir: Path = Path('data/synthetic')
     zarr_chunk_size: int = 100
@@ -97,6 +99,7 @@ class DataGenerationConfig:
             num_beams=dg_config.get('num_beams', 64),
             max_neighbors=dg_config.get('max_neighbors', 8),
             measurement_dropout_rates=dg_config.get('measurement_dropout_rates'),
+            measurement_dropout_seed=dg_config.get('measurement_dropout_seed', 42),
             quantization_enabled=dg_config.get('quantization_enabled', True),
             output_dir=output_dir,
             zarr_chunk_size=dg_config.get('zarr_chunk_size', 100),

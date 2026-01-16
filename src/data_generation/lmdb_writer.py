@@ -49,16 +49,19 @@ class LMDBDatasetWriter:
     def __init__(self, 
                  output_dir: Path,
                  map_size: int = 100 * 1024**3,  # 100GB default
-                 split_name: Optional[str] = None):
+                 split_name: Optional[str] = None,
+                 sequence_length: Optional[int] = None):
         """
         Args:
             output_dir: Output directory for LMDB database
             map_size: Maximum database size in bytes (default 100GB)
             split_name: Name of split (train/val/test), None for single dataset
+            sequence_length: Reports per UE trajectory (for sequence-aware splits)
         """
         self.output_dir = Path(output_dir)
         self.map_size = map_size
         self.split_name = split_name
+        self.sequence_length = sequence_length
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +92,18 @@ class LMDBDatasetWriter:
         # Track scene maps (store once per scene)
         self.scene_maps = {}
         self.scene_id_to_idx = {}
+
+        # Optional split metadata
+        self.split_ratios = None
+        self.split_seed = 42
+
+        # Sequence tracking (optional, if ue_ids provided)
+        self._sequence_ids = []
+        self._sequence_slices = []
+        self._current_sequence_id = None
+        self._current_sequence_start = None
+        self._trajectory_map = {}
+        self._next_sequence_id = 0
         
         # Accumulate data for normalization stats
         self.feature_accumulators = {
@@ -103,6 +118,29 @@ class LMDBDatasetWriter:
         """Set maximum dimensions for arrays (max_cells, max_beams, max_paths)."""
         self.max_dimensions.update(dimensions)
         logger.info(f"Max dimensions set: {self.max_dimensions}")
+
+    def set_split_ratios(self, split_ratios: Dict[str, float], split_seed: int = 42) -> None:
+        """Set deterministic split ratios for a combined dataset."""
+        if not split_ratios:
+            return
+        total = sum(split_ratios.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"split_ratios must sum to 1.0, got {total}")
+        self.split_ratios = split_ratios
+        self.split_seed = split_seed
+
+    def _track_sequence(self, sequence_id: int) -> None:
+        if self._current_sequence_id is None:
+            self._current_sequence_id = sequence_id
+            self._current_sequence_start = self.sample_count
+            return
+        if sequence_id != self._current_sequence_id:
+            self._sequence_slices.append(
+                (self._current_sequence_start, self.sample_count - self._current_sequence_start)
+            )
+            self._sequence_ids.append(self._current_sequence_id)
+            self._current_sequence_id = sequence_id
+            self._current_sequence_start = self.sample_count
     
     def write_scene_maps(self, scene_id: str, radio_map: np.ndarray, osm_map: np.ndarray):
         """Store maps for a scene (called once per scene)."""
@@ -168,6 +206,24 @@ class LMDBDatasetWriter:
                 sample['timestamp'] = float(timestamps[i])
             else:
                 sample['timestamp'] = 0.0
+
+            # Extract UE trajectory metadata
+            ue_ids = scene_data.get('ue_ids')
+            if ue_ids is not None and len(ue_ids) > i:
+                ue_id = int(ue_ids[i])
+                sample['ue_id'] = ue_id
+                seq_key = (scene_id, ue_id)
+                sequence_id = self._trajectory_map.get(seq_key)
+                if sequence_id is None:
+                    sequence_id = self._next_sequence_id
+                    self._trajectory_map[seq_key] = sequence_id
+                    self._next_sequence_id += 1
+                sample['sequence_id'] = sequence_id
+                self._track_sequence(sequence_id)
+
+            t_steps = scene_data.get('t_steps')
+            if t_steps is not None and len(t_steps) > i:
+                sample['t_step'] = int(t_steps[i])
             
             # Extract RT features for this sample
             if rt_data:
@@ -260,7 +316,47 @@ class LMDBDatasetWriter:
         # Compute normalization statistics
         norm_stats = self._compute_normalization_stats()
         
+        # Finalize sequence tracking
+        if self._current_sequence_id is not None and self._current_sequence_start is not None:
+            self._sequence_slices.append(
+                (self._current_sequence_start, self.sample_count - self._current_sequence_start)
+            )
+            self._sequence_ids.append(self._current_sequence_id)
+
         # Prepare metadata
+        split_indices = None
+        split_sequence_indices = None
+        if self.split_ratios:
+            rng = np.random.default_rng(self.split_seed)
+            if self._sequence_slices:
+                num_sequences = len(self._sequence_slices)
+                permuted = rng.permutation(num_sequences)
+                train_end = int(num_sequences * self.split_ratios.get('train', 0.0))
+                val_end = train_end + int(num_sequences * self.split_ratios.get('val', 0.0))
+                split_sequence_indices = {
+                    'train': permuted[:train_end].tolist(),
+                    'val': permuted[train_end:val_end].tolist(),
+                    'test': permuted[val_end:].tolist(),
+                }
+                split_indices = {}
+                for split_name, seq_ids in split_sequence_indices.items():
+                    indices = []
+                    for seq_id in seq_ids:
+                        start, length = self._sequence_slices[seq_id]
+                        indices.extend(range(start, start + length))
+                    split_indices[split_name] = indices
+            else:
+                permuted = rng.permutation(self.sample_count)
+                train_end = int(self.sample_count * self.split_ratios.get('train', 0.0))
+                val_end = train_end + int(self.sample_count * self.split_ratios.get('val', 0.0))
+                split_indices = {
+                    'train': permuted[:train_end].tolist(),
+                    'val': permuted[train_end:val_end].tolist(),
+                    'test': permuted[val_end:].tolist(),
+                }
+        elif self.split_name:
+            split_indices = {self.split_name: list(range(self.sample_count))}
+
         metadata = {
             'num_samples': self.sample_count,
             'scene_ids': list(self.scene_maps.keys()),
@@ -269,6 +365,12 @@ class LMDBDatasetWriter:
             'normalization_stats': norm_stats,
             'created_at': datetime.now().isoformat(),
             'split_name': self.split_name,
+            'split_indices': split_indices,
+            'split_sequence_indices': split_sequence_indices,
+            'split_seed': self.split_seed,
+            'split_ratios': self.split_ratios,
+            'sequence_length': self.sequence_length,
+            'sequence_slices': self._sequence_slices if self._sequence_slices else None,
         }
         
         # Write metadata to LMDB

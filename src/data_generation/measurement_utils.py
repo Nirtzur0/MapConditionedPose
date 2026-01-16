@@ -402,14 +402,16 @@ def simulate_neighbor_list_truncation(cells: Union[np.ndarray, Any],
 
 def add_measurement_dropout(features: Dict[str, Any],
                            dropout_rates: Dict[str, float],
-                           seed: Optional[int] = None) -> Dict[str, Any]:
+                           seed: Optional[int] = None,
+                           rng: Optional[np.random.Generator] = None,
+                           tf_rng: Optional[Any] = None) -> Dict[str, Any]:
     """
     Simulate measurement availability (supports TF).
     """
-    if seed is not None:
-        np.random.seed(seed)
-        if TF_AVAILABLE:
-            tf.random.set_seed(seed)
+    if rng is None:
+        rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+    if TF_AVAILABLE and tf_rng is None and seed is not None:
+        tf_rng = tf.random.Generator.from_seed(seed)
     
     dropped = {}
     for key, tensor in features.items():
@@ -424,7 +426,10 @@ def add_measurement_dropout(features: Dict[str, Any],
                 # TF dropout
                 # Create mask
                 shape = tf.shape(tensor)
-                mask = tf.random.uniform(shape) > rate
+                if tf_rng is not None:
+                    mask = tf_rng.uniform(shape) > rate
+                else:
+                    mask = tf.random.uniform(shape) > rate
                 
                 # Replace False with NaN? TF float tensors support NaN. Integers do not.
                 if tensor.dtype.is_floating:
@@ -443,7 +448,7 @@ def add_measurement_dropout(features: Dict[str, Any],
                 
         else:
             if rate > 0:
-                mask = np.random.uniform(size=tensor.shape) > rate
+                mask = rng.uniform(size=tensor.shape) > rate
                 # Numpy handles type promotion if assigning NaN
                 if not np.issubdtype(tensor.dtype, np.floating):
                     tensor = tensor.astype(float)

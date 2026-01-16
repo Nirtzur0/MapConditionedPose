@@ -50,6 +50,8 @@ class UELocalizationModel(nn.Module):
         
         self.cell_size = self.scene_extent / self.grid_size
         self.top_k = fine_cfg['top_k']
+        self.use_local_map = fine_cfg.get('use_local_map', False)
+        self.fine_patch_size = fine_cfg.get('patch_size', 64)
         
         # Build components
         self.radio_encoder = RadioEncoder(
@@ -82,6 +84,8 @@ class UELocalizationModel(nn.Module):
                 dropout=map_cfg['dropout'],
                 radio_map_channels=map_cfg['radio_map_channels'],
                 osm_map_channels=map_cfg['osm_map_channels'],
+                cache_size=map_cfg.get('cache_size', 0),
+                cache_mode=map_cfg.get('cache_mode', 'off'),
             )
         else:
             self.map_encoder = StandardMapEncoder(
@@ -94,6 +98,8 @@ class UELocalizationModel(nn.Module):
                 dropout=map_cfg['dropout'],
                 radio_map_channels=map_cfg['radio_map_channels'],
                 osm_map_channels=map_cfg['osm_map_channels'],
+                cache_size=map_cfg.get('cache_size', 0),
+                cache_mode=map_cfg.get('cache_mode', 'off'),
             )
         
         self.fusion = CrossAttentionFusion(
@@ -116,14 +122,52 @@ class UELocalizationModel(nn.Module):
             d_hidden=fine_cfg['d_hidden'],
             top_k=fine_cfg['top_k'],
             num_cells=self.grid_size ** 2,
+            d_map=map_cfg['d_model'],
+            use_local_map=self.use_local_map,
+            offset_scale=fine_cfg.get('offset_scale', 1.5),
+            sigma_min_ratio=fine_cfg.get('sigma_min_ratio', 0.03),
+            sigma_max_ratio=fine_cfg.get('sigma_max_ratio', 3.2),
             dropout=fine_cfg['dropout'],
         )
+
+        aux_cfg = config.get('training', {}).get('loss', {}).get('auxiliary', {})
+        self.aux_enabled = aux_cfg.get('enabled', False)
+        self.aux_input = aux_cfg.get('input', 'radio')
+        self.aux_tasks = aux_cfg.get('tasks', {}) or {}
+        self.aux_heads = nn.ModuleDict()
+        if self.aux_enabled and self.aux_tasks:
+            aux_dim = radio_cfg['d_model'] if self.aux_input == 'radio' else fusion_cfg['d_fusion']
+            hidden_dim = aux_cfg.get('hidden_dim') or aux_dim
+            for task_name in self.aux_tasks.keys():
+                self.aux_heads[task_name] = nn.Sequential(
+                    nn.Linear(aux_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(fine_cfg['dropout']),
+                    nn.Linear(hidden_dim, 1),
+                )
+
+    def _indices_to_pixel_centers(
+        self,
+        indices: torch.Tensor,
+        map_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        """Convert grid indices to pixel centers in the map tensor."""
+        height = map_tensor.shape[2]
+        width = map_tensor.shape[3]
+        rows = indices // self.grid_size
+        cols = indices % self.grid_size
+        cell_w = width / self.grid_size
+        cell_h = height / self.grid_size
+        centers_x = (cols.float() + 0.5) * cell_w
+        centers_y = (rows.float() + 0.5) * cell_h
+        return torch.stack([centers_x, centers_y], dim=-1)
     
     def forward(
         self,
         measurements: Dict[str, torch.Tensor],
         radio_map: torch.Tensor,
         osm_map: torch.Tensor,
+        scene_idx: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
@@ -137,6 +181,7 @@ class UELocalizationModel(nn.Module):
                 - mask: [batch, seq_len]
             radio_map: [batch, 5, H, W]
             osm_map: [batch, 5, H, W]
+            scene_idx: Optional scene indices for map-encoder caching
         
         Returns:
             Dictionary with predictions:
@@ -152,10 +197,22 @@ class UELocalizationModel(nn.Module):
         radio_emb = self.radio_encoder(measurements)  # [B, d_radio]
         
         # 2. Encode maps
-        map_tokens, map_cls = self.map_encoder(radio_map, osm_map)  # [B, N, d_map], [B, d_map]
+        map_tokens, map_cls = self.map_encoder(
+            radio_map,
+            osm_map,
+            cache_keys=scene_idx,
+        )  # [B, N, d_map], [B, d_map]
         
         # 3. Fuse radio and map features
         fused = self.fusion(radio_emb, map_tokens)  # [B, d_fusion]
+
+        aux_outputs = None
+        if self.aux_enabled and self.aux_heads:
+            aux_input = radio_emb if self.aux_input == 'radio' else fused
+            aux_outputs = {
+                name: head(aux_input).squeeze(-1)
+                for name, head in self.aux_heads.items()
+            }
         
         # 4. Coarse prediction
         coarse_logits, coarse_heatmap = self.coarse_head(fused)  # [B, num_cells], [B, H, W]
@@ -165,11 +222,22 @@ class UELocalizationModel(nn.Module):
             coarse_heatmap,
             k=self.top_k,
         )  # [B, k], [B, k]
-        
+
         # 6. Fine refinement for top-K cells
+        local_map_embeddings = None
+        if self.use_local_map:
+            centers_px = self._indices_to_pixel_centers(top_k_indices, radio_map)
+            local_map_embeddings = self.map_encoder.encode_local_patches(
+                radio_map,
+                osm_map,
+                centers_px=centers_px,
+                patch_size=self.fine_patch_size,
+            )
         fine_offsets, fine_uncertainties = self.fine_head(
             fused,
             top_k_indices,
+            cell_size=self.cell_size,
+            local_map_embeddings=local_map_embeddings,
         )  # [B, k, 2], [B, k, 2]
         
         # 7. Convert to final position prediction (use highest probability cell)
@@ -180,6 +248,7 @@ class UELocalizationModel(nn.Module):
         )  # [B, 1, 2]
         
         predicted_position = top_cell_coords.squeeze(1) + fine_offsets[:, 0, :]  # [B, 2]
+        predicted_position = torch.clamp(predicted_position, 0.0, 1.0 - 1e-6)
         
         return {
             'coarse_logits': coarse_logits,
@@ -189,6 +258,7 @@ class UELocalizationModel(nn.Module):
             'fine_offsets': fine_offsets,
             'fine_uncertainties': fine_uncertainties,
             'predicted_position': predicted_position,
+            'aux_outputs': aux_outputs,
         }
     
     def predict(
@@ -332,6 +402,7 @@ class UELocalizationModel(nn.Module):
         measurements: Dict[str, torch.Tensor],
         radio_map: torch.Tensor,
         osm_map: torch.Tensor,
+        scene_idx: Optional[torch.Tensor] = None,
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         """Forward pass with attention weights for visualization.
         
@@ -341,7 +412,11 @@ class UELocalizationModel(nn.Module):
         """
         # Encode
         radio_emb = self.radio_encoder(measurements)
-        map_tokens, map_cls = self.map_encoder(radio_map, osm_map)
+        map_tokens, map_cls = self.map_encoder(
+            radio_map,
+            osm_map,
+            cache_keys=scene_idx,
+        )
         
         # Fuse with attention tracking
         fused, attention_weights = self.fusion.forward_with_attention(
@@ -355,7 +430,21 @@ class UELocalizationModel(nn.Module):
             coarse_heatmap,
             k=self.top_k,
         )
-        fine_offsets, fine_uncertainties = self.fine_head(fused, top_k_indices)
+        local_map_embeddings = None
+        if self.use_local_map:
+            centers_px = self._indices_to_pixel_centers(top_k_indices, radio_map)
+            local_map_embeddings = self.map_encoder.encode_local_patches(
+                radio_map,
+                osm_map,
+                centers_px=centers_px,
+                patch_size=self.fine_patch_size,
+            )
+        fine_offsets, fine_uncertainties = self.fine_head(
+            fused,
+            top_k_indices,
+            cell_size=self.cell_size,
+            local_map_embeddings=local_map_embeddings,
+        )
         
         top_cell_coords = self.coarse_head.indices_to_coords(
             top_k_indices[:, 0:1],
@@ -363,7 +452,16 @@ class UELocalizationModel(nn.Module):
             origin=self.origin,
         ).squeeze(1)
         predicted_position = top_cell_coords + fine_offsets[:, 0, :]
-        
+        predicted_position = torch.clamp(predicted_position, 0.0, 1.0 - 1e-6)
+
+        aux_outputs = None
+        if self.aux_enabled and self.aux_heads:
+            aux_input = radio_emb if self.aux_input == 'radio' else fused
+            aux_outputs = {
+                name: head(aux_input).squeeze(-1)
+                for name, head in self.aux_heads.items()
+            }
+
         outputs = {
             'coarse_logits': coarse_logits,
             'coarse_heatmap': coarse_heatmap,
@@ -372,6 +470,7 @@ class UELocalizationModel(nn.Module):
             'fine_offsets': fine_offsets,
             'fine_uncertainties': fine_uncertainties,
             'predicted_position': predicted_position,
+            'aux_outputs': aux_outputs,
         }
         
         return outputs, attention_weights
