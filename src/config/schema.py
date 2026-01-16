@@ -140,7 +140,6 @@ class ModelConfig:
 
 
 @dataclass
-@dataclass
 class AuxiliaryLossConfig:
     enabled: bool = False
     weight: float = 0.1
@@ -210,6 +209,12 @@ class RefinementConfig:
     learning_rate: float = 0.1
     min_confidence_threshold: float = 0.6
     clip_to_extent: bool = True
+    coarse_logit_temperature: float = 1.0
+    fine_variance_scale: float = 1.0
+    fine_sigma_ref: Optional[float] = None
+    fine_sigma_ref_ratio: float = 0.05
+    confidence_combine: str = "min"
+    min_variance: float = 1e-6
 
 
 @dataclass
@@ -295,7 +300,7 @@ def _validate_config(cfg: DictConfig) -> None:
 
 def load_pipeline_config(path: Optional[Path]) -> DictConfig:
     schema = OmegaConf.structured(PipelineConfig)
-    OmegaConf.set_struct(schema, True)
+    # OmegaConf.set_struct(schema, True)
     cfg = schema
     if path is not None:
         cfg = OmegaConf.merge(cfg, OmegaConf.load(path))
@@ -317,12 +322,17 @@ def apply_quick_test_overrides(cfg: DictConfig) -> DictConfig:
                 }
             ],
             "num_tx": 2,
-            "tx_variations": 1,
+            "tx_variations": 5,
             "site_strategy": "random",
         },
         "data_generation": {
             "num_ue_per_tile": 20,
             "num_reports_per_ue": 5,
+            "split_ratios": {
+                "train": 0.6,
+                "val": 0.2,
+                "test": 0.2
+            }
         },
         "training": {
             "num_epochs": 3,
