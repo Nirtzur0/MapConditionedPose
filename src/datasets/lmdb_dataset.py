@@ -218,10 +218,13 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                 seq_ids = split_sequence_indices[self.split]
             else:
                 seq_ids = list(range(len(sequence_slices)))
-            return [
-                list(range(start, start + length))
-                for (start, length) in (sequence_slices[seq_id] for seq_id in seq_ids)
-            ]
+            sequences = []
+            for seq_id in seq_ids:
+                start, length = sequence_slices[seq_id]
+                if self.sequence_length and length != self.sequence_length:
+                    continue
+                sequences.append(list(range(start, start + length)))
+            return sequences
 
         if not self.sequence_length or self.sequence_length <= 1:
             return [self._indices.tolist()]
@@ -352,6 +355,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
 
     def _build_sample(self, sample: dict) -> Dict[str, torch.Tensor]:
         measurements = self._process_measurements(sample, timestamp=sample.get('timestamp'))
+        aux_targets = self._extract_aux_from_raw(sample)
         scene_id = sample.get('scene_id', '')
         radio_map, osm_map = self._get_scene_maps(scene_id)
         position, scene_extent = self._extract_position(sample)
@@ -369,6 +373,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'cell_grid': cell_grid,
             'scene_extent': scene_extent,
             'scene_idx': torch.tensor(scene_idx, dtype=torch.long),
+            'aux_targets': aux_targets,
         }
 
     def _build_sequence(self, samples: List[dict]) -> Dict[str, torch.Tensor]:
@@ -379,6 +384,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         radio_map, osm_map = self._get_scene_maps(scene_id)
 
         per_report = [self._process_measurements(s, timestamp=s.get('timestamp')) for s in samples]
+        aux_reports = [self._extract_aux_from_raw(s) for s in samples]
         rt_seq = torch.stack([m['rt_features'] for m in per_report], dim=0)
         phy_seq = torch.stack([m['phy_features'] for m in per_report], dim=0)
         mac_seq = torch.stack([m['mac_features'] for m in per_report], dim=0)
@@ -405,6 +411,12 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             scene_idx = self._metadata.get('scene_id_to_idx', {}).get(scene_id, -1)
         scene_idx = int(scene_idx) if scene_idx is not None else -1
 
+        aux_targets = {}
+        if aux_reports:
+            for key in aux_reports[0].keys():
+                vals = [r[key].item() if isinstance(r[key], torch.Tensor) else float(r[key]) for r in aux_reports]
+                aux_targets[key] = torch.tensor(np.mean(vals), dtype=torch.float32)
+
         return {
             'measurements': measurements,
             'radio_map': radio_map,
@@ -413,6 +425,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'cell_grid': cell_grid,
             'scene_extent': scene_extent,
             'scene_idx': torch.tensor(scene_idx, dtype=torch.long),
+            'aux_targets': aux_targets,
         }
 
     def _extract_position(self, sample: dict) -> Tuple[torch.Tensor, float]:
@@ -435,6 +448,30 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         position = position / scene_extent
         position = torch.clamp(position, 0.0, 1.0)
         return position, scene_extent
+
+    def _extract_aux_from_raw(self, sample: dict) -> Dict[str, torch.Tensor]:
+        rt_data = sample.get('rt_features', sample.get('rt', {})) or {}
+        mac_data = sample.get('mac_features', sample.get('mac', {})) or {}
+
+        def _mean_first(arr) -> float:
+            arr = np.asarray(arr).astype(np.float32).flatten()
+            if arr.size == 0:
+                return 0.0
+            return float(np.mean(arr[:self.max_cells]))
+
+        nlos = _mean_first(rt_data.get('is_nlos', []))
+        num_paths = _mean_first(rt_data.get('num_paths', []))
+        timing_advance = _mean_first(mac_data.get('timing_advance', []))
+        toa = _mean_first(rt_data.get('toa', []))
+        ta_unit = 16.0 / (15000.0 * 4096.0)
+        ta_residual = timing_advance - (2.0 * toa / ta_unit) if toa else 0.0
+
+        return {
+            'nlos': torch.tensor(nlos, dtype=torch.float32),
+            'num_paths': torch.tensor(num_paths, dtype=torch.float32),
+            'timing_advance': torch.tensor(timing_advance, dtype=torch.float32),
+            'ta_residual': torch.tensor(ta_residual, dtype=torch.float32),
+        }
     
     def _process_measurements(self, sample: dict, timestamp: Optional[float] = None) -> Dict[str, torch.Tensor]:
         """Process RT, PHY, MAC features into model input format."""

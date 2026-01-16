@@ -226,11 +226,15 @@ class UELocalizationLightning(pl.LightningModule):
         nlos = (rt_features[:, :, RTFeatureIndex.IS_NLOS] * mask_f).sum(dim=1) / denom
         num_paths = (rt_features[:, :, RTFeatureIndex.NUM_PATHS] * mask_f).sum(dim=1) / denom
         timing_advance = (mac_features[:, :, MACFeatureIndex.TIMING_ADVANCE] * mask_f).sum(dim=1) / denom
+        toa = (rt_features[:, :, RTFeatureIndex.TOA] * mask_f).sum(dim=1) / denom
+        ta_unit = 16.0 / (15000.0 * 4096.0)
+        ta_residual = timing_advance - (2.0 * toa / ta_unit)
 
         return {
             'nlos': nlos,
             'num_paths': num_paths,
             'timing_advance': timing_advance,
+            'ta_residual': ta_residual,
         }
 
     def _compute_aux_loss(self, aux_outputs: Dict[str, torch.Tensor], aux_targets: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -243,19 +247,25 @@ class UELocalizationLightning(pl.LightningModule):
             weight = self.aux_task_weights.get('nlos', 1.0)
             losses.append(weight * torch.nn.functional.binary_cross_entropy_with_logits(
                 aux_outputs['nlos'],
-                aux_targets['nlos'],
+                aux_targets['nlos'].to(aux_outputs['nlos'].device),
             ))
         if 'num_paths' in aux_outputs and 'num_paths' in aux_targets:
             weight = self.aux_task_weights.get('num_paths', 1.0)
             losses.append(weight * torch.nn.functional.smooth_l1_loss(
                 aux_outputs['num_paths'],
-                aux_targets['num_paths'],
+                aux_targets['num_paths'].to(aux_outputs['num_paths'].device),
             ))
         if 'timing_advance' in aux_outputs and 'timing_advance' in aux_targets:
             weight = self.aux_task_weights.get('timing_advance', 1.0)
             losses.append(weight * torch.nn.functional.smooth_l1_loss(
                 aux_outputs['timing_advance'],
-                aux_targets['timing_advance'],
+                aux_targets['timing_advance'].to(aux_outputs['timing_advance'].device),
+            ))
+        if 'ta_residual' in aux_outputs and 'ta_residual' in aux_targets:
+            weight = self.aux_task_weights.get('ta_residual', 1.0)
+            losses.append(weight * torch.nn.functional.smooth_l1_loss(
+                aux_outputs['ta_residual'],
+                aux_targets['ta_residual'].to(aux_outputs['ta_residual'].device),
             ))
 
         if not losses:
@@ -306,7 +316,7 @@ class UELocalizationLightning(pl.LightningModule):
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
 
         if self.aux_enabled:
-            aux_targets = self._extract_aux_targets(batch['measurements'])
+            aux_targets = batch.get('aux_targets') or self._extract_aux_targets(batch['measurements'])
             aux_loss = self._compute_aux_loss(outputs.get('aux_outputs'), aux_targets)
             losses['aux_loss'] = aux_loss
             losses['loss'] = losses['loss'] + self.aux_weight * aux_loss
@@ -349,7 +359,7 @@ class UELocalizationLightning(pl.LightningModule):
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
 
         if self.aux_enabled:
-            aux_targets = self._extract_aux_targets(batch['measurements'])
+            aux_targets = batch.get('aux_targets') or self._extract_aux_targets(batch['measurements'])
             aux_loss = self._compute_aux_loss(outputs.get('aux_outputs'), aux_targets)
             losses['aux_loss'] = aux_loss
             losses['loss'] = losses['loss'] + self.aux_weight * aux_loss

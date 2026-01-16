@@ -132,6 +132,7 @@ training:
         nlos: 1.0
         num_paths: 0.5
         timing_advance: 0.5
+        ta_residual: 0.3
   optimizer: adamw
   scheduler: cosine_with_warmup
   dropout: 0.1
@@ -180,6 +181,12 @@ physics_loss:
     learning_rate: 0.1
     min_confidence_threshold: 0.6
     clip_to_extent: true
+    coarse_logit_temperature: 1.0
+    fine_variance_scale: 1.0
+    fine_sigma_ref: null
+    fine_sigma_ref_ratio: 0.05
+    confidence_combine: min
+    min_variance: 1.0e-6
 
 evaluation:
   metrics:
