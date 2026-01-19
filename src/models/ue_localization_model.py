@@ -375,7 +375,7 @@ class UELocalizationModel(nn.Module):
         # We regularize log(sigma) to encourage smaller sigma values, weighted by mixture probability
         variance_reg_weight = loss_weights.get('variance_reg_weight', 0.1)
         # Weight each component's variance by its probability (focus on top predictions)
-        weighted_log_sigma = (pi.detach() * torch.log(sigma + eps)).sum(dim=1)  # [B, 2]
+        weighted_log_sigma = (pi.detach().unsqueeze(-1) * torch.log(sigma + eps)).sum(dim=1)  # [B, 2]
         variance_loss = weighted_log_sigma.mean()  # Scalar, penalizes large sigma
         
         # Get position loss weight (default to 0.2 if not specified)

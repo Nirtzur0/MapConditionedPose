@@ -334,6 +334,9 @@ def apply_quick_test_overrides(cfg: DictConfig) -> DictConfig:
                 "test": 0.2
             }
         },
+        "dataset": {
+            "sequence_length": 5,
+        },
         "training": {
             "num_epochs": 3,
             "batch_size": 8,
