@@ -57,6 +57,31 @@ outputs/{experiment_name}/
 
 See [docs/PIPELINE.md](docs/PIPELINE.md) for detailed usage.
 
+## Running on a Remote VM (EC2) 🔌
+
+To keep the pipeline running after you disconnect, use a terminal multiplexer or `nohup`.
+
+**tmux (recommended):**
+```bash
+tmux new -s pipeline
+./venv/bin/python run_pipeline.py --config configs/pipeline.yaml
+# detach: Ctrl+B, then D
+tmux attach -t pipeline
+```
+
+**screen:**
+```bash
+screen -S pipeline
+./venv/bin/python run_pipeline.py --config configs/pipeline.yaml
+# detach: Ctrl+A, then D
+screen -r pipeline
+```
+
+**nohup (no interactive session):**
+```bash
+nohup ./venv/bin/python run_pipeline.py --config configs/pipeline.yaml > outputs/pipeline.log 2>&1 &
+```
+
 ## Manual Installation
 
 ```bash

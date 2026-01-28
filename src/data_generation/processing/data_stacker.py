@@ -127,6 +127,8 @@ class DataStacker:
         elif key in ['phy_fapi/rsrp', 'phy_fapi/rsrq', 'phy_fapi/sinr', 
                      'phy_fapi/cqi', 'phy_fapi/ri', 'phy_fapi/pmi']:
             fill_val = -150.0 if 'rsr' in key or 'sinr' in key else 0
+            if val.ndim == 2:
+                val = np.expand_dims(val, axis=1)
             # Pad last dimension (Cells)
             val = self._pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
             # Pad axis 1 (Rx/Sites)

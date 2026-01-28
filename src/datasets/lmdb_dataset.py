@@ -16,6 +16,7 @@ import lmdb
 import pickle
 import numpy as np
 import torch
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import OrderedDict
@@ -122,6 +123,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         self.map_norm_mode = map_norm_mode
         self.map_log_throughput = map_log_throughput
         self.map_log_epsilon = map_log_epsilon
+        self._rt_range_checked = False
+        self._rt_feature_max_abs = float(os.environ.get("RT_FEATURE_MAX_ABS", "1e4"))
         
         # Critical: Don't open LMDB in __init__!
         # Store only the path - environment opened lazily per worker
@@ -293,7 +296,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             _apply_rt_stat(RTFeatureIndex.RMS_ANGULAR_SPREAD, 'rms_angular_spread')
             _apply_rt_stat(RTFeatureIndex.DOPPLER_SPREAD, 'doppler_spread')
             _apply_rt_stat(RTFeatureIndex.COHERENCE_TIME, 'coherence_time')
-            _apply_rt_stat(RTFeatureIndex.TOTAL_POWER, 'path_gains')
+            _apply_rt_stat(RTFeatureIndex.TOTAL_POWER, 'total_power')
             _apply_rt_stat(RTFeatureIndex.N_SIGNIFICANT_PATHS, 'num_paths')
             _apply_rt_stat(RTFeatureIndex.IS_NLOS, 'is_nlos')
 
@@ -605,6 +608,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             rt_features = torch.nan_to_num(rt_features, nan=0.0, posinf=0.0, neginf=0.0)
             phy_features = torch.nan_to_num(phy_features, nan=0.0, posinf=0.0, neginf=0.0)
             mac_features = torch.nan_to_num(mac_features, nan=0.0, posinf=0.0, neginf=0.0)
+
+        self._assert_rt_feature_ranges(rt_features)
         return {
             'rt_features': rt_features,
             'phy_features': phy_features,
@@ -614,6 +619,21 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'timestamps': timestamps,
             'mask': mask,
         }
+
+    def _assert_rt_feature_ranges(self, rt_features: torch.Tensor) -> None:
+        if self._rt_range_checked:
+            return
+        if not torch.isfinite(rt_features).all():
+            raise ValueError("RT features contain non-finite values at dataset load.")
+        max_abs = torch.nan_to_num(rt_features, nan=0.0, posinf=0.0, neginf=0.0).abs().amax(dim=0)
+        if torch.any(max_abs > self._rt_feature_max_abs):
+            bad = torch.nonzero(max_abs > self._rt_feature_max_abs, as_tuple=False).flatten().tolist()
+            max_vals = max_abs[bad].cpu().numpy().tolist() if bad else []
+            raise ValueError(
+                f"RT feature out of range at indices {bad} (max_abs={max_vals}); "
+                f"threshold={self._rt_feature_max_abs}"
+            )
+        self._rt_range_checked = True
     
     def _build_rt_features(self, rt_data: dict, max_cells: int) -> torch.Tensor:
         """Build RT feature tensor [max_cells, 16].
@@ -678,6 +698,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                     n = min(path_gains.shape[0], n_cells)
                     # Feature 7: total power (sum of squared gains)
                     total_power = np.sum(path_gains[:n] ** 2, axis=-1)
+                    total_power = np.log1p(total_power)
                     features[:n, RTFeatureIndex.TOTAL_POWER] = torch.from_numpy(
                         total_power.astype(np.float32)
                     )
@@ -688,7 +709,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                         n_sig = np.sum(np.abs(path_gains[i]) > threshold)
                         features[i, RTFeatureIndex.N_SIGNIFICANT_PATHS] = float(n_sig)
                 elif path_gains.ndim == 1:
-                    features[0, RTFeatureIndex.TOTAL_POWER] = float(np.sum(path_gains ** 2))
+                    total_power = np.sum(path_gains ** 2)
+                    features[0, RTFeatureIndex.TOTAL_POWER] = float(np.log1p(total_power))
                     max_g = np.max(np.abs(path_gains))
                     features[0, RTFeatureIndex.N_SIGNIFICANT_PATHS] = float(
                         np.sum(np.abs(path_gains) > 0.01 * max_g)
@@ -738,7 +760,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             if coherence_time.size > 0:
                 n = min(len(coherence_time.flatten()), n_cells)
                 features[:n, RTFeatureIndex.COHERENCE_TIME] = torch.from_numpy(
-                    coherence_time.flatten()[:n].astype(np.float32)
+                    np.log1p(coherence_time.flatten()[:n]).astype(np.float32)
                 )
         
         # Normalize if enabled
@@ -984,6 +1006,9 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             logger.warning(f"No OSM map found for scene: {scene_id}")
             osm_map = torch.zeros(5, 256, 256)
 
+        radio_map = torch.nan_to_num(radio_map, nan=0.0, posinf=0.0, neginf=0.0)
+        osm_map = torch.nan_to_num(osm_map, nan=0.0, posinf=0.0, neginf=0.0)
+
         # Normalize radio map channels if requested.
         if self.normalize_maps:
             radio_map = self._normalize_radio_map(radio_map)
@@ -1004,7 +1029,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         if radio_map.dim() != 3:
             return radio_map
 
-        radio_map = radio_map.clone()
+        radio_map = torch.nan_to_num(radio_map, nan=0.0, posinf=0.0, neginf=0.0).clone()
 
         # Log-compress throughput channel if present (channel 4).
         if self.map_log_throughput and radio_map.shape[0] >= 5:

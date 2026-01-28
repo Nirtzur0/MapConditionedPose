@@ -267,6 +267,16 @@ class PHYFAPIFeatureExtractor:
                  pmi = tf.zeros_like(rsrp_dbm, dtype=tf.int32)
              else:
                  pmi = np.zeros_like(rsrp_dbm, dtype=np.int32)
+
+        # Align PMI shape to RSRP shape (expected [B, Rx, C])
+        if pmi is not None and rsrp_dbm is not None:
+            pmi_shape = ops.shape(pmi)
+            rsrp_shape = ops.shape(rsrp_dbm)
+            if len(pmi_shape) == len(rsrp_shape) - 1:
+                if ops.is_tensor(pmi):
+                    pmi = tf.expand_dims(pmi, axis=1)
+                else:
+                    pmi = np.expand_dims(pmi, axis=1)
                  
         # Beam Management
         l1_rsrp_beams = None

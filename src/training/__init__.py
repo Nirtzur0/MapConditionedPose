@@ -98,6 +98,45 @@ class UELocalizationLightning(pl.LightningModule):
         self._last_val_sample = None
         self._last_test_sample = None
         self._comet_logged = {'val': False, 'test': False}
+        self._nonfinite_checked = False
+
+    def _summarize_tensor(self, tensor: torch.Tensor) -> str:
+        if tensor.numel() == 0:
+            return f"shape={tuple(tensor.shape)} dtype={tensor.dtype} (empty)"
+        safe = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        return (
+            f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+            f"min={safe.min().item():.4g} max={safe.max().item():.4g}"
+        )
+
+    def _collect_nonfinite(self, obj, prefix: str = ""):
+        bad = []
+        if torch.is_tensor(obj):
+            if not torch.isfinite(obj).all():
+                bad.append((prefix, obj))
+            return bad
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                bad.extend(self._collect_nonfinite(value, child_prefix))
+            return bad
+        if isinstance(obj, (list, tuple)):
+            for idx, value in enumerate(obj):
+                child_prefix = f"{prefix}[{idx}]"
+                bad.extend(self._collect_nonfinite(value, child_prefix))
+        return bad
+
+    def _assert_finite_once(self, context: str, payload) -> None:
+        if self._nonfinite_checked:
+            return
+        bad = self._collect_nonfinite(payload)
+        if not bad:
+            return
+        self._nonfinite_checked = True
+        logger.error("Non-finite tensors detected during %s:", context)
+        for name, tensor in bad:
+            logger.error(" - %s: %s", name, self._summarize_tensor(tensor))
+        raise RuntimeError(f"Non-finite tensors detected during {context}.")
 
     def _get_comet_experiment(self):
         # Retrieve the Comet experiment object from the logger.
@@ -302,13 +341,26 @@ class UELocalizationLightning(pl.LightningModule):
                     batch['measurements'], batch['radio_map'], batch['osm_map']
                 )
 
+        self._assert_finite_once(
+            "training_step inputs",
+            {
+                'measurements': batch.get('measurements'),
+                'radio_map': batch.get('radio_map'),
+                'osm_map': batch.get('osm_map'),
+                'position': batch.get('position'),
+                'cell_grid': batch.get('cell_grid'),
+            },
+        )
+
         outputs = self.forward(batch)
+        self._assert_finite_once("training_step outputs", outputs)
         
         targets = {
             'position': batch['position'],
             'cell_grid': batch['cell_grid'],
         }
         losses = self.model.compute_loss(outputs, targets, self.loss_weights)
+        self._assert_finite_once("training_step losses", losses)
 
         if self.aux_enabled:
             aux_targets = batch.get('aux_targets') or self._extract_aux_targets(batch['measurements'])

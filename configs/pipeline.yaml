@@ -31,7 +31,7 @@ scenes:
       bbox: [-73.990, 40.750, -73.980, 40.760]
       split: train_val
   num_tx: 2
-  tx_variations: 1
+  tx_variations: 5
   site_strategy: random
   tx_height_range_m: [30.0, 45.0]
   bbox_scale: 1
@@ -53,7 +53,7 @@ data_generation:
   enable_diffraction: true
   enable_diffuse_reflection: false
   rt_batch_size: 32
-  num_ue_per_tile: 10
+  num_ue_per_tile: 1000
   ue_height_range: [1.5, 1.5]
   ue_velocity_range: [0.0, 10.0]
   num_reports_per_ue: 11
