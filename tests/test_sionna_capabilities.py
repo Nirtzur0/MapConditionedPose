@@ -100,6 +100,10 @@ def test_rt_extractor_paths_reduction(monkeypatch):
     np.testing.assert_allclose(rt_features.path_gains, expected_gains)
     np.testing.assert_allclose(rt_features.path_delays, expected_delays)
     assert np.all(rt_features.num_paths == 3)
+    assert rt_features.doppler_spread is not None
+    assert rt_features.coherence_time is not None
+    assert np.all(rt_features.doppler_spread < 1e-4)
+    assert np.all(rt_features.coherence_time > 1e4)
 
 
 def test_rt_extractor_missing_doppler(monkeypatch):
@@ -112,6 +116,10 @@ def test_rt_extractor_missing_doppler(monkeypatch):
 
     assert rt_features.path_doppler.shape == rt_features.path_delays.shape
     assert np.allclose(rt_features.path_doppler, 0.0)
+    assert rt_features.doppler_spread is not None
+    assert rt_features.coherence_time is not None
+    assert np.all(rt_features.doppler_spread < 1e-4)
+    assert np.all(rt_features.coherence_time > 1e4)
 
 
 def test_radio_map_generator_requires_sionna(monkeypatch, tmp_path):

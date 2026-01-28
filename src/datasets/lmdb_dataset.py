@@ -270,8 +270,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             rt_means = torch.zeros(rt_dim, dtype=torch.float32)
             rt_stds = torch.ones(rt_dim, dtype=torch.float32)
 
-            def _apply_rt_stat(idx: RTFeatureIndex, key: str) -> None:
-                if key in rt_stats:
+        def _apply_rt_stat(idx: RTFeatureIndex, key: str) -> None:
+            if key in rt_stats:
                     mean_val = rt_stats[key].get('mean')
                     std_val = rt_stats[key].get('std')
                     if (
@@ -291,6 +291,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             _apply_rt_stat(RTFeatureIndex.TOA, 'toa')
             _apply_rt_stat(RTFeatureIndex.RMS_DELAY_SPREAD, 'rms_delay_spread')
             _apply_rt_stat(RTFeatureIndex.RMS_ANGULAR_SPREAD, 'rms_angular_spread')
+            _apply_rt_stat(RTFeatureIndex.DOPPLER_SPREAD, 'doppler_spread')
+            _apply_rt_stat(RTFeatureIndex.COHERENCE_TIME, 'coherence_time')
             _apply_rt_stat(RTFeatureIndex.TOTAL_POWER, 'path_gains')
             _apply_rt_stat(RTFeatureIndex.N_SIGNIFICANT_PATHS, 'num_paths')
             _apply_rt_stat(RTFeatureIndex.IS_NLOS, 'is_nlos')
@@ -556,6 +558,8 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         phy_data = sample.get('phy_features', {})
         mac_data = sample.get('mac_features', {})
         
+        cell_id_lookup, n_cells_meta = self._build_cell_id_lookup(sample, max_cells)
+
         # RT features (16 dims per cell)
         rt_features = self._build_rt_features(rt_data, max_cells)
         
@@ -563,12 +567,15 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         phy_features = self._build_phy_features(phy_data, max_cells)
         
         # MAC features (6 dims per cell)
-        mac_features = self._build_mac_features(mac_data, max_cells)
+        n_actual_cells = n_cells_meta if n_cells_meta > 0 else sample.get(
+            'actual_num_cells', rt_features.shape[0] if rt_features.sum() > 0 else 2
+        )
+        n_actual_cells = min(int(n_actual_cells), max_cells)
+        mac_features = self._build_mac_features(mac_data, max_cells, cell_id_lookup=cell_id_lookup, n_cells=n_actual_cells)
 
         # Cell/beam IDs
-        n_actual_cells = sample.get('actual_num_cells', rt_features.shape[0] if rt_features.sum() > 0 else 2)
         cell_ids = torch.zeros(max_cells, dtype=torch.long)
-        cell_ids[:min(n_actual_cells, max_cells)] = torch.arange(min(n_actual_cells, max_cells))
+        cell_ids[:n_actual_cells] = torch.arange(n_actual_cells)
         
         beam_ids = torch.zeros(max_cells, dtype=torch.long)
         if 'best_beam_ids' in phy_data and len(phy_data['best_beam_ids']) > 0:
@@ -625,7 +632,9 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             10: unused (dominant_path_gain removed)
             11: unused (dominant_path_delay removed)
             12: is_nlos - Is non-line-of-sight (0 or 1)
-            13-15: Reserved
+            13: doppler_spread - Doppler spread (Hz)
+            14: coherence_time - Coherence time (seconds)
+            15: reserved
         """
         features = torch.zeros(max_cells, 16)
         
@@ -711,6 +720,26 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                 features[:n, RTFeatureIndex.IS_NLOS] = torch.from_numpy(
                     is_nlos.flatten()[:n].astype(np.float32)
                 )
+
+        # Feature 13: doppler_spread
+        if 'doppler_spread' in rt_data and rt_data['doppler_spread'] is not None:
+            doppler_spread = np.asarray(rt_data['doppler_spread'])
+            doppler_spread = np.nan_to_num(doppler_spread, nan=0.0, posinf=0.0, neginf=0.0)
+            if doppler_spread.size > 0:
+                n = min(len(doppler_spread.flatten()), n_cells)
+                features[:n, RTFeatureIndex.DOPPLER_SPREAD] = torch.from_numpy(
+                    doppler_spread.flatten()[:n].astype(np.float32)
+                )
+
+        # Feature 14: coherence_time
+        if 'coherence_time' in rt_data and rt_data['coherence_time'] is not None:
+            coherence_time = np.asarray(rt_data['coherence_time'])
+            coherence_time = np.nan_to_num(coherence_time, nan=0.0, posinf=0.0, neginf=0.0)
+            if coherence_time.size > 0:
+                n = min(len(coherence_time.flatten()), n_cells)
+                features[:n, RTFeatureIndex.COHERENCE_TIME] = torch.from_numpy(
+                    coherence_time.flatten()[:n].astype(np.float32)
+                )
         
         # Normalize if enabled
         if self.normalize and self.norm_stats and 'rt' in self.norm_stats:
@@ -719,6 +748,22 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             features[:n_cells, :len(mean)] = (features[:n_cells, :len(mean)] - mean) / std
         
         return features
+
+    def _build_cell_id_lookup(self, sample: dict, max_cells: int) -> Tuple[Dict[int, int], int]:
+        """Build lookup from physical cell_id to slot index using scene metadata."""
+        scene_metadata = sample.get('scene_metadata', {}) or {}
+        sites = scene_metadata.get('sites') or []
+        valid_sites = [s for s in sites if s.get('cell_id') is not None]
+        cell_ids = []
+        for site in valid_sites:
+            try:
+                cell_ids.append(int(site.get('cell_id')))
+            except (TypeError, ValueError):
+                continue
+        if max_cells > 0:
+            cell_ids = cell_ids[:max_cells]
+        lookup = {cell_id: idx for idx, cell_id in enumerate(cell_ids)}
+        return lookup, len(cell_ids)
 
     def _build_phy_features(self, phy_data: dict, max_cells: int) -> torch.Tensor:
         """Build PHY feature tensor [max_cells, 8].
@@ -806,29 +851,23 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         
         return features
     
-    def _build_mac_features(self, mac_data: dict, max_cells: int) -> torch.Tensor:
+    def _build_mac_features(
+        self,
+        mac_data: dict,
+        max_cells: int,
+        cell_id_lookup: Optional[Dict[int, int]] = None,
+        n_cells: Optional[int] = None,
+    ) -> torch.Tensor:
         """Build MAC feature tensor [max_cells, 6]."""
         features = torch.zeros(max_cells, 6)
         
         if not mac_data:
             return features
-        
-        # Determine n_cells from any available feature
-        serving_cell_id = mac_data.get('serving_cell_id', None)
-        if serving_cell_id is None:
-            for key in ['timing_advance', 'dl_throughput_mbps']:
-                if key in mac_data and mac_data[key] is not None:
-                    serving_cell_id = mac_data[key]
-                    break
-        
-        if serving_cell_id is None:
-            return features
-        
-        serving_cell_id = np.asarray(serving_cell_id)
-        n_cells = serving_cell_id.shape[0] if serving_cell_id.ndim >= 1 else 1
-        n_cells = min(n_cells, max_cells)
-        
-        if n_cells == 0:
+
+        if n_cells is None:
+            n_cells = max_cells
+        n_cells = min(int(n_cells), max_cells)
+        if n_cells <= 0:
             return features
         
         def safe_extract_1d(data, feature_idx: int):
@@ -839,32 +878,66 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             data = data.flatten()
             n = min(len(data), n_cells)
             features[:n, feature_idx] = torch.from_numpy(data[:n]).float()
-        
-        if 'serving_cell_id' in mac_data and mac_data['serving_cell_id'] is not None:
-            safe_extract_1d(mac_data['serving_cell_id'], MACFeatureIndex.SERVING_CELL_ID)
-        if 'neighbor_cell_ids' in mac_data and mac_data['neighbor_cell_ids'] is not None:
-            neighbors = np.asarray(mac_data['neighbor_cell_ids'])
-            if neighbors.size > 0:
-                if neighbors.ndim >= 2:
-                    n = min(neighbors.shape[0], n_cells)
-                    features[:n, MACFeatureIndex.NEIGHBOR_CELL_ID_1] = torch.from_numpy(
-                        neighbors[:n, 0]
-                    ).float()
-                    if neighbors.shape[1] > 1:
-                        features[:n, MACFeatureIndex.NEIGHBOR_CELL_ID_2] = torch.from_numpy(
-                            neighbors[:n, 1]
-                        ).float()
-                elif neighbors.ndim == 1:
-                    n = min(len(neighbors), n_cells)
-                    features[:n, MACFeatureIndex.NEIGHBOR_CELL_ID_1] = torch.from_numpy(
-                        neighbors[:n]
-                    ).float()
-        if 'timing_advance' in mac_data and mac_data['timing_advance'] is not None:
-            safe_extract_1d(mac_data['timing_advance'], MACFeatureIndex.TIMING_ADVANCE)
-        if 'dl_throughput_mbps' in mac_data and mac_data['dl_throughput_mbps'] is not None:
-            safe_extract_1d(mac_data['dl_throughput_mbps'], MACFeatureIndex.DL_THROUGHPUT)
-        if 'bler' in mac_data and mac_data['bler'] is not None:
-            safe_extract_1d(mac_data['bler'], MACFeatureIndex.BLER)
+
+        def _extract_scalar(val) -> Optional[float]:
+            if val is None:
+                return None
+            arr = np.asarray(val).flatten()
+            if arr.size == 0:
+                return None
+            return float(arr[0])
+
+        serving_id = _extract_scalar(mac_data.get('serving_cell_id'))
+        serving_slot = None
+        if serving_id is not None and cell_id_lookup:
+            serving_slot = cell_id_lookup.get(int(serving_id))
+
+        if serving_slot is None:
+            # Fall back to raw serving_cell_id data if it looks per-cell
+            if mac_data.get('serving_cell_id') is not None:
+                safe_extract_1d(mac_data['serving_cell_id'], MACFeatureIndex.SERVING_CELL_ID)
+        else:
+            features[serving_slot, MACFeatureIndex.SERVING_CELL_ID] = 1.0
+
+        neighbors = mac_data.get('neighbor_cell_ids')
+        if neighbors is not None and cell_id_lookup:
+            neighbors = np.asarray(neighbors).flatten()
+            neighbor_ids = []
+            for cid in neighbors:
+                try:
+                    cid_int = int(cid)
+                except (TypeError, ValueError):
+                    continue
+                if cid_int not in neighbor_ids and cid_int in cell_id_lookup:
+                    neighbor_ids.append(cid_int)
+                if len(neighbor_ids) >= 2:
+                    break
+            if neighbor_ids:
+                features[cell_id_lookup[neighbor_ids[0]], MACFeatureIndex.NEIGHBOR_CELL_ID_1] = 1.0
+            if len(neighbor_ids) > 1:
+                features[cell_id_lookup[neighbor_ids[1]], MACFeatureIndex.NEIGHBOR_CELL_ID_2] = 1.0
+        elif neighbors is not None:
+            safe_extract_1d(neighbors, MACFeatureIndex.NEIGHBOR_CELL_ID_1)
+
+        def _apply_serving_scalar(key: str, feature_idx: int):
+            val = mac_data.get(key)
+            if val is None:
+                return
+            arr = np.asarray(val)
+            if arr.ndim == 1 and arr.size >= n_cells:
+                safe_extract_1d(arr, feature_idx)
+                return
+            scalar = _extract_scalar(arr)
+            if scalar is None:
+                return
+            if serving_slot is not None:
+                features[serving_slot, feature_idx] = float(scalar)
+            else:
+                safe_extract_1d(arr, feature_idx)
+
+        _apply_serving_scalar('timing_advance', MACFeatureIndex.TIMING_ADVANCE)
+        _apply_serving_scalar('dl_throughput_mbps', MACFeatureIndex.DL_THROUGHPUT)
+        _apply_serving_scalar('bler', MACFeatureIndex.BLER)
         
         # Normalize
         if self.normalize and self.norm_stats and 'mac' in self.norm_stats:

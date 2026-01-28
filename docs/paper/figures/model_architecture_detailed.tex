@@ -30,32 +30,27 @@
 
 % Input features
 \node[inputbox, font=\scriptsize] (embin) at (-4.8, 4.5) {IDs, Time\\{\tiny cell, beam, $\tau$}};
-\node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 13+8+5=26 dim}};
-\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CSI/CFR\\{\tiny 8×64}};
+\node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 16+8+6=30 dim}};
 
 % Embeddings
-\node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →128×3}};
-\node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →128×3}};
-\node[projbox] (cfrproj) at (-0.5, 3.6) {CSI Enc\\{\tiny Conv1D →128}};
-
+\node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →24×3}};
+\node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →24×3}};
 \draw[arrow, blue!60] (embin) -- (embproj);
 \draw[arrow, blue!60] (featsin) -- (featproj);
-\draw[arrow, cyan!60!black] (cfrin) -- (cfrproj);
 
 % Concatenation
 \node[draw, circle, fill=green!40, minimum size=0.4cm, font=\tiny\bfseries] (concat) at (-2.5, 2.8) {$\oplus$};
-\node[dimtext] at (-1.5, 2.8) {896-dim};
+\node[dimtext] at (-1.5, 2.8) {144-dim};
 
 \draw[catarrow] (embproj.south) |- (concat);
 \draw[catarrow] (featproj.south) -- (concat);
-\draw[catarrow] (cfrproj.south) |- (concat);
 
 % Projection
-\node[projbox, minimum width=1.6cm, fill=green!30] (inputproj) at (-2.5, 2.1) {Linear→512};
+\node[projbox, minimum width=1.6cm, fill=green!30] (inputproj) at (-2.5, 2.1) {Linear→96};
 \draw[arrow, green!50!black] (concat) -- (inputproj);
 
 % Transformer
-\node[transformer] (radioenc) at (-2.5, 1.0) {\textbf{Transformer}\\{\scriptsize 6L, 8H, Pre-LN}};
+\node[transformer] (radioenc) at (-2.5, 1.0) {\textbf{Transformer}\\{\scriptsize 2L, 4H, Pre-LN}};
 \draw[arrow] (inputproj) -- (radioenc);
 
 % CLS token
@@ -63,7 +58,7 @@
 \draw[arrow, orange!60] (cls.south) |- ([yshift=0.1cm]radioenc.north west);
 
 % Output
-\node[outputbox, fill=orange!25, font=\scriptsize] (radiocls) at (-2.5, -0.1) {$\mathbf{z}_r \in \mathbb{R}^{512}$};
+\node[outputbox, fill=orange!25, font=\scriptsize] (radiocls) at (-2.5, -0.1) {$\mathbf{z}_r \in \mathbb{R}^{96}$};
 \draw[arrow, orange!60] (radioenc) -- (radiocls);
 
 % ============================================
@@ -82,21 +77,21 @@
 \draw[arrow, cyan!60] (osmmap) -- (mapconcat);
 
 % Patch embed
-\node[projbox, minimum width=1.6cm, fill=cyan!25] (patchemb) at (3.65, 2.8) {Patch 16×16};
+\node[projbox, minimum width=1.6cm, fill=cyan!25] (patchemb) at (3.65, 2.8) {Patch 32×32};
 \draw[arrow, cyan!60] (mapconcat) -- (patchemb);
 
 % ViT
-\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 6L, 8H}\\{\scriptsize E(2)-ViT optional}};
+\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 2L, 4H}\\{\scriptsize E(2)-ViT optional}};
 \draw[arrow] (patchemb) -- (mapvit);
 
 % Spatial tokens output
-\node[outputbox, fill=cyan!25, font=\scriptsize] (maptokens) at (3.65, 0.5) {$\mathbf{S} \in \mathbb{R}^{256 \times 768}$};
+\node[outputbox, fill=cyan!25, font=\scriptsize] (maptokens) at (3.65, 0.5) {$\mathbf{S} \in \mathbb{R}^{64 \times 128}$};
 \draw[arrow, cyan!60] (mapvit) -- (maptokens);
 
 % ============================================
 % CROSS-ATTENTION FUSION (Center)
 % ============================================
-\node[fusionbox] (fusion) at (0.5, -1.3) {\textbf{Cross-Attention}\\{\scriptsize 4 query tokens, 8 heads}};
+\node[fusionbox] (fusion) at (0.5, -1.3) {\textbf{Cross-Attention}\\{\scriptsize 2 query tokens, 4 heads}};
 
 \draw[arrow, orange!60] (radiocls.south) -- ++(0, -0.35) -| ([xshift=-0.6cm]fusion.north);
 \draw[arrow, cyan!60] (maptokens.south) -- ++(0, -0.35) -| ([xshift=0.6cm]fusion.north);
@@ -105,7 +100,7 @@
 \node[dimtext, right] at (1.5, -0.5) {K,V};
 
 % Fused output
-\node[outputbox, fill=violet!25, font=\scriptsize] (fused) at (0.5, -2.4) {$\mathbf{z}_f \in \mathbb{R}^{768}$};
+\node[outputbox, fill=violet!25, font=\scriptsize] (fused) at (0.5, -2.4) {$\mathbf{z}_f \in \mathbb{R}^{192}$};
 \draw[arrow, violet!60] (fusion) -- (fused);
 
 % ============================================
@@ -116,12 +111,12 @@
 \draw[arrow] (fused.south) -- ++(0, -0.4) -| (coarse.north);
 
 % Fine Head  
-\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.8) {\textbf{Fine Head}\\{\tiny Top-K Re-ranking}};
+\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.8) {\textbf{Fine Head}\\{\tiny Top-K=3 Re-ranking}};
 \draw[arrow] (fused.south) -- ++(0, -0.4) -| (fine.north);
 
 % Coarse outputs
 \node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (heatmap) at (-3.0, -5.0) {$\boldsymbol{\pi}$\\{\tiny [1024]}};
-\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (topk) at (-0.8, -5.0) {Top-K\\{\tiny [5]}};
+\node[outputbox, fill=red!20, font=\scriptsize, minimum width=1.5cm] (topk) at (-0.8, -5.0) {Top-K\\{\tiny [3]}};
 \draw[arrow, red!50] (coarse.south) -- ++(0, -0.3) -| (heatmap.north);
 \draw[arrow, red!50] (coarse.south) -- ++(0, -0.3) -| (topk.north);
 
@@ -146,7 +141,7 @@
 % BACKGROUND BOXES
 % ============================================
 \begin{scope}[on background layer]
-    \node[draw=blue!40, dashed, rounded corners=6pt, fit=(embin)(cfrin)(radioenc)(radiocls), inner sep=6pt, fill=blue!3] {};
+    \node[draw=blue!40, dashed, rounded corners=6pt, fit=(embin)(radioenc)(radiocls), inner sep=6pt, fill=blue!3] {};
     \node[draw=cyan!40, dashed, rounded corners=6pt, fit=(radiomap)(osmmap)(mapvit)(maptokens), inner sep=6pt, fill=cyan!3] {};
 \end{scope}
 

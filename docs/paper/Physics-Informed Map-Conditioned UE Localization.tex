@@ -213,32 +213,27 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 
 % Input features
 \node[inputbox, font=\scriptsize] (embin) at (-4.8, 4.5) {IDs, Time\\{\tiny cell, beam, $\tau$}};
-\node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 13+8+5=26 dim}};
-\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CSI/CFR\\{\tiny 8×64}};
+\node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 16+8+6=30 dim}};
 
 % Embeddings
-\node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →128×3}};
-\node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →128×3}};
-\node[projbox] (cfrproj) at (-0.5, 3.6) {CSI Enc\\{\tiny Conv1D →128}};
-
+\node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →24×3}};
+\node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →24×3}};
 \draw[arrow, blue!60] (embin) -- (embproj);
 \draw[arrow, blue!60] (featsin) -- (featproj);
-\draw[arrow, cyan!60!black] (cfrin) -- (cfrproj);
 
 % Concatenation
 \node[draw, circle, fill=green!40, minimum size=0.4cm, font=\tiny\bfseries] (concat) at (-2.5, 2.8) {$\oplus$};
-\node[dimtext] at (-1.5, 2.8) {896-dim};
+\node[dimtext] at (-1.5, 2.8) {144-dim};
 
 \draw[catarrow] (embproj.south) |- (concat);
 \draw[catarrow] (featproj.south) -- (concat);
-\draw[catarrow] (cfrproj.south) |- (concat);
 
 % Projection
-\node[projbox, minimum width=1.6cm, fill=green!30] (inputproj) at (-2.5, 2.1) {Linear→512};
+\node[projbox, minimum width=1.6cm, fill=green!30] (inputproj) at (-2.5, 2.1) {Linear→96};
 \draw[arrow, green!50!black] (concat) -- (inputproj);
 
 % Transformer
-\node[transformer] (radioenc) at (-2.5, 1.0) {\textbf{Transformer}\\{\scriptsize 6 layers, 8 heads, Pre-LN}};
+\node[transformer] (radioenc) at (-2.5, 1.0) {\textbf{Transformer}\\{\scriptsize 2 layers, 4 heads, Pre-LN}};
 \draw[arrow] (inputproj) -- (radioenc);
 
 % CLS token
@@ -246,7 +241,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[arrow, orange!60] (cls.south) |- ([yshift=0.1cm]radioenc.north west);
 
 % Output
-\node[outputbox, fill=orange!25, font=\scriptsize] (radiocls) at (-2.5, -0.1) {$\mathbf{z}_r \in \mathbb{R}^{512}$};
+\node[outputbox, fill=orange!25, font=\scriptsize] (radiocls) at (-2.5, -0.1) {$\mathbf{z}_r \in \mathbb{R}^{96}$};
 \draw[arrow, orange!60] (radioenc) -- (radiocls);
 
 % ============================================
@@ -265,21 +260,21 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[arrow, cyan!60] (osmmap) -- (mapconcat);
 
 % Patch embed
-\node[projbox, minimum width=1.6cm, fill=cyan!25] (patchemb) at (3.65, 2.8) {Patch 16×16};
+\node[projbox, minimum width=1.6cm, fill=cyan!25] (patchemb) at (3.65, 2.8) {Patch 32×32};
 \draw[arrow, cyan!60] (mapconcat) -- (patchemb);
 
 % ViT
-\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 6 layers, 8 heads}\\{\scriptsize E(2)-ViT optional (p4m)}};
+\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 2 layers, 4 heads}\\{\scriptsize E(2)-ViT optional (p4m)}};
 \draw[arrow] (patchemb) -- (mapvit);
 
 % Spatial tokens output
-\node[outputbox, fill=cyan!25, font=\scriptsize] (maptokens) at (3.65, 0.5) {$\mathbf{S} \in \mathbb{R}^{256 \times 768}$};
+\node[outputbox, fill=cyan!25, font=\scriptsize] (maptokens) at (3.65, 0.5) {$\mathbf{S} \in \mathbb{R}^{64 \times 128}$};
 \draw[arrow, cyan!60] (mapvit) -- (maptokens);
 
 % ============================================
 % CROSS-ATTENTION FUSION (Center)
 % ============================================
-\node[fusionbox] (fusion) at (0.5, -1.3) {\textbf{Cross-Attention Fusion}\\{\scriptsize 4 query tokens, 8 heads}};
+\node[fusionbox] (fusion) at (0.5, -1.3) {\textbf{Cross-Attention Fusion}\\{\scriptsize 2 query tokens, 4 heads}};
 
 \draw[arrow, orange!60] (radiocls.south) -- ++(0, -0.35) -| ([xshift=-0.6cm]fusion.north);
 \draw[arrow, cyan!60] (maptokens.south) -- ++(0, -0.35) -| ([xshift=0.6cm]fusion.north);
@@ -288,7 +283,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \node[dimtext, right] at (1.5, -0.5) {K,V};
 
 % Fused output
-\node[outputbox, fill=violet!25, font=\scriptsize] (fused) at (0.5, -2.4) {$\mathbf{z}_f \in \mathbb{R}^{768}$};
+\node[outputbox, fill=violet!25, font=\scriptsize] (fused) at (0.5, -2.4) {$\mathbf{z}_f \in \mathbb{R}^{192}$};
 \draw[arrow, violet!60] (fusion) -- (fused);
 
 % ============================================
@@ -299,7 +294,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[arrow] (fused.south) -- ++(0, -0.3) -| (coarse.north);
 
 % Fine Head  
-\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.5) {\textbf{Fine Head}\\{\tiny Top-K=5 refinement}};
+\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.5) {\textbf{Fine Head}\\{\tiny Top-K=3 refinement}};
 \draw[arrow] (fused.south) -- ++(0, -0.3) -| (fine.north);
 
 % Coarse outputs
@@ -329,17 +324,17 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 % BACKGROUND BOXES
 % ============================================
 \begin{scope}[on background layer]
-    \node[draw=blue!40, dashed, rounded corners=6pt, fit=(embin)(cfrin)(radioenc)(radiocls), inner sep=6pt, fill=blue!3] {};
+    \node[draw=blue!40, dashed, rounded corners=6pt, fit=(embin)(radioenc)(radiocls), inner sep=6pt, fill=blue!3] {};
     \node[draw=cyan!40, dashed, rounded corners=6pt, fit=(radiomap)(osmmap)(mapvit)(maptokens), inner sep=6pt, fill=cyan!3] {};
 \end{scope}
 
 % Feature annotations
-\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 4.3) {Radio: PathGain, ToA,\\SINR, Throughput, K-Factor};
-\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 3.4) {OSM: Height, Footprint,\\Roads, DistTrans, Edges};
+\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 4.3) {Radio map: PathGain, SNR,\\SINR, Throughput, BLER};
+\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 3.4) {OSM: Height, Footprint,\\Roads, Terrain, Material};
 
 \end{tikzpicture}
 \vspace{-0.2cm}
-\caption{\textbf{Model architecture.} The \textcolor{blue!70!black}{Radio Encoder} tokenizes multi-layer measurements (RT, PHY, MAC features + optional CSI/CFR) via learned embeddings and projections, encodes CSI with a 1D conv stack, processes tokens with a 6-layer Transformer, and extracts a global embedding $\mathbf{z}_r$ via a [CLS] token. The \textcolor{cyan!70!black}{Map Encoder} fuses radio and OSM maps (10 channels total) through patch embedding and a standard ViT by default (optional E(2)-equivariant variant), producing spatial tokens $\mathbf{S}$. \textcolor{violet!70!black}{Cross-attention fusion} attends radio queries to map keys/values with 4 learnable query tokens. The \textcolor{red!70!black}{Coarse Head} predicts a 32×32 cell probability distribution, and the \textcolor{yellow!50!orange}{Fine Head} outputs sub-cell offsets and scores for the Top-K cells, yielding a re-ranked \textcolor{teal!70!black}{hypothesis distribution} over 2D position.}
+\caption{\textbf{Model architecture.} The \textcolor{blue!70!black}{Radio Encoder} tokenizes multi-layer measurements (RT, PHY, MAC features including CSI reports and Doppler descriptors) via learned embeddings and projections, processes tokens with a 2-layer Transformer, and extracts a global embedding $\mathbf{z}_r$ via a [CLS] token. The \textcolor{cyan!70!black}{Map Encoder} fuses radio and OSM maps (10 channels total) through patch embedding and a standard ViT by default (optional E(2)-equivariant variant), producing spatial tokens $\mathbf{S}$. \textcolor{violet!70!black}{Cross-attention fusion} attends radio queries to map keys/values with 2 learnable query tokens. The \textcolor{red!70!black}{Coarse Head} predicts a 32×32 cell probability distribution, and the \textcolor{yellow!50!orange}{Fine Head} outputs sub-cell offsets and scores for the Top-K cells, yielding a re-ranked \textcolor{teal!70!black}{hypothesis distribution} over 2D position.}
 \label{fig:architecture}
 \end{figure*}
 
@@ -355,10 +350,10 @@ We now specify the model $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ from
 Each measurement event $\mathbf{x}_t=(c_t,b_t,\tau_t,\mathbf{f}_t)$ is mapped to a token $\mathbf{h}_t\in\R^{d_r}$ via learned embeddings and linear projections:
 \begin{equation}
 \mathbf{h}_t
-= W \Big[\, \underbrace{e_c(c_t)}_{\text{cell ID}} \,\Vert\, \underbrace{e_b(b_t)}_{\text{beam ID}} \,\Vert\, \underbrace{\psi(\tau_t;\bm\tau)}_{\text{time}} \,\Vert\, \underbrace{P\,\mathbf{f}_t}_{\text{features}} \,\Vert\, \underbrace{\phi(\mathbf{H}_{\text{cfr}})}_{\text{CSI/CFR}} \Big],
+= W \Big[\, \underbrace{e_c(c_t)}_{\text{cell ID}} \,\Vert\, \underbrace{e_b(b_t)}_{\text{beam ID}} \,\Vert\, \underbrace{\psi(\tau_t;\bm\tau)}_{\text{time}} \,\Vert\, \underbrace{P\,\mathbf{f}_t}_{\text{features}} \Big],
 \label{eq:radio_token}
 \end{equation}
-where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features (RT, PHY, MAC measurements), $\psi$ is a time embedding, and $\phi(\mathbf{H}_{\text{cfr}})$ is an optional CSI/CFR encoder applied to the per-sample CFR magnitude tensor $\mathbf{H}_{\text{cfr}}\in\R^{N_c\times F}$.
+where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features (RT, PHY, MAC measurements), and $\psi$ is a time embedding. The feature vector $\mathbf{f}_t$ includes CSI reports (CQI/PMI/RI) that reflect channel quality and spatial structure, plus Doppler descriptors (Doppler spread and coherence time) that capture time-variation statistics rather than raw CSI/CFR tensors.
 In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time axis}:
 \begin{equation}
   \delta_t = \tau_t-\tau_1,\qquad \bar\delta_t=\frac{\delta_t}{\max_s \delta_s + \varepsilon},\qquad \psi(\tau_t;\bm\tau)=\mathrm{PE}(\bar\delta_t),
@@ -366,8 +361,8 @@ In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time
 \end{equation}
 where $\mathrm{PE}$ is a sinusoidal lookup table (as in standard Transformers \cite{vaswani2017transformer}).
 
-\paragraph{CSI/CFR encoder.}
-When channel-state information is available, we encode the CFR magnitude $\mathbf{H}_{\text{cfr}}$ with a lightweight 1D convolutional stack along the frequency axis, followed by global pooling to obtain a fixed-length vector. This embedding is broadcast across all tokens and concatenated as in Eq.~\eqref{eq:radio_token}. If CSI is unavailable, we omit this term (equivalently, use a zero vector), preserving the tokenization structure.
+\paragraph{Implementation note: CSI reports and Doppler.}
+Our current implementation uses standardized CSI reports (CQI/PMI/RI) and Doppler statistics as scalar features. Doppler is represented indirectly via summary statistics (spread and coherence time), not by passing raw CSI/CFR tensors through the encoder.
 
 A standard Transformer encoder with self-attention processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with padding masks for variable-length sequences) and outputs contextualized embeddings; we use a learnable \texttt{[CLS]} token prepended to the sequence to pool information into a global representation $\mathbf{z}_r\in\R^{d_r}$.
 
@@ -611,7 +606,7 @@ Refinement is most useful when the hypothesis weights are diffuse (low confidenc
 
 \subsection{Synthetic data generation with differentiable ray tracing}
 
-We generate datasets by (i) constructing 3D scenes from GIS/OSM data, (ii) placing transmitter sites according to configurable strategies, and (iii) running differentiable ray tracing to compute dense radio maps and sample sparse measurement sequences. Sionna RT provides GPU-accelerated differentiable ray tracing for radio propagation and supports radio-map computation \cite{hoydis2023sionnart,aitaoudia2025sionna_techreport}. The resulting dataset is stored in an LMDB key-value format to support large-scale training.
+We generate datasets by (i) constructing 3D scenes from GIS/OSM data, (ii) placing transmitter sites according to configurable strategies, and (iii) running differentiable ray tracing to compute dense radio maps and sample sparse measurement sequences. Sionna RT provides GPU-accelerated differentiable ray tracing for radio propagation and supports radio-map computation \cite{hoydis2023sionnart,aitaoudia2025sionna_techreport}. The resulting dataset is stored in an LMDB key-value format (we do not use Zarr in the current pipeline) to support large-scale training.
 
 \subsection{Inputs and channels}
 
@@ -629,18 +624,18 @@ We use a multi-channel map tensor with $C_r$ radio channels and $C_o$ semantic c
 \multicolumn{3}{l}{\textit{Data \& Context}} \\
 Map resolution & $256\times 256$ & Covers $\sim$1\,km$^2$ urban area at $\sim$4\,m/px precision. \\
 Coarse grid & $32\times 32$ & $1024$ hypotheses; balances classification difficulty with spatial resolution. \\
-Max sequence & $T=20$ & Sufficient to capture movement trends without high memory cost. \\
+Max sequence & $T=11$ & 2\,s window at 200\,ms report interval; balances temporal coverage and memory. \\
 \midrule
 \multicolumn{3}{l}{\textit{Neural Architecture}} \\
-Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=256$, $L=4$, $H=8$\\\texttt{[CLS]} pooling\end{tabular} & \textbf{Standard Transformer:} Processes radio token sets with self-attention. \texttt{[CLS]} token provides permutation-invariant pooling. \\
-Map Encoder & \begin{tabular}[t]{@{}l@{}}\textbf{Default:} Standard ViT\\$d_m=384$, $L=6$, $H=6$\\\texttt{patch\_size}=$16$\end{tabular} & \textbf{Efficient:} Standard ViT is computationally efficient and performs well when map orientations are consistent. \\
+Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=96$, $L=2$, $H=4$\\\texttt{[CLS]} pooling\end{tabular} & \textbf{Standard Transformer:} Processes radio token sets with self-attention. \texttt{[CLS]} token provides permutation-invariant pooling. \\
+Map Encoder & \begin{tabular}[t]{@{}l@{}}\textbf{Default:} Standard ViT\\$d_m=128$, $L=2$, $H=4$\\\texttt{patch\_size}=$32$\end{tabular} & \textbf{Efficient:} Standard ViT is computationally efficient and performs well when map orientations are consistent. \\
 (Optional, off by default) & \begin{tabular}[t]{@{}l@{}}E2-ViT, \texttt{group}=$p4m$\\$|G|=8$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance; higher compute cost. \\
-Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=256$, $H=8$\\$K_q=4$ query tokens\end{tabular} & \textbf{Multi-query:} Multiple learnable queries attend to map tokens, conditioned on radio features. \\
+Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=192$, $H=4$\\$K_q=2$ query tokens\end{tabular} & \textbf{Multi-query:} Multiple learnable queries attend to map tokens, conditioned on radio features. \\
 Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: MLP$\to G^2$\\Fine: 2D pos.\ enc. +\\optional local map patches\\Top-$K$ re-ranking\end{tabular} & \textbf{Hierarchical:} Coarse classification over grid cells; fine head uses 2D cell encoding (and optional local map patches) to predict offsets and scores. \\
 \midrule
 \multicolumn{3}{l}{\textit{Training}} \\
-Top-$K$ size & Top-$K=5$ & Covers primary ambiguous modes (e.g., street canyon reflections) while suppressing noise. \\
-Loss weights & $\lambda_{\text{coarse}}=0.5$, $\lambda_{\text{fine}}=1.0$ & Fine expected error is primary; coarse ensures correct cell is in top-$K$. \\
+Top-$K$ size & Top-$K=3$ & Retains dominant ambiguity modes while reducing compute. \\
+Loss weights & $\lambda_{\text{coarse}}=1.5$, $\lambda_{\text{fine}}=1.0$ & Fine expected error is primary; coarse ensures correct cell is in top-$K$. \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -658,8 +653,40 @@ We demonstrate the model's ability to leverage radio propagation physics and sem
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/map_layers.png}
-\caption{Input map stack used by the map encoder. The top row shows the five radio-map channels (e.g., path gain, ToA, SNR/SINR, throughput), and the bottom row shows the semantic channels (height/footprint/roads/terrain).}
+\caption{Input map stack used by the map encoder. The top row shows the five radio-map channels (e.g., path gain, SNR/SINR, throughput, BLER), and the bottom row shows the semantic channels (height/footprint/roads/terrain).}
 \label{fig:map_layers}
+\end{figure}
+
+Figure~\ref{fig:ue_trajectories} shows example UE trajectories over the map extent; trajectories are sampled at a fixed report interval and encoded as temporal measurement sequences. Figure~\ref{fig:feature_violin} summarizes the per-dimension distributions of RT/PHY/MAC features used by the radio encoder.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/ue_trajectories.png}
+\caption{Sampled UE trajectories over the scene footprint. Each trajectory corresponds to a measurement sequence used by the radio encoder.}
+\label{fig:ue_trajectories}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{subfigure}[t]{0.32\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/feature_violin_rt_features.png}
+  \caption{RT feature distributions.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/feature_violin_phy_features.png}
+  \caption{PHY feature distributions.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/feature_violin_mac_features.png}
+  \caption{MAC feature distributions.}
+\end{subfigure}
+\caption{Violin plots of per-dimension feature distributions for the radio encoder inputs (RT/PHY/MAC).}
+\label{fig:feature_violin}
 \end{figure}
 
 Figure~\ref{fig:coarse_to_fine} illustrates the coarse-to-fine posterior: the coarse heatmap highlights candidate grid cells, and the top-$K$ re-ranked hypotheses show weighted candidate positions aligned with map structure.
@@ -681,7 +708,14 @@ Figure~\ref{fig:coarse_to_fine} illustrates the coarse-to-fine posterior: the co
 \label{fig:coarse_to_fine}
 \end{figure}
 
-We also visualize the optional physics-only refinement step. Figure~\ref{fig:refinement_effect} shows how refinement moves the prediction along radio-map gradients and reduces the error for the shown sample. Figure~\ref{fig:error_distribution} summarizes batch-level error statistics with a histogram, CDF, and box plot.
+We also visualize the optional physics-only refinement step. Figure~\ref{fig:refinement_effect} shows how refinement moves the prediction along radio-map gradients and reduces the error for the shown sample. Figure~\ref{fig:error_overlay} overlays per-sample errors on the building footprint to highlight spatial error structure. Figure~\ref{fig:error_distribution} summarizes batch-level error statistics with a histogram, CDF, and box plot.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/error_on_building_map.png}
+\caption{Per-sample localization error overlaid on the building footprint. Color indicates Euclidean error magnitude.}
+\label{fig:error_overlay}
+\end{figure}
 
 \begin{figure}[t]
 \centering

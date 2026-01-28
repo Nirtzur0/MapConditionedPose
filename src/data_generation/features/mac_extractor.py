@@ -14,6 +14,14 @@ try:
 except ImportError:
     TF_AVAILABLE = False
 
+SIONNA_SYS_AVAILABLE = False
+if TF_AVAILABLE:
+    try:
+        from sionna.sys import PHYAbstraction, InnerLoopLinkAdaptation
+        SIONNA_SYS_AVAILABLE = True
+    except Exception:
+        SIONNA_SYS_AVAILABLE = False
+
 from .data_structures import PHYFAPILayerFeatures, MACRRCLayerFeatures
 from ..measurement_utils import compute_timing_advance
 
@@ -28,10 +36,27 @@ class MACRRCFeatureExtractor:
     def __init__(self,
                  max_neighbors: int = 8,
                  enable_throughput: bool = True,
-                 enable_handover: bool = False):
+                 enable_handover: bool = False,
+                 use_sionna_sys: bool = False,
+                 num_allocated_re: int = 0,
+                 bler_target: float = 0.1,
+                 mcs_table_index: int = 1,
+                 mcs_category: int = 0,
+                 slot_duration_ms: float = 1.0):
         self.max_neighbors = max_neighbors
         self.enable_throughput = enable_throughput
         self.enable_handover = enable_handover
+        self.use_sionna_sys = use_sionna_sys and SIONNA_SYS_AVAILABLE
+        self.num_allocated_re = int(num_allocated_re) if num_allocated_re else 0
+        self.bler_target = float(bler_target)
+        self.mcs_table_index = int(mcs_table_index)
+        self.mcs_category = int(mcs_category)
+        self.slot_duration_ms = float(slot_duration_ms)
+        self._phy_abs = None
+        self._illa = None
+        if self.use_sionna_sys:
+            self._phy_abs = PHYAbstraction()
+            self._illa = InnerLoopLinkAdaptation(self._phy_abs, bler_target=self.bler_target)
         logger.info(f"MACRRCFeatureExtractor initialized: max_neighbors={max_neighbors}")
     
     def extract(self,
@@ -125,7 +150,7 @@ class MACRRCFeatureExtractor:
             serving_cell_id = tf.gather(cids, best_cell_idx) # [Batch, Rx]
             
             # Neighbors
-            k = tf.minimum(self.max_neighbors, tf.shape(rsrp)[-1])
+            k = tf.minimum(tf.cast(self.max_neighbors, tf.int32), tf.shape(rsrp)[-1])
             values, inds = tf.math.top_k(rsrp, k=k)
             inds = tf.clip_by_value(inds, 0, num_cells - 1)
             neighbor_cell_ids = tf.gather(cids, inds) # [Batch, Rx, K]
@@ -248,6 +273,37 @@ class MACRRCFeatureExtractor:
                  dl_t_serv = tf.gather(dl_throughput, safe_idx, batch_dims=bd)
              else:
                  dl_t_serv = tf.gather(dl_throughput, safe_idx, batch_dims=1)
+
+             bler = None
+             if self.use_sionna_sys and phy_features.sinr is not None:
+                 sinr_db = align_dims(phy_features.sinr, num_cells)
+                 sinr_db = tf.cast(sinr_db, tf.float32)
+                 sinr_db_serv = tf.gather(sinr_db, safe_idx, batch_dims=2)
+                 sinr_eff = tf.pow(10.0, sinr_db_serv / 10.0)
+
+                 if self.num_allocated_re > 0:
+                     num_re = tf.fill(tf.shape(sinr_eff), tf.cast(self.num_allocated_re, tf.int32))
+                 else:
+                     num_re = tf.fill(tf.shape(sinr_eff), tf.constant(896, dtype=tf.int32))
+
+                 mcs_idx = self._illa(
+                     sinr_eff=sinr_eff,
+                     num_allocated_re=num_re,
+                     mcs_table_index=self.mcs_table_index,
+                     mcs_category=self.mcs_category,
+                 )
+                 num_decoded_bits, _, _, tbler, _ = self._phy_abs(
+                     mcs_index=mcs_idx,
+                     sinr_eff=sinr_eff,
+                     num_allocated_re=num_re,
+                     mcs_table_index=self.mcs_table_index,
+                     mcs_category=self.mcs_category,
+                     check_mcs_index_validity=False,
+                 )
+                 bler = tbler
+                 if self.enable_throughput:
+                     slot_s = max(self.slot_duration_ms, 0.001) / 1000.0
+                     dl_t_serv = tf.cast(num_decoded_bits, tf.float32) / slot_s / 1e6
              
         else:
              # Numpy path
@@ -319,6 +375,37 @@ class MACRRCFeatureExtractor:
 
              dl_t_serv = np.take_along_axis(dl_throughput, idx_expanded, axis=-1)
              dl_t_serv = dl_t_serv.squeeze(axis=-1)
+
+             bler = None
+             if self.use_sionna_sys and TF_AVAILABLE and phy_features.sinr is not None:
+                 sinr_db = align_dims(phy_features.sinr, num_cells)
+                 sinr_db = np.asarray(sinr_db)
+                 sinr_db_serv = np.take_along_axis(sinr_db, safe_idx[..., np.newaxis], axis=-1).squeeze(-1)
+                 sinr_eff = tf.convert_to_tensor(np.power(10.0, sinr_db_serv / 10.0), dtype=tf.float32)
+
+                 if self.num_allocated_re > 0:
+                     num_re = tf.fill(tf.shape(sinr_eff), tf.cast(self.num_allocated_re, tf.int32))
+                 else:
+                     num_re = tf.fill(tf.shape(sinr_eff), tf.constant(896, dtype=tf.int32))
+
+                 mcs_idx = self._illa(
+                     sinr_eff=sinr_eff,
+                     num_allocated_re=num_re,
+                     mcs_table_index=self.mcs_table_index,
+                     mcs_category=self.mcs_category,
+                 )
+                 num_decoded_bits, _, _, tbler, _ = self._phy_abs(
+                     mcs_index=mcs_idx,
+                     sinr_eff=sinr_eff,
+                     num_allocated_re=num_re,
+                     mcs_table_index=self.mcs_table_index,
+                     mcs_category=self.mcs_category,
+                     check_mcs_index_validity=False,
+                 )
+                 bler = tbler.numpy()
+                 if self.enable_throughput:
+                     slot_s = max(self.slot_duration_ms, 0.001) / 1000.0
+                     dl_t_serv = num_decoded_bits.numpy().astype(np.float32) / slot_s / 1e6
              
              # REMOVED SQUEEZE: Consistent [Batch, Rx] output
              # if dl_t_serv.ndim > 1 and dl_t_serv.shape[-1] == 1:
@@ -333,7 +420,8 @@ class MACRRCFeatureExtractor:
             serving_cell_id=serving_cell_id,
             neighbor_cell_ids=neighbor_cell_ids,
             timing_advance=timing_advance,
-            dl_throughput_mbps=dl_t_serv if self.enable_throughput else None
+            dl_throughput_mbps=dl_t_serv if self.enable_throughput else None,
+            bler=bler,
         )
 
     def _simulate_throughput(self, cqi: Union[np.ndarray, Any]) -> Union[np.ndarray, Any]:

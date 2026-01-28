@@ -25,8 +25,8 @@ class RTFeatureIndex(IntEnum):
     DOMINANT_PATH_GAIN = 10  # unused (removed from model inputs)
     DOMINANT_PATH_DELAY = 11  # unused (removed from model inputs)
     IS_NLOS = 12
-    RESERVED_13 = 13
-    RESERVED_14 = 14
+    DOPPLER_SPREAD = 13
+    COHERENCE_TIME = 14
     RESERVED_15 = 15
 
 
@@ -71,6 +71,8 @@ RT_KEYS: Dict[str, str] = {
     "num_paths": "rt/num_paths",
     "rms_delay_spread": "rt/rms_delay_spread",
     "rms_angular_spread": "rt/rms_angular_spread",
+    "doppler_spread": "rt/doppler_spread",
+    "coherence_time": "rt/coherence_time",
     "k_factor": "rt/k_factor",
     "is_nlos": "rt/is_nlos",
 }

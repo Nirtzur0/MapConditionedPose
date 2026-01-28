@@ -206,6 +206,7 @@ class SceneGenerator:
             num_tx=site_config.get('num_tx', 3),
             num_rx=site_config.get('num_rx', 0),
             height_tx=site_config.get('height_m', 25.0),
+            height_tx_range=site_config.get('height_range_m'),
             isd_meters=site_config.get('isd'),
         )
         

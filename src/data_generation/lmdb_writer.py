@@ -96,6 +96,7 @@ class LMDBDatasetWriter:
         # Optional split metadata
         self.split_ratios = None
         self.split_seed = 42
+        self.kfold_config = None
 
         # Sequence tracking (optional, if ue_ids provided)
         self._sequence_ids = []
@@ -128,6 +129,19 @@ class LMDBDatasetWriter:
             raise ValueError(f"split_ratios must sum to 1.0, got {total}")
         self.split_ratios = split_ratios
         self.split_seed = split_seed
+
+    def set_kfold(self, num_folds: int, fold_index: int, shuffle: bool = True, seed: int = 42) -> None:
+        """Set K-fold configuration for a combined dataset."""
+        if num_folds < 2:
+            raise ValueError(f"num_folds must be >= 2, got {num_folds}")
+        if fold_index < 0 or fold_index >= num_folds:
+            raise ValueError(f"fold_index must be in [0, {num_folds - 1}], got {fold_index}")
+        self.kfold_config = {
+            "num_folds": num_folds,
+            "fold_index": fold_index,
+            "shuffle": shuffle,
+            "seed": seed,
+        }
 
     def _track_sequence(self, sequence_id: int) -> None:
         if self._current_sequence_id is None:
@@ -369,7 +383,41 @@ class LMDBDatasetWriter:
         # Prepare metadata
         split_indices = None
         split_sequence_indices = None
-        if self.split_ratios:
+        if self.kfold_config:
+            rng = np.random.default_rng(self.kfold_config["seed"])
+            if self._sequence_slices:
+                num_sequences = len(self._sequence_slices)
+                seq_indices = np.arange(num_sequences)
+                if self.kfold_config["shuffle"]:
+                    rng.shuffle(seq_indices)
+                folds = np.array_split(seq_indices, self.kfold_config["num_folds"])
+                val_seq_ids = folds[self.kfold_config["fold_index"]]
+                train_folds = [f for i, f in enumerate(folds) if i != self.kfold_config["fold_index"]]
+                train_seq_ids = np.concatenate(train_folds) if train_folds else np.array([], dtype=int)
+                split_sequence_indices = {
+                    "train": train_seq_ids.tolist(),
+                    "val": val_seq_ids.tolist(),
+                }
+                split_indices = {}
+                for split_name, seq_ids in split_sequence_indices.items():
+                    indices = []
+                    for seq_id in seq_ids:
+                        start, length = self._sequence_slices[seq_id]
+                        indices.extend(range(start, start + length))
+                    split_indices[split_name] = indices
+            else:
+                sample_indices = np.arange(self.sample_count)
+                if self.kfold_config["shuffle"]:
+                    rng.shuffle(sample_indices)
+                folds = np.array_split(sample_indices, self.kfold_config["num_folds"])
+                val_idx = folds[self.kfold_config["fold_index"]]
+                train_folds = [f for i, f in enumerate(folds) if i != self.kfold_config["fold_index"]]
+                train_idx = np.concatenate(train_folds) if train_folds else np.array([], dtype=int)
+                split_indices = {
+                    "train": train_idx.tolist(),
+                    "val": val_idx.tolist(),
+                }
+        elif self.split_ratios:
             rng = np.random.default_rng(self.split_seed)
             if self._sequence_slices:
                 num_sequences = len(self._sequence_slices)
@@ -412,6 +460,7 @@ class LMDBDatasetWriter:
             'split_sequence_indices': split_sequence_indices,
             'split_seed': self.split_seed,
             'split_ratios': self.split_ratios,
+            'kfold': self.kfold_config,
             'sequence_length': self.sequence_length,
             'sequence_slices': self._sequence_slices if self._sequence_slices else None,
         }

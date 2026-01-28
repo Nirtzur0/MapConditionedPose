@@ -848,8 +848,8 @@ def visualize_all_features(batch, sample_idx=0, model=None, verbose=False):
         ('unused (dominant_path_gain)', ''),
         ('unused (dominant_path_delay)', 's'),
         ('Is NLOS', ''),
-        ('reserved_13', ''),
-        ('reserved_14', ''),
+        ('Doppler Spread', 'Hz'),
+        ('Coherence Time', 's'),
         ('reserved_15', ''),
     ]
 
@@ -1571,6 +1571,113 @@ def plot_error_analysis(errors_m, title="Error Distribution", save_path=None):
     plt.show()
 
 
+def plot_error_on_building_map(
+    model,
+    dataloader,
+    max_batches=10,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    save_path=None,
+):
+    """
+    Plot per-sample localization error as a scatter overlay on the building map.
+
+    Assumes samples in a batch share the same scene map. If multiple scenes appear
+    across batches, a subplot is created per scene_idx.
+    """
+    import torch
+
+    if model is None:
+        raise ValueError("plot_error_on_building_map requires a trained model.")
+
+    scene_data = {}
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
+
+            outputs = model.model(batch['measurements'], batch['radio_map'], batch['osm_map'])
+            pred_pos = outputs['predicted_position'].cpu().numpy()
+            true_pos = batch['position'].cpu().numpy()
+
+            if 'scene_size' in batch:
+                scene_size = batch['scene_size'].cpu().numpy()
+                errors_m = np.linalg.norm((pred_pos - true_pos) * scene_size, axis=1)
+            elif 'scene_extent' in batch:
+                scene_extent = batch['scene_extent'].cpu().numpy()
+                errors_m = np.linalg.norm((pred_pos - true_pos) * scene_extent[:, None], axis=1)
+            else:
+                errors_m = np.linalg.norm((pred_pos - true_pos) * 512.0, axis=1)
+
+            scene_idx = batch.get('scene_idx', None)
+            if scene_idx is None:
+                scene_ids = np.zeros(len(errors_m), dtype=int)
+            else:
+                scene_ids = scene_idx.cpu().numpy().astype(int)
+
+            for s_id in np.unique(scene_ids):
+                mask = scene_ids == s_id
+                if not np.any(mask):
+                    continue
+
+                if s_id not in scene_data:
+                    # Take map and scene size from first occurrence
+                    first_idx = int(np.where(mask)[0][0])
+                    osm_map = batch['osm_map'][first_idx].cpu().numpy()
+                    scene_size = _resolve_scene_size(batch, sample_idx=first_idx)
+                    scene_data[s_id] = {
+                        'positions': [],
+                        'errors': [],
+                        'osm_map': osm_map,
+                        'scene_size': scene_size,
+                    }
+
+                scene_data[s_id]['positions'].append(true_pos[mask])
+                scene_data[s_id]['errors'].append(errors_m[mask])
+
+    if not scene_data:
+        print("No data collected for error visualization.")
+        return
+
+    num_scenes = len(scene_data)
+    fig, axes = plt.subplots(1, num_scenes, figsize=(7 * num_scenes, 7), squeeze=False)
+
+    for ax, (s_id, data) in zip(axes[0], scene_data.items()):
+        positions = np.concatenate(data['positions'], axis=0)
+        errors = np.concatenate(data['errors'], axis=0)
+        scene_size = data['scene_size']
+        osm_map = data['osm_map']
+
+        extent = [0.0, float(scene_size[0]), 0.0, float(scene_size[1])]
+        footprint = _prettify_footprint(osm_map)
+        if footprint is None:
+            footprint = osm_map[0] if osm_map.shape[0] > 0 else np.zeros((256, 256))
+
+        ax.imshow(footprint, cmap='Greys', origin='lower', extent=extent, alpha=0.6)
+        sc = ax.scatter(
+            positions[:, 0] * scene_size[0],
+            positions[:, 1] * scene_size[1],
+            c=errors,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=18,
+            alpha=0.85,
+            edgecolors='none',
+        )
+        ax.set_title(f"Scene {s_id} | Error Overlay")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+        ax.set_aspect('equal', 'box')
+
+    plt.colorbar(sc, ax=axes.ravel().tolist(), fraction=0.046, pad=0.04, label='Error (m)')
+    plt.tight_layout()
+    _save_figure(fig, save_path)
+    plt.show()
+
+
 def compute_loss_breakdown(model, batch):
     """Compute coarse and fine loss components."""
     with torch.no_grad():
@@ -1692,14 +1799,20 @@ def visualize_feature_histograms(batch, max_dims=12, use_mask=True):
         plt.show()
 
 
-def visualize_feature_violinplots(batch, max_dims=12, use_mask=True):
+def visualize_feature_violinplots(
+    batch,
+    max_dims=12,
+    use_mask=True,
+    save_dir=None,
+    save_prefix="feature_violin",
+):
     """Violin plots for model input features to check distributions."""
     measurements = batch.get('measurements', {})
     mask = None
     if use_mask and 'mask' in measurements:
         mask = measurements['mask'].cpu().numpy().reshape(-1)
 
-    def _violin_grid(data, title, max_dims_local):
+    def _violin_grid(data, title, max_dims_local, save_name=None):
         data = np.asarray(data)
         if data.ndim == 1:
             data = data.reshape(-1, 1)
@@ -1709,16 +1822,19 @@ def visualize_feature_violinplots(batch, max_dims=12, use_mask=True):
             flat = flat[mask]
         df = pd.DataFrame(flat[:, :dims], columns=[f"dim_{i}" for i in range(dims)])
         df_melt = df.melt(var_name='dim', value_name='value')
-        plt.figure(figsize=(max(8, dims * 0.7), 4))
-        sns.violinplot(data=df_melt, x='dim', y='value', inner='quartile', cut=0, linewidth=0.8)
-        plt.title(f"{title} violin", fontsize=11)
-        plt.grid(True, axis='y', alpha=0.2)
+        fig, ax = plt.subplots(figsize=(max(8, dims * 0.7), 4))
+        sns.violinplot(data=df_melt, x='dim', y='value', inner='quartile', cut=0, linewidth=0.8, ax=ax)
+        ax.set_title(f"{title} violin", fontsize=11)
+        ax.grid(True, axis='y', alpha=0.2)
         plt.tight_layout()
+        if save_dir:
+            safe_name = (save_name or title).replace(" ", "_")
+            _save_figure(fig, Path(save_dir) / f"{save_prefix}_{safe_name}.png")
         plt.show()
 
     for key in ('rt_features', 'phy_features', 'mac_features'):
         if key in measurements:
-            _violin_grid(measurements[key].cpu().numpy(), key, max_dims)
+            _violin_grid(measurements[key].cpu().numpy(), key, max_dims, save_name=key)
 
     if 'cfr_magnitude' in measurements:
         cfr = measurements['cfr_magnitude'].cpu().numpy()
@@ -1729,11 +1845,13 @@ def visualize_feature_violinplots(batch, max_dims=12, use_mask=True):
             cfr = cfr.reshape(-1)
         else:
             cfr = cfr.reshape(-1)
-        plt.figure(figsize=(6, 3))
-        sns.violinplot(y=cfr, inner='quartile', cut=0, linewidth=0.8, color='slateblue')
-        plt.title('cfr_magnitude (flattened)', fontsize=11)
-        plt.grid(True, axis='y', alpha=0.2)
+        fig, ax = plt.subplots(figsize=(6, 3))
+        sns.violinplot(y=cfr, inner='quartile', cut=0, linewidth=0.8, color='slateblue', ax=ax)
+        ax.set_title('cfr_magnitude (flattened)', fontsize=11)
+        ax.grid(True, axis='y', alpha=0.2)
         plt.tight_layout()
+        if save_dir:
+            _save_figure(fig, Path(save_dir) / f"{save_prefix}_cfr_magnitude.png")
         plt.show()
 
 def visualize_fine_refinement(outputs, batch, sample_idx=0, scene_extent=512.0, model=None, verbose=False):

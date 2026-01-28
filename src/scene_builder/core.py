@@ -427,8 +427,8 @@ class Scene:
         )
         
         # Query OSM with retry logic for transient errors
-        max_retries = 3
-        retry_delay = 2.0
+        max_retries = 2
+        retry_delay = 1.0
         buildings = None
         last_error = None
         

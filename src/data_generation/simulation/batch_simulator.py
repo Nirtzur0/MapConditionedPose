@@ -69,6 +69,7 @@ class BatchSimulator:
         self._rt_features_logged = False
         self._rt_merge_logged = False
         self._channel_matrix_fail = 0
+        self._channel_stats_zero = 0
         self._cfr_missing = 0
         self._diagnostic_logs = 0
         self._diagnostic_max = getattr(config, "rt_diagnostics_max", 10)
@@ -124,9 +125,9 @@ class BatchSimulator:
             paths = self._run_path_solver(scene)
             if not self._channel_matrix_logged:
                 try:
-                    logger.info(f"Paths tau shape: {paths.tau.shape}")
+                    logger.debug(f"Paths tau shape: {paths.tau.shape}")
                 except Exception:
-                    logger.info("Paths tau shape: <unavailable>")
+                    logger.debug("Paths tau shape: <unavailable>")
             
             # 3. Extract RT Features
             num_sites = len(site_positions)
@@ -139,7 +140,7 @@ class BatchSimulator:
                     if gains is not None:
                         gains_np = gains.numpy() if hasattr(gains, "numpy") else np.asarray(gains)
                         abs_gains = np.abs(gains_np)
-                        logger.info(
+                        logger.debug(
                             "RT path_gains pre-merge: shape=%s min=%.3e mean=%.3e max=%.3e nonzero=%d",
                             gains_np.shape,
                             float(abs_gains.min()) if abs_gains.size else 0.0,
@@ -219,7 +220,7 @@ class BatchSimulator:
                     if gains is not None:
                         gains_np = gains.numpy() if hasattr(gains, "numpy") else np.asarray(gains)
                         abs_gains = np.abs(gains_np)
-                        logger.info(
+                        logger.debug(
                             "RT path_gains post-merge: shape=%s min=%.3e mean=%.3e max=%.3e nonzero=%d",
                             gains_np.shape,
                             float(abs_gains.min()) if abs_gains.size else 0.0,
@@ -343,7 +344,7 @@ class BatchSimulator:
             normalize_cfr = bool(getattr(self.config, 'normalize_cfr', False))
             h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=normalize_cfr)
             if not self._channel_matrix_logged:
-                logger.info(f"cir_to_ofdm_channel normalize={normalize_cfr}")
+                logger.debug(f"cir_to_ofdm_channel normalize={normalize_cfr}")
 
             # h_freq shape: [1, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
             h_freq = tf.squeeze(h_freq, axis=0)  # drop batch=1
@@ -365,15 +366,21 @@ class BatchSimulator:
                 max_val_np = float(max_val.numpy())
                 min_val_np = float(min_val.numpy())
                 mean_val_np = float(mean_val.numpy())
-                log_stats = (not self._channel_matrix_logged) or (not np.isfinite(max_val_np)) or max_val_np <= 0.0
+                invalid_stats = (not np.isfinite(max_val_np)) or (max_val_np <= 0.0)
+                log_stats = not self._channel_matrix_logged
+                if invalid_stats:
+                    self._channel_stats_zero += 1
+                    if (self._channel_stats_zero == 1) or (self._channel_stats_zero % self._channel_fail_log_every == 0):
+                        log_stats = True
                 if log_stats:
-                    logger.info(
-                        "Channel matrix |H| stats: min=%.3e mean=%.3e max=%.3e",
+                    logger.debug(
+                        "Channel matrix |H| stats: min=%.3e mean=%.3e max=%.3e%s",
                         min_val_np,
                         mean_val_np,
                         max_val_np,
+                        f" (zero/invalid count={self._channel_stats_zero})" if invalid_stats else "",
                     )
-                if not np.isfinite(max_val_np) or max_val_np <= 0.0:
+                if invalid_stats:
                     raise RuntimeError(
                         f"Channel matrix is zero/invalid (min={min_val_np:.3e}, "
                         f"mean={mean_val_np:.3e}, max={max_val_np:.3e})."
@@ -384,7 +391,7 @@ class BatchSimulator:
                 logger.warning(f"Channel matrix stats check failed: {stats_e}")
 
             if not self._channel_matrix_logged:
-                logger.info(f"Computed channel matrix shape: {channel_matrix.shape}")
+                logger.debug(f"Computed channel matrix shape: {channel_matrix.shape}")
                 self._channel_matrix_logged = True
 
             return channel_matrix

@@ -96,6 +96,7 @@ class SitePlacer:
         num_tx: int = 1,
         num_rx: int = 10,
         height_tx: float = 25.0,  # meters
+        height_tx_range: Optional[Tuple[float, float]] = None,
         height_rx: float = 1.5,   # UE height
         custom_positions: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
         isd_meters: Optional[float] = None,  # Inter-site distance for ISD strategy
@@ -121,15 +122,15 @@ class SitePlacer:
             return self._place_custom(custom_positions, height_tx, height_rx)
         
         elif self.strategy == "grid":
-            return self._place_grid(bounds, num_tx, num_rx, height_tx, height_rx)
+            return self._place_grid(bounds, num_tx, num_rx, height_tx, height_rx, height_tx_range)
         
         elif self.strategy == "random":
-            return self._place_random(bounds, num_tx, num_rx, height_tx, height_rx)
+            return self._place_random(bounds, num_tx, num_rx, height_tx, height_rx, height_tx_range)
         
         elif self.strategy == "isd":
             if isd_meters is None:
                 raise ValueError("isd_meters required for 'isd' strategy")
-            return self._place_isd(bounds, isd_meters, num_rx, height_tx, height_rx)
+            return self._place_isd(bounds, isd_meters, num_rx, height_tx, height_rx, height_tx_range)
         
         else:
             raise ValueError(f"Unknown placement strategy: {self.strategy}")
@@ -141,6 +142,7 @@ class SitePlacer:
         num_rx: int,
         height_tx: float,
         height_rx: float,
+        height_tx_range: Optional[Tuple[float, float]],
     ) -> List[Site]:
         """Grid placement with uniform spacing."""
         xmin, ymin, xmax, ymax = bounds
@@ -156,6 +158,7 @@ class SitePlacer:
             for y in tx_y:
                 if tx_count >= num_tx:
                     break
+                tx_height = self._sample_tx_height(height_tx, height_tx_range)
                 
                 # 3-sector site (typical macro BS)
                 for sector_id in range(3):
@@ -170,7 +173,7 @@ class SitePlacer:
                     
                     site = Site(
                         site_id=f"tx_{tx_count}_sector_{sector_id}",
-                        position=(float(x), float(y), height_tx),
+                        position=(float(x), float(y), tx_height),
                         site_type="tx",
                         antenna=antenna,
                         cell_id=tx_count,
@@ -219,6 +222,7 @@ class SitePlacer:
         num_rx: int,
         height_tx: float,
         height_rx: float,
+        height_tx_range: Optional[Tuple[float, float]],
     ) -> List[Site]:
         """Random placement within bounds."""
         xmin, ymin, xmax, ymax = bounds
@@ -230,6 +234,7 @@ class SitePlacer:
         tx_y = np.random.uniform(ymin + margin, ymax - margin, num_tx)
         
         for i in range(num_tx):
+            tx_height = self._sample_tx_height(height_tx, height_tx_range)
             # Random orientation
             azimuth = np.random.uniform(0, 360)
             
@@ -243,7 +248,7 @@ class SitePlacer:
             
             site = Site(
                 site_id=f"tx_{i}",
-                position=(float(tx_x[i]), float(tx_y[i]), height_tx),
+                position=(float(tx_x[i]), float(tx_y[i]), tx_height),
                 site_type="tx",
                 antenna=antenna,
                 cell_id=i,
@@ -316,6 +321,7 @@ class SitePlacer:
         num_rx: int,
         height_tx: float,
         height_rx: float,
+        height_tx_range: Optional[Tuple[float, float]],
     ) -> List[Site]:
         """
         Place TX sites in hexagonal grid (3GPP style).
@@ -349,6 +355,7 @@ class SitePlacer:
                 x_pos = x + x_offset
                 
                 if xmin < x_pos < xmax and ymin < y < ymax:
+                    tx_height = self._sample_tx_height(height_tx, height_tx_range)
                     # 3-sector site
                     for sector_id in range(3):
                         azimuth = sector_id * 120.0
@@ -363,7 +370,7 @@ class SitePlacer:
                         
                         site = Site(
                             site_id=f"tx_{tx_count}_sector_{sector_id}",
-                            position=(x_pos, y, height_tx),
+                            position=(x_pos, y, tx_height),
                             site_type="tx",
                             antenna=antenna,
                             cell_id=tx_count,
@@ -389,6 +396,18 @@ class SitePlacer:
         
         logger.info(f"Placed {tx_count} TX sites (ISD={isd_meters}m) + {num_rx} RX sites")
         return sites
+
+    def _sample_tx_height(
+        self,
+        default_height: float,
+        height_range: Optional[Tuple[float, float]],
+    ) -> float:
+        if not height_range:
+            return float(default_height)
+        low, high = height_range
+        if low > high:
+            low, high = high, low
+        return float(np.random.uniform(low, high))
 
 
 if __name__ == "__main__":

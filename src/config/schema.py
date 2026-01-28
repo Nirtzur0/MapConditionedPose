@@ -38,6 +38,7 @@ class ScenesConfig:
     num_tx: int = MISSING
     tx_variations: int = MISSING
     site_strategy: str = MISSING
+    tx_height_range_m: Optional[Tuple[float, float]] = None
     bbox_scale: float = 1.0
     use_lidar: bool = True
     use_dem: bool = False
@@ -78,12 +79,29 @@ class DataGenerationConfig:
     enforce_unique_ue_positions: bool = False
     min_ue_separation_m: float = 1.0
     ue_sampling_margin_m: float = 0.0
+    max_attempts_per_ue: int = 25
+    drop_failed_ue_trajectories: bool = False
     rt_diagnostics_max: int = 10
     rt_fail_log_every: int = 100
     drop_log_every: int = 100
     drop_failed_reports: bool = True
     max_resample_attempts: int = 10
+    min_scene_survival_ratio: float = 0.6
+    max_scene_resample_attempts: int = 3
+    split_mode: str = "scene"
+    split_train_val_label: str = "train_val"
     split_ratios: Dict[str, float] = field(default_factory=dict)
+    use_sionna_sys: bool = False
+    num_allocated_re: int = 0
+    bler_target: float = 0.1
+    mcs_table_index: int = 1
+    mcs_category: int = 0
+    slot_duration_ms: float = 1.0
+    log_fallback_warnings: bool = False
+    kfold_num_folds: int = 5
+    kfold_fold_index: int = 0
+    kfold_shuffle: bool = True
+    kfold_seed: int = 42
 
 
 @dataclass
@@ -279,6 +297,15 @@ class InfrastructureConfig:
 
 
 @dataclass
+class ProfilingConfig:
+    enabled: bool = False
+    output_dir: Optional[str] = None
+    sort: str = "cumtime"
+    top_n: int = 50
+    save_raw: bool = True
+
+
+@dataclass
 class PipelineConfig:
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     pipeline: PipelineFlags = field(default_factory=PipelineFlags)
@@ -290,6 +317,7 @@ class PipelineConfig:
     physics_loss: PhysicsLossConfig = field(default_factory=PhysicsLossConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     infrastructure: InfrastructureConfig = field(default_factory=InfrastructureConfig)
+    profiling: ProfilingConfig = field(default_factory=ProfilingConfig)
     seed: int = 42
     deterministic: bool = False
 

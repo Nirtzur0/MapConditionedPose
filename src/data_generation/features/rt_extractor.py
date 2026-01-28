@@ -274,6 +274,16 @@ class RTFeatureExtractor:
              
         # Angular Spread
         rms_as = self._compute_angular_spread_generic(ops, mag_a_fin, ang_r_az)
+
+        # Doppler Spread (power-weighted)
+        dop_mean = ops.sum(p * dop_fin, axis=-1)
+        dop_mean_sq = ops.sum(p * ops.square(dop_fin), axis=-1)
+        dop_var = dop_mean_sq - ops.square(dop_mean)
+        dop_var = ops.clip(dop_var, 0.0, 1e12)
+        doppler_spread = ops.sqrt(dop_var)
+
+        # Coherence time (Jakes' approximation)
+        coherence_time = 0.423 / (doppler_spread + 1e-6)
         
         # Num Paths (threshold)
         # Casting boolean to int/float requires specific backend logic usually
@@ -297,6 +307,8 @@ class RTFeatureExtractor:
             path_doppler=dop_fin,
             rms_delay_spread=rms_ds,
             rms_angular_spread=rms_as,
+            doppler_spread=doppler_spread,
+            coherence_time=coherence_time,
             k_factor=k_factor,
             num_paths=num_paths,
             carrier_frequency_hz=self.carrier_frequency_hz,

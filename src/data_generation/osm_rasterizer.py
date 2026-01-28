@@ -787,7 +787,7 @@ class OSMRasterizer:
                     break
                 except (requests.exceptions.Timeout, requests.exceptions.HTTPError) as e:
                     if attempt < max_retries - 1:
-                        wait_time = 5 * (attempt + 1)
+                        wait_time = 2 * (attempt + 1)
                         logger.warning(f"OSM API request failed: {e}. Retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:

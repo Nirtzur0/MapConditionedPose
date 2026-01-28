@@ -118,6 +118,12 @@ class MultiLayerDataGenerator:
             max_neighbors=config.max_neighbors,
             enable_throughput=True,
             enable_handover=False,
+            use_sionna_sys=getattr(config, "use_sionna_sys", False),
+            num_allocated_re=getattr(config, "num_allocated_re", 0),
+            bler_target=getattr(config, "bler_target", 0.1),
+            mcs_table_index=getattr(config, "mcs_table_index", 1),
+            mcs_category=getattr(config, "mcs_category", 0),
+            slot_duration_ms=getattr(config, "slot_duration_ms", 1.0),
         )
 
         self.native_extractor = SionnaNativeKPIExtractor(
@@ -383,6 +389,7 @@ class MultiLayerDataGenerator:
         
         # Collect all data from scenes first
         all_data = []
+        split_labels = []
         
         # Process each scene
         for scene_id in tqdm(scene_ids, desc="Generating Data from Scenes"):
@@ -395,6 +402,11 @@ class MultiLayerDataGenerator:
             try:
                 # Load metadata
                 scene_metadata = self.scene_loader.load_metadata(scene_id)
+                scene_metadata = dict(scene_metadata or {})
+                split_label = self._load_scene_split(scene_path, scene_metadata)
+                if split_label:
+                    scene_metadata.setdefault("split", split_label)
+                split_labels.append(scene_metadata.get("split"))
                 scene_data = self.generate_scene_data(scene_path, scene_id, scene_metadata=scene_metadata)
                 
                 if scene_data:
@@ -412,6 +424,12 @@ class MultiLayerDataGenerator:
         
         # Create splits if requested
         if create_splits:
+            if any(split_labels):
+                split_mode = getattr(self.config, "split_mode", "scene")
+                train_val_label = getattr(self.config, "split_train_val_label", "train_val")
+                if split_mode == "train_val_kfold" or any(label == train_val_label for label in split_labels):
+                    return self._create_trainval_kfold_datasets(all_data, train_val_label=train_val_label)
+                return self._create_split_datasets_from_labels(all_data)
             return self._create_split_datasets(all_data, train_ratio, val_ratio, test_ratio)
         else:
             # Create single dataset
@@ -437,6 +455,154 @@ class MultiLayerDataGenerator:
             output_path = writer.finalize()
             logger.info(f"Dataset saved to: {output_path}")
             return output_path
+
+    def _load_scene_split(self, scene_path: Path, scene_metadata: Optional[Dict]) -> Optional[str]:
+        """Load split label from split.txt or metadata."""
+        if scene_metadata and scene_metadata.get("split"):
+            return scene_metadata.get("split")
+
+        split_path = scene_path.parent / "split.txt"
+        if split_path.exists():
+            label = split_path.read_text().strip().lower()
+            train_val_label = getattr(self.config, "split_train_val_label", "train_val")
+            if label in {"train", "val", "test", train_val_label}:
+                return label
+        return None
+
+    def _create_trainval_kfold_datasets(self, all_data, train_val_label: str = "train_val") -> Dict[str, Path]:
+        """Create train/val splits via K-fold over train_val scenes, with test from explicit test scenes."""
+        train_val_data, test_data = [], []
+        for scene_id, scene_data, scene_metadata in all_data:
+            split_label = (scene_metadata or {}).get("split")
+            if split_label == "test":
+                test_data.append((scene_id, scene_data, scene_metadata))
+            elif split_label in {train_val_label, "train", "val", None}:
+                train_val_data.append((scene_id, scene_data, scene_metadata))
+            else:
+                logger.warning("Scene %s has unknown split label '%s'; skipping.", scene_id, split_label)
+
+        logger.info(
+            "Split (train_val + kfold): Train/Val=%d scenes, Test=%d scenes",
+            len(train_val_data),
+            len(test_data),
+        )
+
+        output_paths: Dict[str, Path] = {}
+
+        if train_val_data:
+            writer = LMDBDatasetWriter(
+                output_dir=self.config.output_dir,
+                map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
+                split_name="train_val",
+                sequence_length=self.config.num_reports_per_ue,
+            )
+            writer.set_max_dimensions({
+                'max_cells': self.config.max_neighbors,
+                'max_paths': self.config.max_stored_paths,
+                'max_beams': 64,
+            })
+            writer.set_kfold(
+                num_folds=getattr(self.config, "kfold_num_folds", 5),
+                fold_index=getattr(self.config, "kfold_fold_index", 0),
+                shuffle=getattr(self.config, "kfold_shuffle", True),
+                seed=getattr(self.config, "kfold_seed", 42),
+            )
+            for scene_id, scene_data, scene_metadata in tqdm(train_val_data, desc="Writing train_val"):
+                if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                    writer.write_scene_maps(
+                        scene_id=scene_id,
+                        radio_map=scene_data['radio_map'],
+                        osm_map=scene_data['osm_map']
+                    )
+                writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+            train_val_path = writer.finalize()
+            output_paths["train"] = train_val_path
+            output_paths["val"] = train_val_path
+            output_paths["train_val"] = train_val_path
+            logger.info("✓ train/val (kfold): %s", train_val_path)
+        else:
+            logger.warning("No data for train_val pool; train/val splits will be empty.")
+
+        if test_data:
+            logger.info("Creating test dataset...")
+            writer = LMDBDatasetWriter(
+                output_dir=self.config.output_dir,
+                map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
+                split_name="test",
+                sequence_length=self.config.num_reports_per_ue,
+            )
+            writer.set_max_dimensions({
+                'max_cells': self.config.max_neighbors,
+                'max_paths': self.config.max_stored_paths,
+                'max_beams': 64,
+            })
+            for scene_id, scene_data, scene_metadata in tqdm(test_data, desc="Writing test"):
+                if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                    writer.write_scene_maps(
+                        scene_id=scene_id,
+                        radio_map=scene_data['radio_map'],
+                        osm_map=scene_data['osm_map']
+                    )
+                writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+            output_path = writer.finalize()
+            output_paths["test"] = output_path
+            logger.info("✓ test: %s", output_path)
+        else:
+            logger.warning("No data for test split.")
+
+        return output_paths
+
+    def _create_split_datasets_from_labels(self, all_data) -> Dict[str, Path]:
+        """Create train/val/test datasets based on explicit scene split labels."""
+        train_data, val_data, test_data = [], [], []
+        for scene_id, scene_data, scene_metadata in all_data:
+            split_label = (scene_metadata or {}).get("split")
+            if split_label == "train":
+                train_data.append((scene_id, scene_data, scene_metadata))
+            elif split_label == "val":
+                val_data.append((scene_id, scene_data, scene_metadata))
+            elif split_label == "test":
+                test_data.append((scene_id, scene_data, scene_metadata))
+            else:
+                logger.warning("Scene %s missing split label; skipping.", scene_id)
+
+        logger.info(
+            "Split (explicit): Train=%d, Val=%d, Test=%d scenes",
+            len(train_data),
+            len(val_data),
+            len(test_data),
+        )
+
+        output_paths = {}
+        for split_name, split_data in [("train", train_data), ("val", val_data), ("test", test_data)]:
+            if not split_data:
+                logger.warning(f"No data for {split_name} split")
+                continue
+            logger.info(f"Creating {split_name} dataset...")
+            writer = LMDBDatasetWriter(
+                output_dir=self.config.output_dir,
+                map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
+                split_name=split_name,
+                sequence_length=self.config.num_reports_per_ue,
+            )
+            writer.set_max_dimensions({
+                'max_cells': self.config.max_neighbors,
+                'max_paths': self.config.max_stored_paths,
+                'max_beams': 64,
+            })
+            for scene_id, scene_data, scene_metadata in tqdm(split_data, desc=f"Writing {split_name}"):
+                writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+                if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                    writer.write_scene_maps(
+                        scene_id=scene_id,
+                        radio_map=scene_data['radio_map'],
+                        osm_map=scene_data['osm_map']
+                    )
+            output_path = writer.finalize()
+            output_paths[split_name] = output_path
+            logger.info(f"✓ {split_name}: {output_path}")
+
+        return output_paths
     
     def _create_split_datasets(self, all_data, train_ratio, val_ratio, test_ratio) -> Dict[str, Path]:
         """Create separate train/val/test LMDB datasets from collected data."""
@@ -520,6 +686,25 @@ class MultiLayerDataGenerator:
         # Load scene-specific metadata
         if scene_metadata is None:
             scene_metadata = self.scene_loader.load_metadata(scene_id)
+
+        def _sample_trajectories(relaxed: bool) -> List[np.ndarray]:
+            return sample_ue_trajectories(
+                scene_metadata=scene_metadata,
+                num_ue_per_tile=self.config.num_ue_per_tile,
+                ue_height_range=self.config.ue_height_range,
+                ue_velocity_range=self.config.ue_velocity_range,
+                num_reports_per_ue=self.config.num_reports_per_ue,
+                report_interval_ms=self.config.report_interval_ms,
+                offset=(0.0, 0.0),
+                building_height_map=building_map,
+                max_attempts_per_ue=max(25, getattr(self.config, "max_attempts_per_ue", 25)) if relaxed
+                else getattr(self.config, "max_attempts_per_ue", 25),
+                drop_failed_ue_trajectories=False if relaxed else getattr(self.config, "drop_failed_ue_trajectories", False),
+                log_fallback_warnings=getattr(self.config, "log_fallback_warnings", False),
+                enforce_unique_positions=False if relaxed else getattr(self.config, "enforce_unique_ue_positions", False),
+                min_ue_separation_m=0.0 if relaxed else getattr(self.config, "min_ue_separation_m", 1.0),
+                sampling_margin_m=0.0 if relaxed else getattr(self.config, "ue_sampling_margin_m", 0.0),
+            )
         
         # Load scene in Sionna
         scene = scene_obj
@@ -552,40 +737,72 @@ class MultiLayerDataGenerator:
             except Exception as e:
                 logger.warning(f"Failed to load building height map from {building_map_path}: {e}")
 
-        trajectories_global = sample_ue_trajectories(
-            scene_metadata=scene_metadata,
-            num_ue_per_tile=self.config.num_ue_per_tile,
-            ue_height_range=self.config.ue_height_range,
-            ue_velocity_range=self.config.ue_velocity_range,
-            num_reports_per_ue=self.config.num_reports_per_ue,
-            report_interval_ms=self.config.report_interval_ms,
-            offset=(0.0, 0.0),
-            building_height_map=building_map,
-            max_attempts_per_ue=getattr(self.config, "max_attempts_per_ue", 25),
-            enforce_unique_positions=getattr(self.config, "enforce_unique_ue_positions", False),
-            min_ue_separation_m=getattr(self.config, "min_ue_separation_m", 1.0),
-            sampling_margin_m=getattr(self.config, "ue_sampling_margin_m", 0.0),
-        )
-        
-        # Process trajectories in batches
-        all_features = self._process_trajectories_in_batches(
-            trajectories_global,
-            scene,
-            site_positions_sim,
-            cell_ids,
-            sim_offset_x,
-            sim_offset_y,
-            store_offset_x,
-            store_offset_y,
-            scene_metadata=scene_metadata,
-            building_map=building_map,
-        )
-        
-        # Stack into arrays
-        scene_data = self.data_stacker.stack_scene_data(all_features)
-        
-        # Apply measurement realism
-        scene_data = self.measurement_processor.apply_realism(scene_data)
+        min_ratio = getattr(self.config, "min_scene_survival_ratio", 0.6)
+        max_attempts = max(1, getattr(self.config, "max_scene_resample_attempts", 3))
+        expected_reports = max(1, int(self.config.num_ue_per_tile) * int(self.config.num_reports_per_ue))
+
+        for attempt in range(1, max_attempts + 1):
+            relaxed = attempt > 1
+            if relaxed:
+                logger.warning(
+                    "Resampling scene %s with relaxed UE constraints (attempt %d/%d).",
+                    scene_id,
+                    attempt,
+                    max_attempts,
+                )
+
+            trajectories_global = _sample_trajectories(relaxed)
+            if not trajectories_global:
+                logger.warning("No UE trajectories for scene %s on attempt %d.", scene_id, attempt)
+                continue
+
+            ue_ratio = len(trajectories_global) / max(1, int(self.config.num_ue_per_tile))
+            if ue_ratio < min_ratio:
+                logger.warning(
+                    "UE placement below threshold for scene %s (%.1f%% < %.1f%%).",
+                    scene_id,
+                    ue_ratio * 100.0,
+                    min_ratio * 100.0,
+                )
+                continue
+
+            # Process trajectories in batches
+            all_features = self._process_trajectories_in_batches(
+                trajectories_global,
+                scene,
+                site_positions_sim,
+                cell_ids,
+                sim_offset_x,
+                sim_offset_y,
+                store_offset_x,
+                store_offset_y,
+                scene_metadata=scene_metadata,
+                building_map=building_map,
+            )
+
+            # Stack into arrays
+            scene_data = self.data_stacker.stack_scene_data(all_features)
+            if not scene_data:
+                logger.warning("No stacked features for scene %s on attempt %d.", scene_id, attempt)
+                continue
+
+            actual_reports = sum(len(x) for x in all_features.get('positions', []) if x is not None)
+            survival_ratio = actual_reports / expected_reports
+            if survival_ratio < min_ratio:
+                logger.warning(
+                    "Scene %s survival ratio %.1f%% below threshold %.1f%%.",
+                    scene_id,
+                    survival_ratio * 100.0,
+                    min_ratio * 100.0,
+                )
+                continue
+
+            # Apply measurement realism
+            scene_data = self.measurement_processor.apply_realism(scene_data)
+            break
+        else:
+            logger.error("Skipping scene %s after %d failed resample attempts.", scene_id, max_attempts)
+            return {}
 
         # Log statistics
         stats = self.batch_simulator.get_statistics()
@@ -812,6 +1029,7 @@ class MultiLayerDataGenerator:
                 offset=(0.0, 0.0),
                 building_height_map=building_map,
                 max_attempts_per_ue=getattr(self.config, "max_attempts_per_ue", 25),
+                drop_failed_ue_trajectories=False,
                 enforce_unique_positions=False,
                 min_ue_separation_m=0.0,
                 sampling_margin_m=getattr(self.config, "ue_sampling_margin_m", 0.0),
@@ -846,8 +1064,6 @@ class MultiLayerDataGenerator:
 
                 total_reports += len(batch)
                 pbar.update(len(batch))
-                if total_reports % (batch_size * 10) == 0:
-                    logger.info(f"Processed {total_reports}/{len(all_points)} measurements...")
             except RuntimeError as e:
                 if drop_failed and hasattr(e, "bad_indices") and len(batch) > 1:
                     bad_indices = sorted(set(getattr(e, "bad_indices", [])))

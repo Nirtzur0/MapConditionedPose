@@ -1,7 +1,7 @@
 # Unified pipeline configuration
 
 experiment:
-  name: experiment_1tx_50vars_2000ue
+  name: experiment_2tx_2vars_1000ue
   output_dir: outputs
   clean: false
 
@@ -14,26 +14,27 @@ scenes:
   cities:
     - name: Boulder, CO
       bbox: [-105.280, 40.014, -105.270, 40.022]
-      split: train
+      split: train_val
     - name: Austin, TX
       bbox: [-97.745, 30.265, -97.735, 30.275]
-      split: train
+      split: test
     - name: Seattle, WA
       bbox: [-122.340, 47.605, -122.330, 47.615]
-      split: train
+      split: train_val
     - name: Denver, CO
       bbox: [-104.995, 39.745, -104.985, 39.755]
-      split: train
+      split: train_val
     - name: Chicago, IL
       bbox: [-87.630, 41.880, -87.620, 41.890]
-      split: val
+      split: train_val
     - name: NYC, NY
       bbox: [-73.990, 40.750, -73.980, 40.760]
-      split: test
-  num_tx: 1
-  tx_variations: 2
+      split: train_val
+  num_tx: 2
+  tx_variations: 1
   site_strategy: random
-  bbox_scale: 0.6
+  tx_height_range_m: [30.0, 45.0]
+  bbox_scale: 1
   use_lidar: false
   use_dem: false
   hag_tiff_path: null
@@ -50,20 +51,24 @@ data_generation:
   max_depth: 5
   num_samples: 600000
   enable_diffraction: true
-  enable_diffuse_reflection: true
-  rt_batch_size: 8
-  num_ue_per_tile: 2000
+  enable_diffuse_reflection: false
+  rt_batch_size: 32
+  num_ue_per_tile: 10
   ue_height_range: [1.5, 1.5]
-  ue_velocity_range: [0.0, 0.0]
-  num_reports_per_ue: 1
+  ue_velocity_range: [0.0, 10.0]
+  num_reports_per_ue: 11
   enforce_unique_ue_positions: true
   min_ue_separation_m: 2.0
-  ue_sampling_margin_m: 50.0
+  ue_sampling_margin_m: 0.0
+  max_attempts_per_ue: 3
+  drop_failed_ue_trajectories: true
   rt_diagnostics_max: 20
   rt_fail_log_every: 200
   drop_log_every: 200
   drop_failed_reports: true
-  max_resample_attempts: 25
+  max_resample_attempts: 5
+  min_scene_survival_ratio: 0.4
+  max_scene_resample_attempts: 3
   report_interval_ms: 200.0
   enable_k_factor: false
   enable_beam_management: true
@@ -73,8 +78,21 @@ data_generation:
   measurement_dropout_rates: {}
   measurement_dropout_seed: 42
   quantization_enabled: true
-  max_stored_paths: 256
-  max_stored_sites: 16
+  max_stored_paths: 64
+  max_stored_sites: 8
+  use_sionna_sys: true
+  num_allocated_re: 896
+  bler_target: 0.1
+  mcs_table_index: 1
+  mcs_category: 0
+  slot_duration_ms: 1.0
+  log_fallback_warnings: false
+  split_mode: train_val_kfold
+  split_train_val_label: train_val
+  kfold_num_folds: 5
+  kfold_fold_index: 0
+  kfold_shuffle: true
+  kfold_seed: 42
   split_ratios:
     train: 0.6
     val: 0.2
@@ -84,39 +102,39 @@ model:
   radio_encoder:
     num_cells: 2
     num_beams: 64
-    d_model: 128
+    d_model: 96
     nhead: 4
-    num_layers: 3
+    num_layers: 2
     dropout: 0.1
-    max_seq_len: 20
+    max_seq_len: 11
     rt_features_dim: 16
     phy_features_dim: 8
     mac_features_dim: 6
   map_encoder:
     img_size: 256
-    patch_size: 16
+    patch_size: 32
     in_channels: 10
-    d_model: 192
+    d_model: 128
     nhead: 4
-    num_layers: 3
+    num_layers: 2
     dropout: 0.1
     radio_map_channels: 5
     osm_map_channels: 5
-    cache_size: 32
+    cache_size: 16
     cache_mode: eval
   fusion:
-    d_fusion: 256
+    d_fusion: 192
     nhead: 4
     dropout: 0.1
-    num_query_tokens: 4
+    num_query_tokens: 2
   coarse_head:
     grid_size: 32
-    d_input: 256
+    d_input: 192
     dropout: 0.1
   fine_head:
-    d_input: 256
-    d_hidden: 256
-    top_k: 5
+    d_input: 192
+    d_hidden: 192
+    top_k: 3
     patch_size: 64
     use_local_map: true
     offset_scale: 1.5
@@ -165,7 +183,7 @@ dataset:
   handle_missing_values: mask
   split_seed: 42
   map_cache_size: 16
-  sequence_length: 1
+  sequence_length: 11
   max_cells: 2
   normalize_maps: true
   map_norm_mode: zscore
@@ -211,7 +229,7 @@ infrastructure:
   accelerator: gpu
   devices: 1
   precision: 16-mixed
-  num_workers: 0
+  num_workers: 8
   checkpoint:
     dirpath: checkpoints
     save_top_k: 3
@@ -226,6 +244,13 @@ infrastructure:
     use_comet: true
     project: transformer-ue-localization
     log_every_n_steps: 50
+
+profiling:
+  enabled: true
+  output_dir: outputs/profiling
+  sort: cumtime
+  top_n: 80
+  save_raw: true
 
 seed: 42
 deterministic: false

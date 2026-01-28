@@ -238,12 +238,14 @@ def compute_sinr(h: Union[np.ndarray, Any],
         return sinr_db
 
 
-def compute_cqi(sinr_db: Union[np.ndarray, Any], 
+def compute_cqi(sinr_db: Union[np.ndarray, Any],
                 mcs_table: str = 'table1') -> Union[np.ndarray, Any]:
     """
     Map SINR to CQI index using TF or NumPy.
+
+    Uses 3GPP TS 38.214 CQI thresholds (Table 5.2.2.1-2/3 style mapping).
+    This is a simplified, standard-aligned mapping from wideband SINR to CQI.
     """
-    # 3GPP 38.214 CQI Table 1 (64QAM)
     if mcs_table == 'table1' or mcs_table == '64QAM':
         cqi_thresholds = [
             -1000.0, -6.7, -4.7, -2.3, 0.2, 2.4, 4.3, 6.0, 7.9, 9.6,
@@ -276,50 +278,75 @@ def compute_cqi(sinr_db: Union[np.ndarray, Any],
         return cqi.astype(np.int32)
 
 
-def compute_rank_indicator(h: Union[np.ndarray, Any], 
-                           snr_threshold_db: float = 0.0) -> Union[np.ndarray, Any]:
+def compute_rank_indicator(
+    h: Union[np.ndarray, Any],
+    snr_db: Optional[Union[np.ndarray, Any]] = None,
+) -> Union[np.ndarray, Any]:
     """
-    Compute RI via SVD (supports TF).
+    Compute RI via throughput-maximizing rank selection (supports TF/NumPy).
+
+    Approximation to 3GPP RI selection: choose rank that maximizes
+    sum log2(1 + (SNR/r) * s_i^2) over the top r singular values.
     """
     if _is_tensor(h):
         h = tf.convert_to_tensor(h)
-        # h shape [..., rx_ant, tx_ant]
-        
-        # SVD on last 2 dims
-        s = tf.linalg.svd(h, compute_uv=False) # Returns singular values
-        
-        # s_db
-        s_db = 20.0 * (tf.math.log(s + 1e-10) / tf.math.log(10.0))
-        max_s_db = tf.reduce_max(s_db, axis=-1, keepdims=True)
-        
-        significant = s_db > (max_s_db + snr_threshold_db)
-        ri = tf.reduce_sum(tf.cast(significant, tf.int32), axis=-1)
-        
-        max_rank = tf.shape(s)[-1]
-        return tf.clip_by_value(ri, 1, max_rank)
-        
-    else:
-        # Handle batch dimensions
-        original_shape = h.shape
-        # Flatten batch dims for simplified SVD
-        if h.ndim > 2:
-            h_2d = h.reshape(-1, h.shape[-2], h.shape[-1])
+        s = tf.linalg.svd(h, compute_uv=False)  # [..., min(rx, tx)]
+
+        if snr_db is None:
+            snr_linear = tf.ones_like(s[..., 0])
         else:
-            h_2d = h
-        
-        u, s, vh = np.linalg.svd(h_2d, full_matrices=False)
-        
-        s_db = 20 * np.log10(s + 1e-10)
-        max_s_db = np.max(s_db, axis=-1, keepdims=True)
-        significant = s_db > (max_s_db + snr_threshold_db)
-        
-        ri = np.sum(significant, axis=-1)
-        ri = np.clip(ri, 1, s.shape[-1])
-        
-        if h.ndim > 2:
-            ri = ri.reshape(original_shape[:-2])
-        
-        return ri.astype(np.int32)
+            snr_db_t = tf.cast(snr_db, tf.float32)
+            snr_linear = tf.pow(10.0, snr_db_t / 10.0)
+
+        rank_max_static = s.shape[-1]
+        rank_max = tf.shape(s)[-1]
+
+        def _score_for_r(r):
+            s_r = s[..., :r]
+            snr_r = snr_linear / tf.cast(r, tf.float32)
+            return tf.reduce_sum(tf.math.log(1.0 + snr_r[..., None] * tf.square(s_r)) / tf.math.log(2.0), axis=-1)
+
+        if rank_max_static is not None:
+            scores = tf.stack([_score_for_r(r) for r in range(1, rank_max_static + 1)], axis=-1)
+        else:
+            r_vals = tf.range(1, rank_max + 1)
+            scores = tf.map_fn(lambda r: _score_for_r(tf.cast(r, tf.int32)), r_vals, fn_output_signature=tf.float32)
+            # Move rank dimension to the last axis: [R, ...] -> [..., R]
+            perm = tf.concat([tf.range(1, tf.rank(scores)), [0]], axis=0)
+            scores = tf.transpose(scores, perm=perm)
+
+        ri = tf.argmax(scores, axis=-1) + 1
+        ri = tf.cast(ri, tf.int32)
+        rank_max_i = tf.cast(rank_max, ri.dtype)
+        return tf.cast(tf.clip_by_value(ri, tf.cast(1, ri.dtype), rank_max_i), tf.int32)
+
+    # NumPy path
+    h_np = np.asarray(h)
+    original_shape = h_np.shape
+    if h_np.ndim > 2:
+        h_2d = h_np.reshape(-1, h_np.shape[-2], h_np.shape[-1])
+    else:
+        h_2d = h_np
+
+    s = np.linalg.svd(h_2d, compute_uv=False)
+    if snr_db is None:
+        snr_linear = np.ones(s.shape[0], dtype=np.float64)
+    else:
+        snr_db_np = np.asarray(snr_db, dtype=np.float64)
+        snr_linear = np.power(10.0, snr_db_np / 10.0).reshape(-1)
+
+    rank_max = s.shape[-1]
+    scores = []
+    for r in range(1, rank_max + 1):
+        s_r = s[:, :r]
+        snr_r = snr_linear / float(r)
+        scores.append(np.sum(np.log2(1.0 + (snr_r[:, None] * (s_r ** 2))), axis=-1))
+    scores = np.stack(scores, axis=-1)
+    ri = np.argmax(scores, axis=-1) + 1
+    ri = np.clip(ri, 1, rank_max)
+    if h_np.ndim > 2:
+        ri = ri.reshape(original_shape[:-2])
+    return ri.astype(np.int32)
 
 
 def compute_timing_advance(distance_3d: Union[np.ndarray, Any], 
@@ -345,37 +372,54 @@ def compute_timing_advance(distance_3d: Union[np.ndarray, Any],
         return ta_index
 
 
-def compute_pmi(h: Union[np.ndarray, Any],
-                codebook: str = 'Type1-SinglePanel',
-                num_beams: int = 8) -> Union[np.ndarray, Any]:
+def compute_pmi(
+    h: Union[np.ndarray, Any],
+    codebook: str = "Type1-SinglePanel",
+    num_beams: int = 8,
+) -> Union[np.ndarray, Any]:
     """
-    Compute PMI (supports TF).
+    Compute PMI using a simple Type-I single-panel DFT codebook.
+
+    Selects the codeword that maximizes |h * w|^2 for rank-1 precoding.
     """
+    def _dft_codebook(n_tx: int, n_beams: int, backend: str = "np"):
+        if backend == "tf":
+            k = tf.cast(tf.range(n_tx), tf.float32)
+            m = tf.cast(tf.range(n_beams), tf.float32)
+            phase = tf.tensordot(k, m, axes=0) * (2.0 * np.pi / float(n_beams))
+            W = tf.complex(tf.cos(phase), tf.sin(phase)) / tf.sqrt(tf.cast(n_tx, tf.complex64))
+            return W
+        k = np.arange(n_tx)
+        m = np.arange(n_beams)
+        W = np.exp(1j * 2 * np.pi * np.outer(k, m) / n_beams) / np.sqrt(n_tx)
+        return W
+
     if _is_tensor(h):
-         # Simplified PMI via SVD
-         s, u, v = tf.linalg.svd(h) # v is V (not V^H)
-         # We want dominant right singular vector (col of V, or row of V^H)
-         # In TF: s, u, v = svd(A). A = u * diag(s) * adjoint(v)
-         # v columns are right singular vectors.
-         # For PMI we just return a dummy index 0 in this simplified version
-         # matching the numpy "zeros" logic
-         
-         # Output shape: h.shape[:-2]
-         shape = tf.shape(h)
-         batch_shape = shape[:-2]
-         return tf.zeros(batch_shape, dtype=tf.int32)
-         
+        h = tf.cast(h, tf.complex64)
+        n_tx = tf.shape(h)[-1]
+        n_tx_static = h.shape[-1]
+        W = _dft_codebook(int(n_tx_static) if n_tx_static is not None else n_tx, num_beams, backend="tf")
+        # Project: [.., rx, tx] x [tx, beams] -> [.., rx, beams]
+        proj = tf.matmul(h, W)
+        power = tf.reduce_sum(tf.abs(proj) ** 2, axis=-2)
+        pmi = tf.argmax(power, axis=-1)
+        return tf.cast(pmi, tf.int32)
+
+    h_np = np.asarray(h)
+    original_shape = h_np.shape
+    if h_np.ndim > 2:
+        h_2d = h_np.reshape(-1, h_np.shape[-2], h_np.shape[-1])
     else:
-        original_shape = h.shape
-        if h.ndim > 2:
-            h_2d = h.reshape(-1, h.shape[-2], h.shape[-1])
-        else:
-            h_2d = h
-            
-        pmi = np.zeros(h_2d.shape[0], dtype=np.int32)
-        if h.ndim > 2:
-            pmi = pmi.reshape(original_shape[:-2])
-        return pmi
+        h_2d = h_np
+
+    n_tx = h_2d.shape[-1]
+    W = _dft_codebook(n_tx, num_beams, backend="np")
+    proj = h_2d @ W
+    power = np.sum(np.abs(proj) ** 2, axis=-2)
+    pmi = np.argmax(power, axis=-1).astype(np.int32)
+    if h_np.ndim > 2:
+        pmi = pmi.reshape(original_shape[:-2])
+    return pmi
 
 
 def simulate_neighbor_list_truncation(cells: Union[np.ndarray, Any],

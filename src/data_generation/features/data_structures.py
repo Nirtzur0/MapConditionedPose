@@ -31,6 +31,8 @@ class RTLayerFeatures:
     # Aggregate statistics (derived from paths)
     rms_delay_spread: Union[np.ndarray, Any]  # [batch, num_rx] RMS-DS (seconds)
     rms_angular_spread: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] RMS Angular Spread (radians)
+    doppler_spread: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] Doppler spread (Hz)
+    coherence_time: Optional[Union[np.ndarray, Any]] = None # [batch, num_rx] Coherence time (s)
     k_factor: Optional[Union[np.ndarray, Any]] = None  # [batch, num_rx] Rician K-factor (dB)
     num_paths: Union[np.ndarray, Any] = field(default_factory=lambda: np.array([]))  # [batch, num_rx] path count
     
@@ -67,6 +69,12 @@ class RTLayerFeatures:
 
         if self.rms_angular_spread is not None:
              result[RT_KEYS['rms_angular_spread']] = _to_numpy(self.rms_angular_spread)
+
+        if self.doppler_spread is not None:
+             result[RT_KEYS['doppler_spread']] = _to_numpy(self.doppler_spread)
+
+        if self.coherence_time is not None:
+             result[RT_KEYS['coherence_time']] = _to_numpy(self.coherence_time)
         
         if self.toa is not None:
              result[RT_KEYS['toa']] = _to_numpy(self.toa)

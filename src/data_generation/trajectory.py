@@ -18,6 +18,8 @@ def sample_ue_trajectories(
     offset: Tuple[float, float] = (0.0, 0.0),
     building_height_map: Optional[np.ndarray] = None,
     max_attempts_per_ue: int = 25,
+    drop_failed_ue_trajectories: bool = False,
+    log_fallback_warnings: bool = False,
     enforce_unique_positions: bool = False,
     min_ue_separation_m: float = 1.0,
     sampling_margin_m: float = 0.0
@@ -184,6 +186,10 @@ def sample_ue_trajectories(
             _mark_used([(x0, y0)])
         return _build_stationary_trajectory(x0, y0, z0)
 
+    dropped = 0
+    fallback_count = 0
+    fallback_random_count = 0
+
     for i in range(actual_ues):
         r, c = cells[i]
         
@@ -238,10 +244,10 @@ def sample_ue_trajectories(
                 break
 
         if trajectory is None:
-            logger.warning(
-                "Failed to sample building-free trajectory after %d attempts; using fallback in-bounds trajectory.",
-                max_attempts_per_ue,
-            )
+            if drop_failed_ue_trajectories:
+                dropped += 1
+                continue
+            fallback_count += 1
             trajectory = _fallback_trajectory()
 
         trajectories.append(trajectory)
@@ -293,11 +299,27 @@ def sample_ue_trajectories(
                     break
 
             if trajectory is None:
-                logger.warning(
-                    "Failed to sample building-free random trajectory after %d attempts; using fallback in-bounds trajectory.",
-                    max_attempts_per_ue,
-                )
+                if drop_failed_ue_trajectories:
+                    dropped += 1
+                    continue
+                fallback_random_count += 1
                 trajectory = _fallback_trajectory()
             trajectories.append(trajectory)
+
+    if log_fallback_warnings:
+        if drop_failed_ue_trajectories and dropped > 0:
+            logger.warning("Dropped %d UE trajectories that intersected buildings.", dropped)
+        if fallback_count > 0:
+            logger.warning(
+                "Used %d fallback in-bounds trajectories after %d failed attempts each.",
+                fallback_count,
+                max_attempts_per_ue,
+            )
+        if fallback_random_count > 0:
+            logger.warning(
+                "Used %d fallback random trajectories after %d failed attempts each.",
+                fallback_random_count,
+                max_attempts_per_ue,
+            )
 
     return trajectories

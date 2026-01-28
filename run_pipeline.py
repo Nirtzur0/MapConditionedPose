@@ -13,6 +13,8 @@ import logging
 import sys
 import time
 import os
+import cProfile
+import pstats
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -226,7 +228,10 @@ class Pipeline:
                 result = generator.generate(
                     polygon_points=polygon,
                     scene_id=scene_id,
-                    site_config={'num_tx': scene_config.num_tx},
+                    site_config={
+                        'num_tx': scene_config.num_tx,
+                        'height_range_m': getattr(scene_config, 'tx_height_range_m', None),
+                    },
                     terrain_config={
                         'use_lidar': getattr(scene_config, 'use_lidar', True),
                         'use_dem': getattr(scene_config, 'use_dem', False),
@@ -291,19 +296,40 @@ class Pipeline:
             enforce_unique_ue_positions=data_config.enforce_unique_ue_positions,
             min_ue_separation_m=data_config.min_ue_separation_m,
             ue_sampling_margin_m=data_config.ue_sampling_margin_m,
+            max_attempts_per_ue=data_config.max_attempts_per_ue,
+            drop_failed_ue_trajectories=data_config.drop_failed_ue_trajectories,
             rt_diagnostics_max=data_config.rt_diagnostics_max,
+            rt_fail_log_every=data_config.rt_fail_log_every,
+            drop_log_every=data_config.drop_log_every,
+            drop_failed_reports=data_config.drop_failed_reports,
+            max_resample_attempts=data_config.max_resample_attempts,
+            min_scene_survival_ratio=data_config.min_scene_survival_ratio,
+            max_scene_resample_attempts=data_config.max_scene_resample_attempts,
+            split_mode=getattr(data_config, "split_mode", "scene"),
+            split_train_val_label=getattr(data_config, "split_train_val_label", "train_val"),
+            kfold_num_folds=getattr(data_config, "kfold_num_folds", 5),
+            kfold_fold_index=getattr(data_config, "kfold_fold_index", 0),
+            kfold_shuffle=getattr(data_config, "kfold_shuffle", True),
+            kfold_seed=getattr(data_config, "kfold_seed", 42),
+            use_sionna_sys=getattr(data_config, "use_sionna_sys", False),
+            num_allocated_re=getattr(data_config, "num_allocated_re", 0),
+            bler_target=getattr(data_config, "bler_target", 0.1),
+            mcs_table_index=getattr(data_config, "mcs_table_index", 1),
+            mcs_category=getattr(data_config, "mcs_category", 0),
+            slot_duration_ms=getattr(data_config, "slot_duration_ms", 1.0),
+            log_fallback_warnings=getattr(data_config, "log_fallback_warnings", False),
         )
         
         # Generate dataset
         generator = MultiLayerDataGenerator(config)
         
-        split_ratios = data_config.split_ratios
-        
+        split_ratios = data_config.split_ratios or {"train": 0.7, "val": 0.15, "test": 0.15}
+
         output_paths = generator.generate_dataset(
             create_splits=True,
-            train_ratio=split_ratios['train'],
-            val_ratio=split_ratios['val'],
-            test_ratio=split_ratios['test']
+            train_ratio=split_ratios.get('train', 0.7),
+            val_ratio=split_ratios.get('val', 0.15),
+            test_ratio=split_ratios.get('test', 0.15),
         )
         
         # Store paths
@@ -439,6 +465,12 @@ class Pipeline:
         """Find the latest LMDB dataset for a given split."""
         lmdb_pattern = f"dataset_*_{split}.lmdb"
         lmdb_matches = sorted(self.data_dir.glob(lmdb_pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not lmdb_matches and split in {"train", "val"}:
+            lmdb_matches = sorted(
+                self.data_dir.glob("dataset_*_train_val.lmdb"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
         return lmdb_matches[0] if lmdb_matches else None
     
     def generate_report(self):
@@ -502,6 +534,37 @@ def main():
     
     # Run pipeline
     pipeline = Pipeline(config)
+    if getattr(config, "profiling", None) and config.profiling.enabled:
+        output_dir = config.profiling.output_dir
+        if output_dir:
+            profile_dir = Path(output_dir)
+        else:
+            profile_dir = pipeline.output_dir / "profiling"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_base = f"profile_{config.experiment.name}_{timestamp}"
+        raw_path = profile_dir / f"{profile_base}.prof"
+        txt_path = profile_dir / f"{profile_base}.txt"
+
+        profiler = cProfile.Profile()
+        profiler.enable()
+        exit_code = pipeline.run()
+        profiler.disable()
+
+        if config.profiling.save_raw:
+            profiler.dump_stats(raw_path)
+
+        with open(txt_path, "w") as f:
+            stats = pstats.Stats(profiler, stream=f)
+            stats.sort_stats(config.profiling.sort or "cumtime")
+            stats.print_stats(config.profiling.top_n or 50)
+
+        logger.info(f"Profiling report saved: {txt_path}")
+        if config.profiling.save_raw:
+            logger.info(f"Profiling raw stats saved: {raw_path}")
+        sys.exit(exit_code)
+
     sys.exit(pipeline.run())
 
 

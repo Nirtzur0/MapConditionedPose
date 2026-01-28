@@ -73,11 +73,13 @@ class DataStacker:
         if not feat_list:
             return
             
-        keys = feat_list[0].keys()
+        keys = set()
+        for entry in feat_list:
+            keys.update(entry.keys())
         
         for key in keys:
             # Collect all batches for this key
-            batches = [d[key] for d in feat_list if d[key] is not None]
+            batches = [d.get(key) for d in feat_list if d.get(key) is not None]
             if not batches:
                 continue
             

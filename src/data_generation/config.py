@@ -75,11 +75,28 @@ class DataGenerationConfig:
     enforce_unique_ue_positions: bool = False
     min_ue_separation_m: float = 1.0
     ue_sampling_margin_m: float = 0.0
+    max_attempts_per_ue: int = 25
+    drop_failed_ue_trajectories: bool = False
     rt_diagnostics_max: int = 10
     rt_fail_log_every: int = 100
     drop_log_every: int = 100
     drop_failed_reports: bool = True
     max_resample_attempts: int = 10
+    min_scene_survival_ratio: float = 0.6
+    max_scene_resample_attempts: int = 3
+    split_mode: str = "scene"
+    split_train_val_label: str = "train_val"
+    kfold_num_folds: int = 5
+    kfold_fold_index: int = 0
+    kfold_shuffle: bool = True
+    kfold_seed: int = 42
+    use_sionna_sys: bool = False
+    num_allocated_re: int = 0
+    bler_target: float = 0.1
+    mcs_table_index: int = 1
+    mcs_category: int = 0
+    slot_duration_ms: float = 1.0
+    log_fallback_warnings: bool = False
     
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'DataGenerationConfig':
@@ -129,9 +146,26 @@ class DataGenerationConfig:
             enforce_unique_ue_positions=dg_config.get('enforce_unique_ue_positions', False),
             min_ue_separation_m=dg_config.get('min_ue_separation_m', 1.0),
             ue_sampling_margin_m=dg_config.get('ue_sampling_margin_m', 0.0),
+            max_attempts_per_ue=dg_config.get('max_attempts_per_ue', 25),
+            drop_failed_ue_trajectories=dg_config.get('drop_failed_ue_trajectories', False),
             rt_diagnostics_max=dg_config.get('rt_diagnostics_max', 10),
             rt_fail_log_every=dg_config.get('rt_fail_log_every', 100),
             drop_log_every=dg_config.get('drop_log_every', 100),
             drop_failed_reports=dg_config.get('drop_failed_reports', True),
             max_resample_attempts=dg_config.get('max_resample_attempts', 10),
+            min_scene_survival_ratio=dg_config.get('min_scene_survival_ratio', 0.6),
+            max_scene_resample_attempts=dg_config.get('max_scene_resample_attempts', 3),
+            split_mode=dg_config.get('split_mode', 'scene'),
+            split_train_val_label=dg_config.get('split_train_val_label', 'train_val'),
+            kfold_num_folds=dg_config.get('kfold_num_folds', 5),
+            kfold_fold_index=dg_config.get('kfold_fold_index', 0),
+            kfold_shuffle=dg_config.get('kfold_shuffle', True),
+            kfold_seed=dg_config.get('kfold_seed', 42),
+            use_sionna_sys=dg_config.get('use_sionna_sys', False),
+            num_allocated_re=dg_config.get('num_allocated_re', 0),
+            bler_target=dg_config.get('bler_target', 0.1),
+            mcs_table_index=dg_config.get('mcs_table_index', 1),
+            mcs_category=dg_config.get('mcs_category', 0),
+            slot_duration_ms=dg_config.get('slot_duration_ms', 1.0),
+            log_fallback_warnings=dg_config.get('log_fallback_warnings', False),
         )

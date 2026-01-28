@@ -14,6 +14,7 @@ from ..measurement_utils import (
     compute_rank_indicator, compute_timing_advance, compute_pmi,
     compute_beam_rsrp
 )
+from ..shape_contract import normalize_channel_matrix, normalize_sinr
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ class PHYFAPIFeatureExtractor:
         # check channel_matrix or rt_features.path_gains
         ref_data = channel_matrix if channel_matrix is not None else rt_features.path_gains
         ops = get_ops(ref_data)
+        if channel_matrix is not None:
+            channel_matrix = normalize_channel_matrix(channel_matrix, strict=False).data
 
         if pilot_re_indices is None:
             if ops.is_tensor(ref_data) and TF_AVAILABLE:
@@ -138,9 +141,6 @@ class PHYFAPIFeatureExtractor:
             powers = ops.square(ops.abs(gains))
             total_power = ops.sum(powers, axis=-1)
             rsrp_val = 10.0 * ops.log10(total_power + 1e-10) + 30.0 # ops.log10 is log10
-            # log10(x) + 30
-            # Wait, ops.log10 implementation for TF: tf.math.log(x) / tf.math.log(10.0) -> Correct.
-            
             rsrp_dbm = ops.expand_dims(rsrp_val, -1)
         
         # Use Sionna MIMO Capacity for CQI/RI
@@ -226,7 +226,7 @@ class PHYFAPIFeatureExtractor:
             sinr_full = compute_sinr(channel_matrix, noise_power_linear, interference_matrices)
             if len(ops.shape(sinr_full)) == 2:
                 sinr_full = ops.expand_dims(sinr_full, -1)
-            sinr = sinr_full
+            sinr = normalize_sinr(sinr_full)
         else:
             sinr = rsrp_dbm - noise_power_dbm
 
@@ -239,11 +239,15 @@ class PHYFAPIFeatureExtractor:
         # RI (if not calculated or mismatched shape)
         if ri is None or (channel_matrix is not None and ops.shape(ri)[-1] != ops.shape(rsrp_dbm)[-1]):
             if channel_matrix is not None:
-                if ops.is_tensor(channel_matrix):
-                    h_spatial = ops.mean(channel_matrix, axis=[-2, -1])
-                else:
-                    h_spatial = ops.mean(channel_matrix, axis=(-2, -1))
-                ri = compute_rank_indicator(h_spatial)
+                sinr_for_ri = normalize_sinr(sinr)
+                if sinr_for_ri is not None and len(ops.shape(sinr_for_ri)) == 3:
+                    sinr_for_ri = sinr_for_ri[:, 0, :]
+                # Average over frequency only to preserve spatial structure
+                h_spatial = ops.mean(channel_matrix, axis=-1)
+                # [B, Rx, RxAnt, C, TxAnt] -> [B, C, RxAnt, TxAnt] using Rx=0
+                h_spatial = h_spatial[:, 0, ...]
+                h_spatial = ops.transpose(h_spatial, perm=[0, 2, 1, 3])
+                ri = compute_rank_indicator(h_spatial, snr_db=sinr_for_ri)
             else:
                 # Default 1
                 ones = _to_numpy(rsrp_dbm) * 0 + 1 # Hacky creation
@@ -254,11 +258,10 @@ class PHYFAPIFeatureExtractor:
         
         # PMI
         if channel_matrix is not None:
-             if ops.is_tensor(channel_matrix):
-                 h_spatial = ops.mean(channel_matrix, axis=[-2, -1])
-             else:
-                 h_spatial = ops.mean(channel_matrix, axis=(-2, -1))
-             pmi = compute_pmi(h_spatial)
+             h_spatial = ops.mean(channel_matrix, axis=-1)
+             h_spatial = h_spatial[:, 0, ...]
+             h_spatial = ops.transpose(h_spatial, perm=[0, 2, 1, 3])
+             pmi = compute_pmi(h_spatial, num_beams=self.num_beams)
         else:
              if ops.is_tensor(rsrp_dbm):
                  pmi = tf.zeros_like(rsrp_dbm, dtype=tf.int32)
