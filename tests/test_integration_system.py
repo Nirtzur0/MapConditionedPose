@@ -110,7 +110,6 @@ class TestSystemIntegration:
             enable_beam_management=False, # Disable for speed in test
             num_beams=8,
             max_neighbors=2,
-            zarr_chunk_size=10,
             tx_power_dbm=23.0,
             noise_figure_db=9.0
         )
@@ -119,106 +118,75 @@ class TestSystemIntegration:
         
         # Run Real Generation
         # This will run ray tracing if Sionna is installed
-        output_path = generator.generate_dataset()
+        output_path = generator.generate_dataset(create_splits=False)
         
         assert output_path.exists()
         print(f"[M2] Real dataset generated at {output_path}")
         
-        # Load the generated data to pass to M3
-        # We need to read the Zarr file we just created
-        import zarr
-        z = zarr.open(str(output_path), mode='r')
-    
-        # ZarrDatasetWriter stores data in flat arrays (concatenated scenes)
-        # So we access layers directly from root
-        scene_group = z
+        # Load one sample from LMDB for M3
+        from src.datasets.lmdb_dataset import LMDBRadioLocalizationDataset
 
-        # Extract tensors for model
-        # We need to convert Zarr arrays to Torch tensors
-        # Note: ZarrWriter stores raw fields (path_gains, etc), not 'features' tensor.
-        # We must construct input tensors or read available fields.
-        
-        # RT: Load raw and construct dummy features for model
-        # Check iteratively for safety with Zarr versions
-        if 'rt' in scene_group and 'path_gains' in scene_group['rt']:
-             pg = torch.tensor(scene_group['rt']['path_gains'][:], dtype=torch.complex64)
-             pd = torch.tensor(scene_group['rt']['path_delays'][:], dtype=torch.float32)
-             
-             batch_size, seq_len_rt = pg.shape[0], pg.shape[1]
-             
-             # Create dummy features matching model expectation [B, S, D]
-             rt_features = torch.randn(batch_size, seq_len_rt, 10)
-        else:
-             pytest.fail(f"RT data missing in Zarr. Keys: {list(scene_group.keys())}")
-    
-        # PHY
-        if 'phy_fapi/rsrp' in scene_group:
-             rsrp = torch.tensor(scene_group['phy_fapi/rsrp'][:], dtype=torch.float32)
-             # Expect [Batch, Rx, Cells] -> [Batch, Seq, Feat]
-             if rsrp.dim() == 2:
-                  phy_features = rsrp.unsqueeze(1)
-             else:
-                  phy_features = rsrp
-        else:
-             phy_features = torch.randn(batch_size, seq_len_rt, 16)
-    
-        seq_len = phy_features.shape[1]
-        
-        # RT might be unpadded (e.g. 2 cells) while PHY is padded (16 cells)
-        # We must pad RT features to match seq_len
-        # (Since we generate dummy RT features, we just use seq_len)
-        rt_features = torch.randn(batch_size, seq_len, 10)
-        
-        # Create mask based on valid RT cells
-        mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
-        if seq_len_rt <= seq_len:
-             mask[:, :seq_len_rt] = True
-        else:
-             # Should not happen if MAX_CELLS=16 and num_cells=2
-             mask[:] = True
+        dataset = LMDBRadioLocalizationDataset(
+            lmdb_path=str(output_path),
+            split='all',
+            map_resolution=1.0,
+            scene_extent=512,
+            normalize=False,
+            handle_missing='mask',
+        )
+        sample = dataset[0]
 
-        # MAC
-        mac_features = torch.randn(batch_size, seq_len, 5) # Dummy
-    
-        cell_ids = torch.randint(0, 2, (batch_size, seq_len)) # Mocked (max num_cells=2)
-        beam_ids = torch.randint(0, 8, (batch_size, seq_len)) # Mocked (max num_beams=8)
-        timestamps = torch.rand(batch_size, seq_len) # Mocked
-        
-        # Basic check
-        assert rt_features.shape[0] > 0
-        print("[M2] Data loaded from Zarr successfully")
+        measurements = {
+            k: v.unsqueeze(0)
+            for k, v in sample['measurements'].items()
+        }
+        radio_map = sample['radio_map'].unsqueeze(0)
+        osm_map = sample['osm_map'].unsqueeze(0)
+
+        batch_size = 1
+        seq_len = measurements['cell_ids'].shape[1]
+        print("[M2] Data loaded from LMDB successfully")
 
         # =========================================================================
         # Step 3: M3 Model Initialization & Forward
         # =========================================================================
         # Create minimal config
+        num_cells = int(measurements['cell_ids'].max().item()) + 1
+        num_beams = int(measurements['beam_ids'].max().item()) + 1
+        rt_dim = measurements['rt_features'].shape[-1]
+        phy_dim = measurements['phy_features'].shape[-1]
+        mac_dim = measurements['mac_features'].shape[-1]
+        radio_channels = radio_map.shape[1]
+        osm_channels = osm_map.shape[1]
+        img_size = radio_map.shape[-1]
+
         model_config = {
             'dataset': {
-                'map_size': 256,
+                'map_size': img_size,
             },
             'model': {
                 'radio_encoder': {
-                    'num_cells': 2, # Match sites
-                    'num_beams': 8,
+                    'num_cells': max(num_cells, 1),
+                    'num_beams': max(num_beams, 1),
                     'd_model': 32,
                     'nhead': 2,
                     'num_layers': 2,
                     'dropout': 0.1,
-                    'max_seq_len': 1,
-                    'rt_features_dim': 10,
-                    'phy_features_dim': 16, # Matches MAX_CELLS padding in generator
-                    'mac_features_dim': 5,
+                    'max_seq_len': seq_len,
+                    'rt_features_dim': rt_dim,
+                    'phy_features_dim': phy_dim,
+                    'mac_features_dim': mac_dim,
                 },
                 'map_encoder': {
-                    'img_size': 256,
+                    'img_size': img_size,
                     'patch_size': 16,
-                    'in_channels': 5, # Radio + OSM
+                    'in_channels': radio_channels + osm_channels,
                     'd_model': 32,
                     'nhead': 2,
                     'num_layers': 1,
                     'dropout': 0.1,
-                    'radio_map_channels': 5,
-                    'osm_map_channels': 0,
+                    'radio_map_channels': radio_channels,
+                    'osm_map_channels': osm_channels,
                 },
                 'fusion': {
                     'd_fusion': 32,
@@ -240,33 +208,10 @@ class TestSystemIntegration:
         model = UELocalizationModel(model_config)
         
         # Prepare Batch Tensors (Real Data)
-        # Use the tensors extracted from Zarr in Step 2
+        # Use the tensors extracted in Step 2
         # batch_size and seq_len defined above (seq_len=1)
         
-        batch_measurements = {
-            'rt_features': rt_features,
-            'phy_features': phy_features,
-            'mac_features': mac_features,
-            'cell_ids': cell_ids,   # Still mock if not in Zarr, but let's accept for now
-            'beam_ids': beam_ids,   # Still mock if not in Zarr
-            'timestamps': timestamps, # Mocked
-            'mask': mask            # All valid
-        }
-        
-        # Load Real Radio Map
-        if 'radio_maps' in z:
-            # Assuming 1 scene, index 0
-            # Shape: [C, H, W] -> Add Batch Dimension -> [Batch, C, H, W]
-            real_map = torch.tensor(z['radio_maps'][0], dtype=torch.float32)
-            # Expand to batch size
-            radio_map = real_map.unsqueeze(0).expand(batch_size, -1, -1, -1)
-            print(f"[M3] Loaded real radio map: {radio_map.shape}")
-        else:
-            print("[M3] Warning: 'radio_maps' not found in Zarr, using random map (Should not happen in real run)")
-            radio_map = torch.randn(batch_size, 5, 64, 64)
-
-        # Create empty OSM map (channels=0 as per config)
-        osm_map = torch.zeros(batch_size, 0, 256, 256)
+        batch_measurements = measurements
     
         # Forward Pass
         outputs = model(
@@ -287,7 +232,7 @@ class TestSystemIntegration:
         # Physics loss typically expects [Batch, Features] (last step?) or sequence?
         # Let's use the last time step
         # Match radio_maps channels (5)
-        observed_features = rt_features[:, -1, :5]
+        observed_features = batch_measurements['rt_features'][:, 0, :radio_map.shape[1]]
         
         # Physics map: In real pipeline, this comes from radio_map or separate physics map
         # We reuse the radio_map (assuming channels match or we slice)
@@ -297,7 +242,7 @@ class TestSystemIntegration:
         # For this test, we slice or pad the real map to fit if needed, 
         # OR just use the real map and hope it works (as "No Bandages").
         # If it fails, that's a "Real Issue" to fix.
-        physics_map = radio_map 
+        physics_map = radio_map
         
         # However, PhysicsLoss might fail if channels mismatch.
         # Let's try running it. If it fails, we fix the config or map generation.

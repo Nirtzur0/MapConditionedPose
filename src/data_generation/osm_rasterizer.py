@@ -1,6 +1,7 @@
 
 import numpy as np
 import logging
+import os
 from typing import Tuple, Dict, Any, List
 import sionna as sn
 
@@ -315,6 +316,10 @@ class OSMRasterizer:
         # Since Sionna scenes don't include road meshes, we fetch and rasterize them separately
         if scene_metadata or osm_data:
             self._rasterize_roads(osm_map, scene_metadata, osm_data)
+
+        # Fallback: if terrain is empty, approximate ground as non-building area.
+        if osm_map[4].sum() == 0 and osm_map[2].sum() > 0:
+            osm_map[4] = np.clip(1.0 - osm_map[2], 0.0, 1.0)
             
         return osm_map
 
@@ -430,15 +435,6 @@ class OSMRasterizer:
             temp_mask = np.zeros((self.height, self.width), dtype=np.float32)
             cv2.fillPoly(temp_mask, batch_points, float(height_val))
             osm_map[0] = np.maximum(osm_map[0], temp_mask)
-
-    def _rasterize_cv2(self, osm_map, pixels, faces, z_values, mat_id, is_ground, is_road, skip_height=False):
-        # Legacy per-object rasterizer (kept for reference or if batching proves problematic, though unused now)
-        pass
-
-
-    def _rasterize_skimage(self, osm_map, pixels, faces, z_values, mat_id, is_ground, is_road):
-        # Fallback implementation
-        pass
 
     def _rasterize_sionna_gpu(self, scene, osm_map) -> np.ndarray:
         """
@@ -770,7 +766,9 @@ class OSMRasterizer:
             lon_min, lat_min, lon_max, lat_max = bbox
             
             # Overpass API query for roads (highways)
-            overpass_url = "https://overpass-api.de/api/interpreter"
+            overpass_url = os.environ.get(
+                "OVERPASS_URL", "https://overpass-api.de/api/interpreter"
+            )
             overpass_query = f"""
             [out:json][timeout:60];
             (

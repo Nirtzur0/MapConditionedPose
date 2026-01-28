@@ -149,8 +149,20 @@ class SionnaNativeKPIExtractor:
                     return tf.transpose(x, perm)
             return x
 
-        a = paths.a # [S, T, P, RxA, TxA, 1, 1]
-        tau = paths.tau # [S, T, P]
+        def _to_tf(x):
+            if isinstance(x, tuple) and len(x) == 2:
+                real, imag = x
+                if hasattr(real, "tf"):
+                    real = real.tf()
+                if hasattr(imag, "tf"):
+                    imag = imag.tf()
+                return tf.complex(real, imag)
+            if hasattr(x, "tf"):
+                return x.tf()
+            return x
+
+        a = _to_tf(paths.a) # [S, T, P, RxA, TxA, 1, 1]
+        tau = _to_tf(paths.tau) # [S, T, P]
         
         # In Sionna 1.2+, these are usually tensors, but let's be safe
         if isinstance(a, (list, tuple)): a = a[0]
@@ -187,7 +199,7 @@ class SionnaNativeKPIExtractor:
 
         target_stp = a.shape[:3] # [S, T, P]
         tau = _align_tensor(tau, target_stp)
-        phi_r = _align_tensor(paths.phi_r, target_stp)
+        phi_r = _align_tensor(_to_tf(paths.phi_r), target_stp)
         
 
 
@@ -249,9 +261,9 @@ class SionnaNativeKPIExtractor:
                 lambda: tf.pad(tensor, [[0, 0]] * (len(tensor.shape) - 1) + [[0, target_paths - p]], constant_values=pad_val)
             )
 
-        # Apply strictly to path-dependent outputs for Zarr consistency
+        # Apply strictly to path-dependent outputs for storage consistency
         # Note: Internal metrics (ToA, DS, etc.) should use ALL available paths for accuracy.
-        # BUT the 'path_powers', 'path_delays', 'path_gains' stored in Zarr MUST match max_dims.
+        # BUT the 'path_powers', 'path_delays', 'path_gains' stored in the dataset MUST match max_dims.
         
         # 1. Total Power (Narrowband Channel Gain) - Use ALL paths
         total_power = tf.reduce_sum(path_powers, axis=-1) # [B, C]
@@ -307,10 +319,51 @@ class SionnaNativeKPIExtractor:
         rms_as = tf.sqrt(-2.0 * tf.math.log(r_abs))
         
         # 6. NLoS Detection
-        # Heuristic: If ToA is significantly larger than LoS distance / c.
-        # But we don't know LoS distance here easily without inputs.
-        # Alternative: If K-Factor is low (< 0 dB usually means NLoS).
-        is_nlos = k_factor_db < 0.0 # Boolean [B, C]
+        # Prefer explicit RT interactions when available. A link is LoS if any valid path
+        # has zero interactions; otherwise it's NLoS. Fall back to K-Factor threshold.
+        is_nlos = None
+        interactions = getattr(paths, "interactions", None)
+        if interactions is not None:
+            try:
+                inter = interactions.numpy() if hasattr(interactions, "numpy") else np.asarray(interactions)
+
+                def _align_bt(arr):
+                    if arr.ndim >= 2:
+                        if arr.shape[0] == batch_size:
+                            return arr
+                        if arr.shape[1] == batch_size:
+                            return np.swapaxes(arr, 0, 1)
+                        return np.swapaxes(arr, 0, 1)
+                    return arr
+
+                inter = _align_bt(inter)
+                if inter.ndim >= 4:
+                    los_path = np.all(inter == 0, axis=-1)
+                elif inter.ndim == 3:
+                    los_path = inter == 0
+                elif inter.ndim == 2:
+                    los_path = inter == 0
+                    los_path = los_path[..., np.newaxis]
+                else:
+                    los_path = None
+
+                if los_path is not None:
+                    valid = getattr(paths, "valid", None)
+                    if valid is not None:
+                        valid_np = valid.numpy() if hasattr(valid, "numpy") else np.asarray(valid)
+                        valid_np = _align_bt(valid_np)
+                        if valid_np.ndim == 2:
+                            valid_np = valid_np[..., np.newaxis]
+                        if valid_np.shape == los_path.shape:
+                            los_path = los_path & valid_np
+                    has_los = np.any(los_path, axis=-1)
+                    is_nlos = (~has_los).astype(np.float32)
+            except Exception as e:
+                logger.warning(f"Failed to derive is_nlos from interactions: {e}")
+
+        if is_nlos is None:
+            # Heuristic fallback: If K-Factor is low (< 0 dB), treat as NLoS.
+            is_nlos = k_factor_db < 0.0  # Boolean [B, C]
         
         return {
             'toa': toa,         # [B, C]
@@ -336,6 +389,13 @@ class SionnaNativeKPIExtractor:
         """
         # Input shape: [T, RxA, S, TxA, F] corresponds to [Batch, RxAnt, Cells, TxAnt, Freq]
         # We need to process per-cell Metrics.
+        if len(channel_response.shape) == 6:
+            # [Batch, Rx, RxAnt, Cells, TxAnt, Freq] -> squeeze Rx if singleton
+            if channel_response.shape[1] == 1:
+                channel_response = tf.squeeze(channel_response, axis=1)
+            else:
+                # Fallback: select first Rx dimension
+                channel_response = channel_response[:, 0, ...]
         
         # 1. RSRP
         # Average Power over Frequency (Reference Signals)

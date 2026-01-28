@@ -16,18 +16,11 @@ model:
     phy_features_dim: 8   # rsrp, rsrq, sinr, cqi, ri, pmi, capacity, condition_number
     mac_features_dim: 6   # serving_cell_id, timing_advance, phr, throughput, bler, + padding
     
-    # Channel Frequency Response (CFR) - channel estimate from DMRS
-    cfr_enabled: false       # Disabled - CFR not in current dataset
-    cfr_num_cells: 8         # Max cells in CFR (unused when disabled)
-    cfr_num_subcarriers: 64  # Subcarriers per cell (unused when disabled)
-  
   # Map Encoder (Vision Transformer)
   map_encoder:
-    use_e2_equivariant: false  # Changed to standard ViT by default
-    num_group_elements: 8     # p4m group: 4 rotations x 2 reflections
     img_size: 256             # Map resolution (pixels)
     patch_size: 16            # Patch size (CRITICAL for memory efficiency)
-    in_channels: 10           # 5 (radio) + 5 (OSM) - default for backward compat
+    in_channels: 10           # 5 (radio) + 5 (OSM)
     d_model: 192              # Hidden dimension
     nhead: 4                  # Attention heads
     num_layers: 3             # Transformer layers
@@ -37,7 +30,7 @@ model:
     
     # Channel configuration
     radio_map_channels: 5  # path_gain, toa, snr, sinr, throughput
-    osm_map_channels: 5    # height, material, footprint, road, terrain (all 5 for compat)
+    osm_map_channels: 5    # height, material, footprint, road, terrain
   
   # Cross-Attention Fusion
   fusion:
@@ -61,8 +54,6 @@ model:
     patch_size: 64   # High-res patch size (pixels)
     use_local_map: true   # Condition fine head on local map patches
     offset_scale: 1.5     # Max offset in multiples of cell size
-    sigma_min_ratio: 0.03 # Min uncertainty as fraction of cell size
-    sigma_max_ratio: 3.2  # Max uncertainty as multiples of cell size
     dropout: 0.1
 
 # Training configuration - ENHANCED for positioning
@@ -77,8 +68,6 @@ training:
   loss:
     coarse_weight: 1.5       # Increase coarse weight for grid prediction
     fine_weight: 1.0
-    position_weight: 0.5     # Add direct position supervision
-    variance_reg_weight: 0.1 # Regularize variance to encourage confident predictions
     use_physics_loss: false
     auxiliary:
       enabled: true
@@ -112,7 +101,6 @@ training:
 
 # Dataset configuration
 dataset:
-  zarr_path: "data/processed/sionna_dataset/dataset_20260101_130755.zarr"
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
@@ -161,11 +149,8 @@ physics_loss:
     min_confidence_threshold: 0.6  # Refine if confidence is below 60%
     clip_to_extent: true  # Clip refined positions to map extent
     coarse_logit_temperature: 1.0  # Temperature scaling for coarse logits
-    fine_variance_scale: 1.0  # Scale predicted variances for calibration
-    fine_sigma_ref: null  # If null, uses fine_sigma_ref_ratio * map extent
-    fine_sigma_ref_ratio: 0.05  # Sigma reference as fraction of map extent
+    candidate_sigma_ratio: 0.05  # Hypothesis kernel width as fraction of map extent
     confidence_combine: min  # min | product | coarse | fine
-    min_variance: 1.0e-6  # Variance floor for stability
 
 # Validation/Testing
 evaluation:

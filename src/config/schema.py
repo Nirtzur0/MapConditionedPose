@@ -38,6 +38,10 @@ class ScenesConfig:
     num_tx: int = MISSING
     tx_variations: int = MISSING
     site_strategy: str = MISSING
+    bbox_scale: float = 1.0
+    use_lidar: bool = True
+    use_dem: bool = False
+    hag_tiff_path: Optional[str] = None
 
 
 @dataclass
@@ -47,9 +51,15 @@ class DataGenerationConfig:
     tx_power_dbm: float = 43.0
     noise_figure_db: float = 9.0
     use_mock_mode: bool = False
+    allow_mock_fallback: bool = True
+    require_sionna: bool = False
+    require_cfr: bool = False
     max_depth: int = 5
     num_samples: int = 1000000
     enable_diffraction: bool = True
+    enable_diffuse_reflection: bool = False
+    enable_edge_diffraction: bool = False
+    rt_batch_size: int = 16
     num_ue_per_tile: int = MISSING
     ue_height_range: Tuple[float, float] = (1.5, 1.5)
     ue_velocity_range: Tuple[float, float] = (0.0, 1.5)
@@ -59,12 +69,20 @@ class DataGenerationConfig:
     enable_beam_management: bool = True
     num_beams: int = 64
     max_neighbors: int = 8
+    cfr_num_subcarriers: int = 64
     measurement_dropout_rates: Dict[str, float] = field(default_factory=dict)
     measurement_dropout_seed: int = 42
     quantization_enabled: bool = True
-    zarr_chunk_size: int = 100
     max_stored_paths: int = 256
     max_stored_sites: int = 16
+    enforce_unique_ue_positions: bool = False
+    min_ue_separation_m: float = 1.0
+    ue_sampling_margin_m: float = 0.0
+    rt_diagnostics_max: int = 10
+    rt_fail_log_every: int = 100
+    drop_log_every: int = 100
+    drop_failed_reports: bool = True
+    max_resample_attempts: int = 10
     split_ratios: Dict[str, float] = field(default_factory=dict)
 
 
@@ -80,15 +98,10 @@ class RadioEncoderConfig:
     rt_features_dim: int = MISSING
     phy_features_dim: int = MISSING
     mac_features_dim: int = MISSING
-    cfr_enabled: bool = False
-    cfr_num_cells: int = 8
-    cfr_num_subcarriers: int = 64
 
 
 @dataclass
 class MapEncoderConfig:
-    use_e2_equivariant: bool = False
-    num_group_elements: int = 8
     img_size: int = MISSING
     patch_size: int = MISSING
     in_channels: int = MISSING
@@ -125,8 +138,6 @@ class FineHeadConfig:
     patch_size: int = 64
     use_local_map: bool = False
     offset_scale: float = 1.5
-    sigma_min_ratio: float = 0.03
-    sigma_max_ratio: float = 3.2
     dropout: float = MISSING
 
 
@@ -152,8 +163,6 @@ class AuxiliaryLossConfig:
 class TrainingLossConfig:
     coarse_weight: float = MISSING
     fine_weight: float = MISSING
-    position_weight: float = 0.2
-    variance_reg_weight: float = 0.1
     use_physics_loss: bool = False
     auxiliary: AuxiliaryLossConfig = field(default_factory=AuxiliaryLossConfig)
 
@@ -189,12 +198,14 @@ class DatasetConfig:
     train_lmdb_paths: List[str] = field(default_factory=list)
     val_lmdb_paths: List[str] = field(default_factory=list)
     test_lmdb_paths: List[str] = field(default_factory=list)
-    train_zarr_paths: List[str] = field(default_factory=list)
-    val_zarr_paths: List[str] = field(default_factory=list)
-    test_zarr_paths: List[str] = field(default_factory=list)
+    require_lmdb: bool = False
     map_resolution: float = MISSING
     scene_extent: Any = MISSING
     normalize_features: bool = True
+    normalize_maps: bool = False
+    map_norm_mode: str = "zscore"
+    map_log_throughput: bool = False
+    map_log_epsilon: float = 1e-3
     handle_missing_values: str = "mask"
     split_seed: int = 42
     map_cache_size: int = 0
@@ -210,11 +221,8 @@ class RefinementConfig:
     min_confidence_threshold: float = 0.6
     clip_to_extent: bool = True
     coarse_logit_temperature: float = 1.0
-    fine_variance_scale: float = 1.0
-    fine_sigma_ref: Optional[float] = None
-    fine_sigma_ref_ratio: float = 0.05
+    candidate_sigma_ratio: float = 0.05
     confidence_combine: str = "min"
-    min_variance: float = 1e-6
 
 
 @dataclass

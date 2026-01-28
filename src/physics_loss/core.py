@@ -76,9 +76,6 @@ class PhysicsLoss(nn.Module):
         feature_names = list(config.channel_names)
         weights = [config.feature_weights.get(name, 1.0) for name in feature_names]
         
-        # Legacy support: if we have map-specific weights not in channel_names (unlikely if config is correct)
-        # We just rely on channel_names defining the map structure.
-             
         self.register_buffer('feature_weights', torch.tensor(weights))
         self.feature_names = feature_names
         
@@ -120,7 +117,7 @@ class PhysicsLoss(nn.Module):
         if self.config.normalize_features:
             # Normalize each feature to zero mean, unit variance
             obs_mean = observed_features.mean(dim=0, keepdim=True)
-            obs_std = observed_features.std(dim=0, keepdim=True) + 1e-6
+            obs_std = observed_features.std(dim=0, keepdim=True, unbiased=False) + 1e-6
             observed_norm = (observed_features - obs_mean) / obs_std
             simulated_norm = (simulated_features - obs_mean) / obs_std
         else:
@@ -188,7 +185,7 @@ class PhysicsLoss(nn.Module):
         # Normalize if configured
         if self.config.normalize_features:
             obs_mean = observed_features.mean(dim=0, keepdim=True)
-            obs_std = observed_features.std(dim=0, keepdim=True) + 1e-6
+            obs_std = observed_features.std(dim=0, keepdim=True, unbiased=False) + 1e-6
             observed_norm = (observed_features - obs_mean) / obs_std
             simulated_norm = (simulated_features - obs_mean) / obs_std
         else:

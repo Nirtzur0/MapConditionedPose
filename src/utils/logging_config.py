@@ -58,7 +58,6 @@ def setup_clean_logging(level=logging.INFO):
     # Silence noisy third-party loggers
     logging.getLogger('keras').setLevel(logging.ERROR)
     logging.getLogger('tensorflow').setLevel(logging.ERROR)
-    logging.getLogger('zarr').setLevel(logging.ERROR)  # Legacy Zarr (deprecated)
     logging.getLogger('lmdb').setLevel(logging.WARNING)  # LMDB (primary storage)
     logging.getLogger('matplotlib').setLevel(logging.ERROR)
     logging.getLogger('PIL').setLevel(logging.ERROR)

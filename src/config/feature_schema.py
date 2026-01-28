@@ -3,7 +3,7 @@ Shared feature schema for generation, dataset packing, and physics loss.
 
 This is the single source of truth for:
 - Feature vector indices used by the dataset/model
-- Zarr/LMDB key names used during generation
+- Storage key names used during generation
 - Radio map channel ordering for physics loss
 """
 
@@ -13,17 +13,17 @@ from typing import Dict, Tuple
 
 class RTFeatureIndex(IntEnum):
     TOA = 0
-    MEAN_PATH_GAIN = 1
-    MAX_PATH_GAIN = 2
-    MEAN_PATH_DELAY = 3
-    NUM_PATHS = 4
+    MEAN_PATH_GAIN = 1  # unused (removed from model inputs)
+    MAX_PATH_GAIN = 2  # unused (removed from model inputs)
+    MEAN_PATH_DELAY = 3  # unused (removed from model inputs)
+    NUM_PATHS = 4  # unused (removed from model inputs)
     RMS_DELAY_SPREAD = 5
     RMS_ANGULAR_SPREAD = 6
     TOTAL_POWER = 7
     N_SIGNIFICANT_PATHS = 8
-    DELAY_RANGE = 9
-    DOMINANT_PATH_GAIN = 10
-    DOMINANT_PATH_DELAY = 11
+    DELAY_RANGE = 9  # unused (removed from model inputs)
+    DOMINANT_PATH_GAIN = 10  # unused (removed from model inputs)
+    DOMINANT_PATH_DELAY = 11  # unused (removed from model inputs)
     IS_NLOS = 12
     RESERVED_13 = 13
     RESERVED_14 = 14
@@ -37,7 +37,7 @@ class PHYFeatureIndex(IntEnum):
     CQI = 3
     RI = 4
     PMI = 5
-    L1_RSRP = 6
+    L1_RSRP = 6  # unused (removed from model inputs)
     BEST_BEAM_ID = 7
 
 
@@ -64,7 +64,7 @@ RADIO_MAP_CHANNELS: Tuple[str, ...] = (
 
 PHYSICS_OBSERVED_FEATURES: Tuple[str, ...] = RADIO_MAP_CHANNELS
 
-RT_ZARR_KEYS: Dict[str, str] = {
+RT_KEYS: Dict[str, str] = {
     "toa": "rt/toa",
     "path_gains": "rt/path_gains",
     "path_delays": "rt/path_delays",
@@ -75,7 +75,7 @@ RT_ZARR_KEYS: Dict[str, str] = {
     "is_nlos": "rt/is_nlos",
 }
 
-PHY_ZARR_KEYS: Dict[str, str] = {
+PHY_KEYS: Dict[str, str] = {
     "rsrp": "phy_fapi/rsrp",
     "rsrq": "phy_fapi/rsrq",
     "sinr": "phy_fapi/sinr",
@@ -91,7 +91,7 @@ PHY_ZARR_KEYS: Dict[str, str] = {
     "condition_number": "phy_fapi/condition_number",
 }
 
-MAC_ZARR_KEYS: Dict[str, str] = {
+MAC_KEYS: Dict[str, str] = {
     "serving_cell_id": "mac_rrc/serving_cell_id",
     "neighbor_cell_ids": "mac_rrc/neighbor_cell_ids",
     "timing_advance": "mac_rrc/timing_advance",

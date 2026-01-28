@@ -42,16 +42,6 @@ except ImportError:
     LMDB_AVAILABLE = False
     logger.error("LMDB not available; install with: pip install lmdb")
 
-# Legacy Zarr support (DEPRECATED - has multiprocessing issues)
-ZARR_AVAILABLE = False
-ZarrDatasetWriter = None
-# Uncomment below to enable legacy Zarr support (not recommended)
-# try:
-#     from .zarr_writer import ZarrDatasetWriter
-#     ZARR_AVAILABLE = True
-#     logger.warning("Using deprecated Zarr writer - migrate to LMDB for better multiprocessing")
-# except ImportError:
-#     ZARR_AVAILABLE = False
 
 # Try importing Sionna
 try:
@@ -90,6 +80,13 @@ class MultiLayerDataGenerator:
             config: Data generation configuration
         """
         self.config = config
+
+        if config.require_sionna and config.use_mock_mode:
+            raise ValueError("use_mock_mode cannot be true when require_sionna is enabled.")
+        if config.use_mock_mode and not config.allow_mock_fallback:
+            raise ValueError("use_mock_mode requires allow_mock_fallback to be true.")
+        if not SIONNA_AVAILABLE and (config.require_sionna or (not config.allow_mock_fallback and not config.use_mock_mode)):
+            raise ImportError("Sionna is required but not available. Install sionna or disable strict mode.")
         
         # Initialize specialized components
         self.scene_loader = SceneLoader(
@@ -108,6 +105,7 @@ class MultiLayerDataGenerator:
             compute_k_factor=config.enable_k_factor,
             max_stored_paths=config.max_stored_paths,
             max_stored_sites=config.max_stored_sites,
+            allow_mock_fallback=config.allow_mock_fallback,
         )
         
         self.phy_extractor = PHYFAPIFeatureExtractor(
@@ -145,42 +143,28 @@ class MultiLayerDataGenerator:
         )
         
         # Initialize processing components
-        self.data_stacker = DataStacker(max_neighbors=config.max_neighbors)
+        self.data_stacker = DataStacker(
+            max_neighbors=config.max_neighbors,
+            num_subcarriers=getattr(config, 'cfr_num_subcarriers', 64),
+        )
         self.measurement_processor = MeasurementProcessor(config=config)
         
-        # Initialize LMDB writer (preferred) or Zarr writer (legacy)
-        use_lmdb = config.use_lmdb if hasattr(config, 'use_lmdb') else True
-        
-        if use_lmdb and LMDB_AVAILABLE:
-            logger.info("Using LMDB for dataset storage (multiprocessing-friendly)")
-            self.lmdb_writer = LMDBDatasetWriter(
-                output_dir=config.output_dir,
-                map_size=config.lmdb_map_size if hasattr(config, 'lmdb_map_size') else 100 * 1024**3,
-                sequence_length=config.num_reports_per_ue,
-            )
-            # Set max dimensions
-            self.lmdb_writer.set_max_dimensions({
-                'max_cells': config.max_neighbors,
-                'max_paths': config.max_stored_paths,
-                'max_beams': 64,  # Default
-            })
-            self.zarr_writer = None
-        elif ZARR_AVAILABLE:
-            logger.warning("Using legacy Zarr writer (has multiprocessing issues)")
-            self.zarr_writer = ZarrDatasetWriter(
-                output_dir=config.output_dir,
-                chunk_size=config.zarr_chunk_size,
-            )
-            # Pre-configure Max Dimensions for Variable Length Arrays
-            self.zarr_writer.set_max_dimensions({
-                 # RT Layer - Path metrics [max_sites, max_paths]
-                'rt/path_gains': (config.max_stored_sites, config.max_stored_paths),
-                'rt/path_delays': (config.max_stored_sites, config.max_stored_paths),
-                'rt/path_powers': (config.max_stored_sites, config.max_stored_paths),
-            })
-            self.lmdb_writer = None
-        else:
-            raise ImportError("Neither LMDB nor Zarr available; install with: pip install lmdb")
+        # Initialize LMDB writer (required)
+        if not LMDB_AVAILABLE:
+            raise ImportError("LMDB not available; install with: pip install lmdb")
+
+        logger.info("Using LMDB for dataset storage (multiprocessing-friendly)")
+        self.lmdb_writer = LMDBDatasetWriter(
+            output_dir=config.output_dir,
+            map_size=config.lmdb_map_size if hasattr(config, 'lmdb_map_size') else 100 * 1024**3,
+            sequence_length=config.num_reports_per_ue,
+        )
+        # Set max dimensions
+        self.lmdb_writer.set_max_dimensions({
+            'max_cells': config.max_neighbors,
+            'max_paths': config.max_stored_paths,
+            'max_beams': 64,  # Default
+        })
         
         # Initialize Map Generators
         self.radio_map_generator = None
@@ -213,7 +197,9 @@ class MultiLayerDataGenerator:
             from sionna.phy.ofdm import ResourceGrid
             
             scs = 30e3
-            num_subcarriers = getattr(self.config, 'num_subcarriers', 1024)
+            num_subcarriers = getattr(self.config, 'cfr_num_subcarriers', None)
+            if num_subcarriers is None:
+                num_subcarriers = getattr(self.config, 'num_subcarriers', 1024)
             fft_size = 2**int(np.ceil(np.log2(num_subcarriers)))
             
             rg = ResourceGrid(
@@ -274,26 +260,21 @@ class MultiLayerDataGenerator:
         # But wait, rt_extractor returns [num_cells, max_paths] arrays per sample?
         # Let's check RTFeatureExtractor.
         # It typically returns [num_rx, num_tx, max_paths] or flattened [num_cells, max_paths]
-        # Based on zarr_writer schema: [N, max_paths] ??
-        # The schema in zarr_writer says: path_gains: [N, max_paths]
         # But wait, if we have multiple cells, is it [N, num_cells, max_paths]?
         # Let's check typical output. 
         # RTFeatureExtractor usually consolidates paths or returns per-link.
         # Assuming [N, num_cells, max_paths] for now based on 'rt/path_gains'.
-        # Actually, let's look at `test_zarr_writer.py` dummy data: 
         # 'rt/path_gains': np.random.randn(num_samples, max_paths)
         # It seems it treats it as [N, max_paths] -- implying paths are aggregated or single cell?
         # BUT `rt_extractor` in `BatchSimulator` usually iterates over cells.
         # In `features.py` (not shown), it often returns `(num_paths_total,)` or `(num_cells, max_paths)`.
         # Given the ambiguity, I'll set dimensions based on config.
         
-        # Let's assume the Zarr writer expects [N, ...max_dims...]
         # So we return the tuple of dimensions *after* N.
         
         # We need to know the number of cells? 
         # Num cells varies per scene? 
         # If num_cells varies, we can't use a fixed 2nd dimension for all unless we pad to MAX_CELLS.
-        # Zarr writer `_resize_arrays` handles the first dimension (N).
         # Variable length inner dimensions (cells) is tricky.
         # The fix plan says: "Fix Shape Mismatch issues".
         # If cells vary, we must pad to a global max_cells or store as variable length (object).
@@ -310,12 +291,9 @@ class MultiLayerDataGenerator:
         
         if max_cells == 0: max_cells = 1 # Fallback
         
-        # Update logic: If Zarr writer expects [N, max_paths] it might be flattening cells?
         # Let's assume [N, num_cells, max_paths] for RT if multi-cell.
         # Or [N, max_paths] if it picks best cell?
-        # Let's stick to what we see in `zarr_writer.py` schema documentation:
         # path_gains: [N, max_paths]  <-- looks like flattened or single cell?
-        # But wait, lines 30-40 in `zarr_writer` docstring say:
         # path_gains: [N, max_paths]
         # rsrp: [N, num_cells]
         
@@ -327,7 +305,6 @@ class MultiLayerDataGenerator:
         dims = {}
         # We need to verify what `RTFeatureExtractor` produces.
         # Assuming it produces [num_cells, max_paths_per_cell], then for N samples it is [N, num_cells, max_paths].
-        # But `zarr_writer` docstring says [N, max_paths].
         # Let's be safe and set it to whatever `max_stored_paths` is configured to.
         # If the extractor produces [N, C, P], and we say max_dim is (C, P), that works.
         
@@ -376,7 +353,6 @@ class MultiLayerDataGenerator:
         Args:
             scene_ids: Specific scene IDs to process (defaults to all).
             num_scenes: Limits the number of scenes processed (for testing).
-            create_splits: If True, create separate train/val/test zarr files (default: True)
             train_ratio: Proportion of data for training (default: 0.70)
             val_ratio: Proportion of data for validation (default: 0.15)
             test_ratio: Proportion of data for testing (default: 0.15)
@@ -439,35 +415,31 @@ class MultiLayerDataGenerator:
             return self._create_split_datasets(all_data, train_ratio, val_ratio, test_ratio)
         else:
             # Create single dataset
-            writer = self.lmdb_writer if self.lmdb_writer else self.zarr_writer
-            
-            if writer:
-                if hasattr(writer, "set_split_ratios"):
-                    writer.set_split_ratios(
-                        {'train': train_ratio, 'val': val_ratio, 'test': test_ratio},
-                        split_seed=42,
+            writer = self.lmdb_writer
+
+            if hasattr(writer, "set_split_ratios"):
+                writer.set_split_ratios(
+                    {'train': train_ratio, 'val': val_ratio, 'test': test_ratio},
+                    split_seed=42,
+                )
+            for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to database"):
+                # Write scene maps first
+                if 'radio_map' in scene_data and 'osm_map' in scene_data:
+                    writer.write_scene_maps(
+                        scene_id=scene_id,
+                        radio_map=scene_data['radio_map'],
+                        osm_map=scene_data['osm_map']
                     )
-                for scene_id, scene_data, scene_metadata in tqdm(all_data, desc="Writing to database"):
-                    # Write scene maps first
-                    if 'radio_map' in scene_data and 'osm_map' in scene_data:
-                        writer.write_scene_maps(
-                            scene_id=scene_id,
-                            radio_map=scene_data['radio_map'],
-                            osm_map=scene_data['osm_map']
-                        )
-                    
-                    # Append sample data
-                    writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
-                
-                output_path = writer.finalize()
-                logger.info(f"Dataset saved to: {output_path}")
-                return output_path
-            
-            logger.error("No dataset writer available")
-            return None
+
+                # Append sample data
+                writer.append(scene_data, scene_id=scene_id, scene_metadata=scene_metadata)
+
+            output_path = writer.finalize()
+            logger.info(f"Dataset saved to: {output_path}")
+            return output_path
     
     def _create_split_datasets(self, all_data, train_ratio, val_ratio, test_ratio) -> Dict[str, Path]:
-        """Create separate train/val/test zarr files from collected data."""
+        """Create separate train/val/test LMDB datasets from collected data."""
         
         # Shuffle data for random split
         import random
@@ -496,33 +468,19 @@ class MultiLayerDataGenerator:
             
             logger.info(f"Creating {split_name} dataset...")
             
-            # Create writer for this split - use LMDB (preferred) or Zarr (legacy)
-            if self.lmdb_writer is not None:
-                writer = LMDBDatasetWriter(
-                    output_dir=self.config.output_dir,
-                    map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
-                    split_name=split_name,
-                    sequence_length=self.config.num_reports_per_ue,
-                )
-                # Set max dimensions
-                writer.set_max_dimensions({
-                    'max_cells': self.config.max_neighbors,
-                    'max_paths': self.config.max_stored_paths,
-                    'max_beams': 64,
-                })
-            elif self.zarr_writer is not None and ZARR_AVAILABLE:
-                writer = ZarrDatasetWriter(
-                    output_dir=self.config.output_dir,
-                    chunk_size=self.config.zarr_chunk_size,
-                    compression='blosc',
-                    compression_level=5,
-                    split_name=split_name
-                )
-                # Set max dimensions
-                scene_ids = [scene_id for scene_id, _, _ in split_data]
-                writer.set_max_dimensions(self.compute_max_dimensions(scene_ids))
-            else:
-                raise RuntimeError("No dataset writer available (neither LMDB nor Zarr)")
+            # Create writer for this split (LMDB only)
+            writer = LMDBDatasetWriter(
+                output_dir=self.config.output_dir,
+                map_size=self.config.lmdb_map_size if hasattr(self.config, 'lmdb_map_size') else 100 * 1024**3,
+                split_name=split_name,
+                sequence_length=self.config.num_reports_per_ue,
+            )
+            # Set max dimensions
+            writer.set_max_dimensions({
+                'max_cells': self.config.max_neighbors,
+                'max_paths': self.config.max_stored_paths,
+                'max_beams': 64,
+            })
             
             # Write data
             for scene_id, scene_data, scene_metadata in tqdm(split_data, desc=f"Writing {split_name}"):
@@ -586,6 +544,14 @@ class MultiLayerDataGenerator:
             self.transmitter_setup.setup_transmitters(scene, site_positions_sim, sites if sites else {})
         
         # Sample UE trajectories
+        building_map = None
+        building_map_path = scene_path.parent / "2D_Building_Height_Map.npy"
+        if building_map_path.exists():
+            try:
+                building_map = np.load(building_map_path)
+            except Exception as e:
+                logger.warning(f"Failed to load building height map from {building_map_path}: {e}")
+
         trajectories_global = sample_ue_trajectories(
             scene_metadata=scene_metadata,
             num_ue_per_tile=self.config.num_ue_per_tile,
@@ -593,7 +559,12 @@ class MultiLayerDataGenerator:
             ue_velocity_range=self.config.ue_velocity_range,
             num_reports_per_ue=self.config.num_reports_per_ue,
             report_interval_ms=self.config.report_interval_ms,
-            offset=(0.0, 0.0)
+            offset=(0.0, 0.0),
+            building_height_map=building_map,
+            max_attempts_per_ue=getattr(self.config, "max_attempts_per_ue", 25),
+            enforce_unique_positions=getattr(self.config, "enforce_unique_ue_positions", False),
+            min_ue_separation_m=getattr(self.config, "min_ue_separation_m", 1.0),
+            sampling_margin_m=getattr(self.config, "ue_sampling_margin_m", 0.0),
         )
         
         # Process trajectories in batches
@@ -605,7 +576,9 @@ class MultiLayerDataGenerator:
             sim_offset_x,
             sim_offset_y,
             store_offset_x,
-            store_offset_y
+            store_offset_y,
+            scene_metadata=scene_metadata,
+            building_map=building_map,
         )
         
         # Stack into arrays
@@ -618,7 +591,12 @@ class MultiLayerDataGenerator:
         stats = self.batch_simulator.get_statistics()
         total = stats['sionna_ok'] + stats['sionna_fail']
         if total > 0:
-            logger.info(f"Sionna RT summary: {stats['sionna_ok']}/{total} successful, {stats['sionna_fail']} mock fallbacks")
+            logger.info(
+                "Sionna RT summary: %s/%s successful attempts, %s failed attempts (retried via batch splitting when possible)",
+                stats["sionna_ok"],
+                total,
+                stats["sionna_fail"],
+            )
         
         # --- Generate Maps ---
         if SIONNA_AVAILABLE and scene is not None:
@@ -771,7 +749,9 @@ class MultiLayerDataGenerator:
         sim_offset_x: float,
         sim_offset_y: float,
         store_offset_x: float,
-        store_offset_y: float
+        store_offset_y: float,
+        scene_metadata: Optional[Dict] = None,
+        building_map: Optional[np.ndarray] = None,
     ) -> Dict[str, List]:
         """Process UE trajectories in batches."""
         all_features = {
@@ -790,38 +770,138 @@ class MultiLayerDataGenerator:
             for t_step, ue_pos_global in enumerate(traj_global):
                 all_points.append((ue_id, t_step, ue_pos_global))
         
-        batch_size = 128  # Increased from 32 for better GPU utilization
+        batch_size = getattr(self.config, "rt_batch_size", 16)
         total_reports = 0
+        dropped_reports = 0
         
-        # Process in batches
-        for i in tqdm(range(0, len(all_points), batch_size), desc="Simulating UE Batches", leave=False):
-            batch = all_points[i:i + batch_size]
-            
-            # Prepare batch inputs
-            ue_positions_sim, ue_positions_store, t_steps, ue_ids = self._prepare_batch_positions(
-                batch, sim_offset_x, sim_offset_y, store_offset_x, store_offset_y
+        # Process in batches with adaptive splitting on RT failures
+        batches = [all_points[i:i + batch_size] for i in range(0, len(all_points), batch_size)]
+        pbar = tqdm(total=len(all_points), desc="Simulating UE Batches", leave=False)
+
+        def _should_split(err: Exception) -> bool:
+            def _iter_causes(ex: Exception):
+                seen = set()
+                while ex is not None and id(ex) not in seen:
+                    seen.add(id(ex))
+                    yield ex
+                    ex = getattr(ex, "__cause__", None)
+
+            for ex in _iter_causes(err):
+                msg = str(ex)
+                if ("Channel matrix has" in msg) or ("CFR missing" in msg) or ("Unexpected CFR shape" in msg):
+                    return True
+            return False
+
+        drop_failed = getattr(self.config, "drop_failed_reports", True)
+        drop_log_every = getattr(self.config, "drop_log_every", 100)
+        max_resample_attempts = getattr(self.config, "max_resample_attempts", 10)
+        resample_attempts = 0
+
+        def _resample_single_point(entry: Tuple[int, int, np.ndarray]) -> Tuple[int, int, np.ndarray]:
+            """Resample a single UE report inside the scene bounds."""
+            if scene_metadata is None:
+                raise RuntimeError("Scene metadata required for resampling failed UE positions.")
+            ue_id, t_step, _ = entry
+            resampled = sample_ue_trajectories(
+                scene_metadata=scene_metadata,
+                num_ue_per_tile=1,
+                ue_height_range=self.config.ue_height_range,
+                ue_velocity_range=(0.0, 0.0),
+                num_reports_per_ue=1,
+                report_interval_ms=self.config.report_interval_ms,
+                offset=(0.0, 0.0),
+                building_height_map=building_map,
+                max_attempts_per_ue=getattr(self.config, "max_attempts_per_ue", 25),
+                enforce_unique_positions=False,
+                min_ue_separation_m=0.0,
+                sampling_margin_m=getattr(self.config, "ue_sampling_margin_m", 0.0),
             )
-            
-            # Fix UE Z-coordinates relative to terrain
-            ue_positions_sim = self._clamp_ue_to_ground(scene, ue_positions_sim, ue_positions_store)
-            
-            # Simulate batch
-            rt_batch, phy_batch, mac_batch = self.batch_simulator.simulate_batch(
-                scene, ue_positions_sim, site_positions_sim, cell_ids, self.transmitter_setup
-            )
-            
-            # Collect results
-            all_features['rt'].append(rt_batch.to_dict())
-            all_features['phy_fapi'].append(phy_batch.to_dict())
-            all_features['mac_rrc'].append(mac_batch.to_dict())
-            all_features['positions'].append(ue_positions_store)
-            all_features['timestamps'].append(np.array(t_steps) * self.config.report_interval_ms / 1000.0)
-            all_features['ue_ids'].append(np.array(ue_ids))
-            all_features['t_steps'].append(np.array(t_steps))
-            
-            total_reports += len(batch)
-            if (i // batch_size) % 10 == 0:
-                logger.info(f"Processed {total_reports}/{len(all_points)} measurements...")
+            new_pos = resampled[0][0]
+            return (ue_id, t_step, new_pos)
+
+        while batches:
+            batch = batches.pop(0)
+            try:
+                # Prepare batch inputs
+                ue_positions_sim, ue_positions_store, t_steps, ue_ids = self._prepare_batch_positions(
+                    batch, sim_offset_x, sim_offset_y, store_offset_x, store_offset_y
+                )
+
+                # Fix UE Z-coordinates relative to terrain
+                ue_positions_sim = self._clamp_ue_to_ground(scene, ue_positions_sim, ue_positions_store)
+
+                # Simulate batch
+                rt_batch, phy_batch, mac_batch = self.batch_simulator.simulate_batch(
+                    scene, ue_positions_sim, site_positions_sim, cell_ids, self.transmitter_setup
+                )
+
+                # Collect results
+                all_features['rt'].append(rt_batch.to_dict())
+                all_features['phy_fapi'].append(phy_batch.to_dict())
+                all_features['mac_rrc'].append(mac_batch.to_dict())
+                all_features['positions'].append(ue_positions_store)
+                all_features['timestamps'].append(np.array(t_steps) * self.config.report_interval_ms / 1000.0)
+                all_features['ue_ids'].append(np.array(ue_ids))
+                all_features['t_steps'].append(np.array(t_steps))
+
+                total_reports += len(batch)
+                pbar.update(len(batch))
+                if total_reports % (batch_size * 10) == 0:
+                    logger.info(f"Processed {total_reports}/{len(all_points)} measurements...")
+            except RuntimeError as e:
+                if drop_failed and hasattr(e, "bad_indices") and len(batch) > 1:
+                    bad_indices = sorted(set(getattr(e, "bad_indices", [])))
+                    if bad_indices:
+                        remaining = [entry for idx, entry in enumerate(batch) if idx not in bad_indices]
+                        dropped_reports += len(bad_indices)
+                        total_reports += len(bad_indices)
+                        pbar.update(len(bad_indices))
+                        if dropped_reports % drop_log_every == 0:
+                            logger.warning(
+                                "Dropped %d samples due to RT/CFR failures (most recent error: %s)",
+                                dropped_reports,
+                                str(e),
+                            )
+                        if remaining:
+                            batches.insert(0, remaining)
+                        continue
+                if len(batch) > 1 and _should_split(e):
+                    mid = len(batch) // 2
+                    batches.insert(0, batch[mid:])
+                    batches.insert(0, batch[:mid])
+                    continue
+                if len(batch) == 1 and _should_split(e):
+                    if drop_failed:
+                        dropped_reports += 1
+                        total_reports += 1
+                        pbar.update(1)
+                        if dropped_reports % 50 == 0:
+                            logger.warning(
+                                "Dropped %d samples due to RT/CFR failures (most recent error: %s)",
+                                dropped_reports,
+                                str(e),
+                            )
+                        continue
+                    resample_attempts += 1
+                    if resample_attempts > max_resample_attempts:
+                        pbar.close()
+                        raise RuntimeError(
+                            "Exceeded max_resample_attempts while retrying failed RT/CFR samples."
+                        ) from e
+                    logger.warning(
+                        "Resampling UE report after RT/CFR failure (attempt %d/%d): %s",
+                        resample_attempts,
+                        max_resample_attempts,
+                        str(e),
+                    )
+                    batches.insert(0, [_resample_single_point(batch[0])])
+                    continue
+                pbar.close()
+                raise
+
+        pbar.close()
+        if dropped_reports > 0:
+            logger.warning("Dropped %d samples total due to RT/CFR failures.", dropped_reports)
         
         return all_features
     
@@ -966,7 +1046,6 @@ class MultiLayerDataGenerator:
             # 2. 2D Map Plots (if we have the raw map data array easily)
             # The radio_map_obj from Sionna might be complex. 
             # Ideally we'd pass the numpy array to save_map_visualizations.
-            # The RadioMapGenerator saves to Zarr, but does it return the numpy array easily?
             # If radio_map_obj is a Sionna object, we can extract it.
             # Or we can rely on render_scene_3d doing the heavy lifting for radio maps.
             

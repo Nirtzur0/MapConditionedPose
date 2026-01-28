@@ -61,7 +61,6 @@ def objective(trial, args, base_config_path: Path):
     config['model']['radio_encoder']['dropout'] = trial.suggest_float('radio_dropout', 0.1, 0.3)
 
     # Map Encoder
-    config['model']['map_encoder']['use_e2_equivariant'] = trial.suggest_categorical('use_e2', [True, False])
     config['model']['map_encoder']['patch_size'] = trial.suggest_categorical('map_patch_size', [16, 32])
     config['model']['map_encoder']['d_model'] = trial.suggest_categorical('map_d_model', [128, 256])
     config['model']['map_encoder']['nhead'] = trial.suggest_categorical('map_nhead', [4, 8])

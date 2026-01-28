@@ -11,7 +11,7 @@ import os
 sys.path.append(os.getcwd())
 
 from src.training import UELocalizationLightning
-from src.datasets.radio_dataset import RadioLocalizationDataset as RadioDataset, collate_fn
+from src.datasets.lmdb_dataset import LMDBRadioLocalizationDataset as RadioDataset
 
 def load_model_and_data(checkpoint_path, data_path, num_tx=None):
     """Load the model and a sample batch."""
@@ -30,7 +30,7 @@ def load_model_and_data(checkpoint_path, data_path, num_tx=None):
     # Extract params from config or defaults
     ds_config = config.get('dataset', {})
     dataset = RadioDataset(
-        zarr_path=data_path,
+        lmdb_path=data_path,
         split='all', # Force using all data to avoid empty split issues
         map_resolution=ds_config.get('map_resolution', 1.0),
         scene_extent=ds_config.get('scene_extent', 512),
@@ -47,7 +47,6 @@ def load_model_and_data(checkpoint_path, data_path, num_tx=None):
         dataset, 
         batch_size=32, 
         shuffle=False, 
-        collate_fn=collate_fn,
         num_workers=4
     )
     
@@ -111,80 +110,12 @@ def render_figures(model, batch, outputs, output_dir):
     print(f"Saved {output_dir / 'fig1_environment.png'}")
     plt.close()
     
-    # 2. Visualize Posterior (Prediction)
-    # We need to construct the heatmap. 
-    # The model has a helper `_render_gmm_heatmap` we added!
-    # Let's use it.
-    
-    # We need the specific outputs expected by `_render_gmm_heatmap`
-    # It expects: top_k_indices, top_k_probs, fine_offsets, fine_uncertainties
-    
-    # We need to run the logic that produces these.
-    # UELocalizationLightning.dataset_step or similar? 
-    # checking the previous diff, it was used in `validation_step`.
-    # We can manually invoke the necessary parts.
-    
-    # Extract coarse logits
-    coarse_logits = outputs['coarse_logits'][idx] # [G*G]
-    
-    # Top-K
-    k = model.hparams.model['fine_head']['top_k']
-    top_k_probs, top_k_indices = torch.topk(torch.softmax(coarse_logits, -1), k)
-    
-    # Extract fine details for these indices
-    # We need to call the fine head.
-    # The model's forward pass might have already done this or we need to re-run specific heads.
-    # Looking at the code structure is hard without `view_file`, but standardly:
-    
-    # Let's assume we can get the necessary tensors from the model's fine head
-    # or just rely on the fact that we can call `model.validation_step` on this batch!
-    # But validation_step logs to logger, doesn't return the heatmap.
-    
-    # We will reconstruct:
-    # 1. Get embedding for top-k cells
-    # 2. Pass to fine head
-    
-    # Let's simplify: access `_render_gmm_heatmap` logic directly 
-    # But first we need the fine predictions.
-    
-    # Let's try to run `validation_step` but capture the internal state? No too complex.
-    
-    # Let's Re-implement the gather logic briefly here.
-    # It's safer.
-    
-    fusion_feat = outputs['fusion_output'][idx] # [D]
-    
-    # Coarse
-    # coarse_logits already got
-    
-    # Fine
-    # We need cell embeddings for the top k indices
-    # The model should have `cell_embedding` layer
-    cell_embeds = model.model.cell_embedding(top_k_indices.long().unsqueeze(0)) # [1, K, D_emb]
-    
-    # Expand fusion 
-    fusion_k = fusion_feat.unsqueeze(0).unsqueeze(1).expand(1, k, -1) # [1, K, D]
-    
-    # Concat ? Check model definition... 
-    # Assume fine head takes (fusion, cell_emb)
-    # fine_out = model.model.fine_head(fusion_k, cell_embeds)
-    # mu, logvar = chunk(fine_out)
-    
-    # Since I can't check the exact model code right now without viewing, 
-    # I will rely on the `step_inference` method if it exists, or just use the batch `outputs` 
-    # IF the forward pass returned them.
-    # The `forward` usually returns `fine_positions` [B, G^2, 2] or similar if not top-k optimized?
-    
-    # Wait, the diff showed:
-    # `outputs['top_k_indices']` being logged in `validation_step_end`?
-    # No, it was `outputs` *from* `validation_step` that contained 'top_k_indices'.
-    # This implies `validation_step` returns a dict with these keys.
-    
-    pass
+    # TODO: Add Top-K hypothesis overlay figure here if needed.
+    return
 
 def main():
     checkpoint_path = "checkpoints/trial_0/best_model-v2.ckpt"
-    data_path = "data/processed/sionna_dataset/dataset_20251231_143438.zarr"
+    data_path = "data/processed/sionna_dataset/dataset_20251231_143438.lmdb"
     
     try:
         model, loader = load_model_and_data(checkpoint_path, data_path)
@@ -204,8 +135,8 @@ def main():
         print("No data available!")
         return
         
-    # Run validation step to get all outputs including GMM params
-    print("Running validation step to compute GMM...")
+    # Run validation step to get all outputs including Top-K hypothesis params
+    print("Running validation step to compute Top-K hypotheses...")
     with torch.no_grad():
         device = model.device
         batch = move_to_device(batch, device)
@@ -246,36 +177,59 @@ def main():
     print("Saved docs/paper/figures/environment_context.png")
     plt.close()
     
-    # Figure 2: Posterior Density
-    # Render GMM heatmap (step_out already contains data for sample 0)
-    heatmap = model._render_gmm_heatmap(
-        h, w,
-        step_out['top_k_indices'].cpu(),
-        step_out['top_k_probs'].cpu(),
-        step_out['fine_offsets'].cpu(),
-        step_out['fine_uncertainties'].cpu()
-    )
+    # Figure 2: Top-K Hypotheses Overlay
+    grid_size = getattr(model.model, "grid_size", 32)
+    top_k_indices = step_out['top_k_indices'].cpu().numpy()
+    top_k_probs = step_out['top_k_probs'].cpu().numpy()
+    fine_offsets = step_out['fine_offsets'].cpu().numpy()
+    fine_scores = step_out['fine_scores'].cpu().numpy()
+    weights = step_out.get('hypothesis_weights')
+    if weights is None:
+        logits = np.log(np.clip(top_k_probs, 1e-8, None)) + fine_scores
+        weights = np.exp(logits - logits.max())
+        weights = weights / (weights.sum() + 1e-8)
+    else:
+        weights = weights.cpu().numpy()
+
+    cols = (top_k_indices % grid_size).astype(float)
+    rows = (top_k_indices // grid_size).astype(float)
+    centers = np.stack([(cols + 0.5) / grid_size, (rows + 0.5) / grid_size], axis=-1)
+    candidates = centers + fine_offsets
     
     plt.figure(figsize=(8, 8))
     
     # Base: Building Footprints (faded)
     plt.imshow(buildings, cmap='gray_r', alpha=0.3)
     
-    # Overlay: GMM Heatmap with adaptive alpha
-    plt.imshow(heatmap, cmap='viridis', alpha=0.5 + 0.3*heatmap, vmin=0, vmax=1)
+    # Overlay: Top-K hypotheses (color/size by weight)
+    cand_px = candidates[:, 0] * (w - 1)
+    cand_py = candidates[:, 1] * (h - 1)
+    sizes = 50 + 300 * (weights / (weights.max() + 1e-8))
+    sc = plt.scatter(
+        cand_px,
+        cand_py,
+        c=weights,
+        s=sizes,
+        cmap='viridis',
+        alpha=0.9,
+        edgecolors='none',
+        label='Top-K hypotheses',
+        zorder=8,
+    )
     
     # True Position
     true_pos = batch['position'][idx].cpu().numpy()
     px, py = true_pos[0] * (w-1), true_pos[1] * (h-1)
     plt.scatter([px], [py], c='red', marker='*', s=300, edgecolors='white', linewidths=2, label='Ground Truth', zorder=10)
     
-    # Predicted Position
+    # Predicted Position (soft mean)
     pred_pos = step_out['pred_pos'].cpu().numpy()
     ppx, ppy = pred_pos[0] * (w-1), pred_pos[1] * (h-1)
-    plt.scatter([ppx], [ppy], c='cyan', marker='P', s=150, edgecolors='white', linewidths=2, label='Prediction', zorder=10)
+    plt.scatter([ppx], [ppy], c='tab:red', marker='x', s=150, linewidths=2, label='Prediction', zorder=10)
     
+    plt.colorbar(sc, label='Hypothesis weight', fraction=0.046)
     plt.legend(loc='upper right', fontsize=12)
-    plt.title("Predicted Posterior Density", fontsize=14)
+    plt.title("Top-K Hypothesis Overlay", fontsize=14)
     plt.axis('off')
     
     plt.tight_layout()

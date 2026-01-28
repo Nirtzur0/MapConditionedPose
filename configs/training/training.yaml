@@ -30,8 +30,6 @@ model:
     
   # Map Encoder (Vision Transformer)
   map_encoder:
-    use_e2_equivariant: false  # Use standard ViT for faster training
-    num_group_elements: 8  # p4m group: 4 rotations x 2 reflections (NEW)
     img_size: 256
     patch_size: 16
     in_channels: 10
@@ -55,21 +53,18 @@ model:
     dropout: 0.1
     
   fine_head:
-    type: "heteroscedastic"  # "simple", "heteroscedastic", "gmm"
     d_hidden: 256
     dropout: 0.1
-    num_gaussians: 3  # For GMM mode
-    predict_uncertainty: true
     top_k: 5  # Number of top coarse predictions to refine
 
 # Dataset Configuration (required by model)
 dataset:
   train_lmdb_paths:
-    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+    - "outputs/quick_test/data/dataset_20260125_143402_train.lmdb"
   val_lmdb_paths:
-    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+    - "outputs/quick_test/data/dataset_20260125_143404_val.lmdb"
   test_lmdb_paths:
-    - "outputs/quick_test/data/dataset_20260108_125416_test.lmdb"
+    - "outputs/quick_test/data/dataset_20260125_143404_test.lmdb"
   scene_extent: 512  # Scene size in meters
   map_resolution: 1.0  # Meters per pixel
   normalize_features: true
@@ -96,7 +91,6 @@ training:
   loss:
     coarse_weight: 4.0  # Increased to prioritize learning spatial structure
     fine_weight: 1.0
-    position_weight: 0.3
 
 # Infrastructure Configuration
 infrastructure:

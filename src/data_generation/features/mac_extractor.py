@@ -125,7 +125,7 @@ class MACRRCFeatureExtractor:
             serving_cell_id = tf.gather(cids, best_cell_idx) # [Batch, Rx]
             
             # Neighbors
-            k = min(self.max_neighbors, num_cells)
+            k = tf.minimum(self.max_neighbors, tf.shape(rsrp)[-1])
             values, inds = tf.math.top_k(rsrp, k=k)
             inds = tf.clip_by_value(inds, 0, num_cells - 1)
             neighbor_cell_ids = tf.gather(cids, inds) # [Batch, Rx, K]
@@ -255,8 +255,11 @@ class MACRRCFeatureExtractor:
              # Safety modulo
              site_idx = best_cell_idx % num_sites
              serving_pos = site_positions[site_idx] # [Batch, Rx, 3] or [Batch, 3]
-             
-             u_pos = ue_positions
+            
+             if TF_AVAILABLE and tf.is_tensor(ue_positions):
+                 u_pos = ue_positions.numpy()
+             else:
+                 u_pos = ue_positions
              if u_pos.ndim == 2:
                  if serving_pos.ndim == 3:
                       u_pos = u_pos[:, np.newaxis, :] 
@@ -265,6 +268,8 @@ class MACRRCFeatureExtractor:
              timing_advance = compute_timing_advance(dist)
              
              cqi = phy_features.cqi
+             if TF_AVAILABLE and tf.is_tensor(cqi):
+                 cqi = cqi.numpy()
              
              # Robust Shape Fix for CQI (Same as RSRP)
              if isinstance(cqi, np.ndarray) and cqi.ndim >= 2:

@@ -189,12 +189,55 @@ class LMDBDatasetWriter:
         phy_data = self._extract_layer_data(scene_data, 'phy_fapi')
         mac_data = self._extract_layer_data(scene_data, 'mac_rrc')
         
+        # Prepare scene metadata (add tx_local if possible)
+        scene_metadata_local = scene_metadata
+        if scene_metadata:
+            scene_metadata_local = dict(scene_metadata)
+            bbox = scene_metadata.get('bbox') or {}
+            sites = scene_metadata.get('sites') or []
+            if sites and all(k in bbox for k in ('x_min', 'y_min')):
+                x_min = float(bbox['x_min'])
+                y_min = float(bbox['y_min'])
+                tx_local = []
+                for site in sites:
+                    pos = site.get('position')
+                    if not pos or len(pos) < 2:
+                        continue
+                    local_pos = [
+                        float(pos[0]) - x_min,
+                        float(pos[1]) - y_min,
+                        float(pos[2]) if len(pos) > 2 else 0.0,
+                    ]
+                    tx_local.append({
+                        'site_id': site.get('site_id'),
+                        'site_type': site.get('site_type'),
+                        'cell_id': site.get('cell_id'),
+                        'sector_id': site.get('sector_id'),
+                        'position': local_pos,
+                    })
+                if tx_local:
+                    scene_metadata_local['tx_local'] = tx_local
+
         # Iterate through each sample in the scene
         for i in range(num_samples):
             sample = {
                 'scene_id': scene_id,
                 'scene_idx': scene_idx,
             }
+
+            # Store per-sample scene extent for correct position normalization.
+            if scene_metadata and 'bbox' in scene_metadata:
+                bbox = scene_metadata['bbox']
+                if all(k in bbox for k in ('x_min', 'y_min', 'x_max', 'y_max')):
+                    width = float(bbox['x_max'] - bbox['x_min'])
+                    height = float(bbox['y_max'] - bbox['y_min'])
+                    sample['scene_extent'] = max(width, height)
+                    sample['scene_bbox'] = (
+                        float(bbox['x_min']),
+                        float(bbox['y_min']),
+                        float(bbox['x_max']),
+                        float(bbox['y_max']),
+                    )
             
             # Extract position for this sample
             pos = positions[i]  # shape: [3] - (x, y, z)
@@ -259,8 +302,8 @@ class LMDBDatasetWriter:
                 self._accumulate_features('mac', sample['mac_features'])
             
             # Add scene metadata if provided (same for all samples in scene)
-            if scene_metadata:
-                sample['scene_metadata'] = scene_metadata
+            if scene_metadata_local:
+                sample['scene_metadata'] = scene_metadata_local
             
             # Write to LMDB
             with self.env.begin(write=True) as txn:
@@ -397,11 +440,24 @@ class LMDBDatasetWriter:
     def _compute_normalization_stats(self) -> Dict:
         """Compute mean and std for normalization."""
         stats = {}
-        
+
+        def _collect_finite(values: List[np.ndarray], val: Any) -> None:
+            if isinstance(val, np.ndarray) and val.size > 0:
+                arr = np.asarray(val)
+                if np.iscomplexobj(arr):
+                    arr = np.abs(arr)
+                arr = arr.astype(np.float32, copy=False)
+                arr = arr[np.isfinite(arr)]
+                if arr.size > 0:
+                    values.append(arr)
+            elif isinstance(val, (int, float)) and val != 0:
+                if np.isfinite(val):
+                    values.append(np.array([float(val)], dtype=np.float32))
+
         for layer, samples in self.feature_accumulators.items():
             if not samples:
                 continue
-            
+
             layer_stats = {}
             
             # Get all keys from first sample
@@ -412,13 +468,10 @@ class LMDBDatasetWriter:
                 values = []
                 for sample in samples:
                     val = sample[key]
-                    if isinstance(val, np.ndarray) and val.size > 0:
-                        values.extend(val.flatten())
-                    elif isinstance(val, (int, float)) and val != 0:
-                        values.append(val)
-                
+                    _collect_finite(values, val)
+
                 if values:
-                    values = np.array(values)
+                    values = np.concatenate(values)
                     layer_stats[key] = {
                         'mean': float(np.mean(values)),
                         'std': float(np.std(values)),

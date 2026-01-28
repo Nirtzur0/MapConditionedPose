@@ -44,7 +44,6 @@ data_generation:
   # Output
   output:
     path: data/processed/sionna_dataset
-  zarr_chunk_size: 100
 
   # Debug radio maps
   debug_radio_maps: true

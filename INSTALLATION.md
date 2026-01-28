@@ -109,7 +109,6 @@ These are the **tested and working** versions:
 | sionna | 1.2.1 |
 | numpy | 1.26.4 |
 | pandas | 2.3.1 |
-| zarr | 3.1.5 |
 
 See `CURRENT_VERSIONS.md` for complete version list.
 

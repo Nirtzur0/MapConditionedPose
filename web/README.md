@@ -1,57 +1,56 @@
-# UE Positioning Model Explorer
+# UE Localization System Explorer
 
-Simple, focused tool for exploring cellular positioning model predictions on a map.
+Streamlit app aligned with the current pipeline outputs under `outputs/<experiment>/`.
+It is meant to *inspect experiments* (config + report), *browse datasets*, and *run model predictions* from actual checkpoints.
 
 ## Quick Start
 
 ```bash
-# Start the prediction explorer
 streamlit run web/app.py --server.port 8501
 ```
 
-## Services
+If your outputs live elsewhere:
 
-### Comet ML (https://www.comet.com/)
-**For Training Monitoring**
-- Real-time loss curves and metrics
-- Learning rate schedules and hyperparameters
-- Model computational graph
-- Experiment comparison and tracking
-- Set COMET_API_KEY to enable
+```bash
+MCP_OUTPUTS_DIR=/path/to/outputs streamlit run web/app.py --server.port 8501
+```
 
-### 📍 Streamlit App (http://localhost:8501)
-**For Prediction Exploration**
-- Interactive map showing ground truth vs predictions
-- Error visualization with color-coded markers
-- Uncertainty ellipses (if model provides them)
-- Error distribution histograms and CDFs
-- Per-sample error analysis
+## What It Does Now
 
-## What You'll See
+- **Experiment Overview**
+  - Reads `outputs/<experiment>/config.yaml`
+  - Reads `outputs/<experiment>/report.yaml`
 
-### Main Map View
-- **Green circles**: Ground truth UE positions
-- **Red X markers**: Model predictions (color intensity = error magnitude)
-- **Red lines**: Connect GT to prediction showing error vector
-- **Orange ellipses**: Uncertainty regions (1-sigma)
+- **Dataset Explorer**
+  - Lists `outputs/<experiment>/data/*.lmdb`
+  - Shows ground-truth point clouds and range stats
+  - Supports split selection (`all/train/val/test`)
 
-### Error Analysis
-- Histogram of positioning errors
-- Cumulative distribution function (CDF)
-- Key percentiles: P50, P90, P95
-- Success rates at different thresholds
+- **Predictions**
+  - Lists `outputs/<experiment>/checkpoints/*.ckpt`
+  - Runs inference on a random subset
+  - Shows GT vs prediction map with error vectors and summary metrics
 
-## Features
+- **Sample Viewer**
+  - Inspect a single sample (scene_id, scene_idx, position)
+  - View radio map + OSM map channels
+  - Quick measurement summary statistics
 
-- Load any dataset from `data/processed/quick_test_dataset/`
-- Automatically loads best trained model from `checkpoints/best_model.pt`
-- Adjustable number of samples to visualize
-- Toggle uncertainty visualization
-- Real-time prediction generation from trained model
+## Expected Output Layout
 
-## Philosophy
+```
+outputs/
+  <experiment>/
+    config.yaml
+    report.yaml
+    data/
+      dataset_*.lmdb
+    checkpoints/
+      *.ckpt
+```
 
-The old app had too many placeholder pages with fake data. This new version focuses on **one thing**:
-showing you where your model thinks the UE is versus where it actually is, with all the visual intuition you need.
+## Notes
 
-For training metrics, use TensorBoard - that's what PyTorch Lightning is designed for.
+- If you only ran data generation, the Predictions tab will remain disabled.
+- If you generated split datasets (train/val/test LMDBs), you can still use `split=all`.
+- Heavy datasets are cached with Streamlit; restart the app if you regenerate LMDBs.

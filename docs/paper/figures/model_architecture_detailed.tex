@@ -31,12 +31,12 @@
 % Input features
 \node[inputbox, font=\scriptsize] (embin) at (-4.8, 4.5) {IDs, Time\\{\tiny cell, beam, $\tau$}};
 \node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 13+8+5=26 dim}};
-\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CFR\\{\tiny 8×64}};
+\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CSI/CFR\\{\tiny 8×64}};
 
 % Embeddings
 \node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →128×3}};
 \node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →128×3}};
-\node[projbox] (cfrproj) at (-0.5, 3.6) {Conv1D\\{\tiny →128}};
+\node[projbox] (cfrproj) at (-0.5, 3.6) {CSI Enc\\{\tiny Conv1D →128}};
 
 \draw[arrow, blue!60] (embin) -- (embproj);
 \draw[arrow, blue!60] (featsin) -- (featproj);
@@ -86,7 +86,7 @@
 \draw[arrow, cyan!60] (mapconcat) -- (patchemb);
 
 % ViT
-\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{E(2)-ViT}\\{\scriptsize 6L, 8H, p4m}};
+\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 6L, 8H}\\{\scriptsize E(2)-ViT optional}};
 \draw[arrow] (patchemb) -- (mapvit);
 
 % Spatial tokens output
@@ -116,7 +116,7 @@
 \draw[arrow] (fused.south) -- ++(0, -0.4) -| (coarse.north);
 
 % Fine Head  
-\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.8) {\textbf{Fine Head}\\{\tiny Top-K=5 GMM}};
+\node[headbox, fill=yellow!25, font=\scriptsize] (fine) at (2.8, -3.8) {\textbf{Fine Head}\\{\tiny Top-K Re-ranking}};
 \draw[arrow] (fused.south) -- ++(0, -0.4) -| (fine.north);
 
 % Coarse outputs
@@ -129,18 +129,18 @@
 \draw[dasharrow, red!40] (topk.east) -- ++(0.5, 0) |- ([yshift=-0.15cm]fine.west);
 
 % Fine outputs
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -5.0) {$\boldsymbol{\mu}_k$\\{\tiny [K,2]}};
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (sigma) at (3.6, -5.0) {$\boldsymbol{\sigma}_k$\\{\tiny [K,2]}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -5.0) {$\boldsymbol{\Delta}_k$\\{\tiny [K,2]}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (scores) at (3.6, -5.0) {$s_k$\\{\tiny [K]}};
 \draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.3) -| (offsets.north);
-\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.3) -| (sigma.north);
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.3) -| (scores.north);
 
 % ============================================
 % FINAL OUTPUT
 % ============================================
-\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=3.6cm, thick] (finalpos) at (0.5, -6.2) {$\displaystyle p(\mathbf{y}) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{y}; \boldsymbol{\mu}_k, \mathrm{diag}(\boldsymbol{\sigma}_k^2))$};
+\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=3.6cm, thick] (finalpos) at (0.5, -6.2) {$\alpha_k = \mathrm{softmax}(\log \pi_k + s_k)$\\$\hat{\mathbf{y}} = \sum_{k=1}^K \alpha_k\,(\mathbf{c}_k + \boldsymbol{\Delta}_k)$};
 \draw[arrow, thick, teal!60] (heatmap.south) |- ++(0, -0.3) -| (finalpos.west);
 \draw[arrow, thick, teal!60] (offsets.south) |- ++(0, -0.3) -| (finalpos);
-\draw[arrow, thick, teal!60] (sigma.south) |- ++(0, -0.3) -| (finalpos.east);
+\draw[arrow, thick, teal!60] (scores.south) |- ++(0, -0.3) -| (finalpos.east);
 
 % ============================================
 % BACKGROUND BOXES

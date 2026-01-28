@@ -29,8 +29,8 @@ class TestIORobustness:
     def test_loading_empty_directory(self, temp_data_dir):
         """Test graceful failure or handling when loading from empty dir."""
         # Simulate a data loader identifying files
-        zarr_files = list(temp_data_dir.glob("*.zarr"))
-        assert len(zarr_files) == 0
+        lmdb_files = list(temp_data_dir.glob("*.lmdb"))
+        assert len(lmdb_files) == 0
         
         # Expectation: Your data loader should probably raise a clear error
         # or return an empty dataset (depending on design).
@@ -38,7 +38,7 @@ class TestIORobustness:
         
         # Example validation logic you might have in your codebase:
         def load_datasets(path):
-            files = list(Path(path).glob("*.zarr"))
+            files = list(Path(path).glob("*.lmdb"))
             if not files:
                 raise FileNotFoundError("No dataset files found")
             return files

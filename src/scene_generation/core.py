@@ -14,13 +14,10 @@ from pyproj import Transformer
 logger = logging.getLogger(__name__)
 
 
-def _import_scene_builder(scene_builder_path: str):
+def _import_scene_builder():
     """
     Import scene_builder Scene class.
     
-    Args:
-        scene_builder_path: Path to scene_builder module (unused, kept for API compat)
-        
     Returns:
         Tuple of (Scene class, ITU_MATERIALS)
     """
@@ -54,7 +51,6 @@ class SceneGenerator:
     
     def __init__(
         self,
-        scene_builder_path: str,
         material_randomizer: Optional['MaterialRandomizer'] = None,
         site_placer: Optional['SitePlacer'] = None,
         output_dir: Optional[Path] = None,
@@ -63,7 +59,6 @@ class SceneGenerator:
         Initialize scene generator.
         
         Args:
-            scene_builder_path: Path to scene_builder module
             material_randomizer: MaterialRandomizer instance (creates default if None)
             site_placer: SitePlacer instance (creates default if None)
             output_dir: Base output directory for scenes (defaults to ./data/scenes)
@@ -71,8 +66,8 @@ class SceneGenerator:
         # Import scene_builder components
         global SceneBuilderScene, ITU_MATERIALS
         if SceneBuilderScene is None:
-            logger.info(f"Loading Scene Builder from {scene_builder_path}")
-            SceneBuilderScene, ITU_MATERIALS = _import_scene_builder(scene_builder_path)
+            logger.info("Loading Scene Builder")
+            SceneBuilderScene, ITU_MATERIALS = _import_scene_builder()
         
         # Import after scene_builder to avoid circular dependency
         from .materials import MaterialRandomizer as _MaterialRandomizer
@@ -128,6 +123,11 @@ class SceneGenerator:
         use_lidar = terrain_cfg.get('use_lidar', False)
         use_dem = terrain_cfg.get('use_dem', False)
         hag_tiff_path = terrain_cfg.get('hag_tiff_path', None)
+
+        if use_lidar and importlib.util.find_spec("pdal") is None:
+            logger.warning("PDAL not available; disabling LiDAR terrain generation for this scene.")
+            use_lidar = False
+            use_dem = False
         
         # Generate base scene using scene_builder
         self.scene(

@@ -62,7 +62,6 @@ class TileGenerator:
         """Lazy-load scene generator."""
         if self._scene_generator is None:
             self._scene_generator = SceneGenerator(
-                scene_builder_path=self.config['scene_builder']['package_path'],
                 material_randomizer=self.material_randomizer,
                 site_placer=self.site_placer,
                 output_dir=Path(self.config['output']['base_dir']),
@@ -72,10 +71,6 @@ class TileGenerator:
     def _default_config(self) -> Dict:
         """Default configuration if no config file provided."""
         return {
-            'scene_builder': {
-                # Use in-repo module
-                'package_path': str(Path(__file__).resolve().parents[1] / "scene_builder"),
-            },
             'tiling': {
                 'tile_size_meters': 500,
                 'overlap_meters': 50,
@@ -90,7 +85,7 @@ class TileGenerator:
                 'isd_m': None,
             },
             'terrain': {
-                'use_lidar': False,
+                'use_lidar': True,
                 'use_dem': False,
                 'hag_tiff_path': None,
             },

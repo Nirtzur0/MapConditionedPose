@@ -386,10 +386,10 @@ def generate_hag(polygon, data_dir, CRS="EPSG:3857"):
     geometries_GCS = df['geometry']
     geometries_EPSG3857 = gpd.GeoSeries(projected_geoms)
 
-    logger.info('Done. 3DEP polygons downloaded and projected to ', CRS.to_string())
+    logger.info("Done. 3DEP polygons downloaded and projected to %s", CRS.to_string())
 
     AOI_EPSG3857 = proj_to_3857(polygon, "EPSG:4326")[1]
-    logger.info("Area of Interest:", AOI_EPSG3857)
+    logger.info("Area of Interest: %s", AOI_EPSG3857)
 
     intersecting_polys = []
     for i, geom in enumerate(geometries_EPSG3857):

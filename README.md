@@ -18,7 +18,7 @@ The pipeline learns to localize UEs using:
 | Milestone | Status | Notes |
 |-----------|--------|------|
 | M1: Scene Generation | Complete | OSM to Mitsuba scenes |
-| M2: Data Generation | Complete | RT/PHY/MAC features to Zarr |
+| M2: Data Generation | Complete | RT/PHY/MAC features to LMDB |
 | M3: Transformer Model | Complete | Dual-encoder + fusion |
 | M4: Training Pipeline | Complete | Training + eval + Optuna |
 | M5: Web UI | Complete | Streamlit demo app |
@@ -48,9 +48,9 @@ outputs/{experiment_name}/
 ├── config.yaml          # Saved configuration
 ├── scenes/              # Generated 3D scenes
 ├── data/
-│   ├── dataset_train_*.zarr
-│   ├── dataset_val_*.zarr
-│   └── dataset_test_*.zarr
+│   ├── dataset_train_*.lmdb
+│   ├── dataset_val_*.lmdb
+│   └── dataset_test_*.lmdb
 ├── checkpoints/         # Model checkpoints
 └── report.yaml          # Final metrics
 ```
@@ -82,7 +82,7 @@ pytest tests/ -v
 
 ```
 Scene Generation: OSM → Scene Builder → 3D Mitsuba scenes
-Data Generation:  Sionna RT → RT/PHY/MAC features → Zarr datasets (train/val/test)
+Data Generation:  Sionna RT → RT/PHY/MAC features → LMDB datasets (train/val/test)
 Model Training:   Transformer (radio + map encoders → fusion → position)
 Evaluation:       Test metrics and visualization
 ```

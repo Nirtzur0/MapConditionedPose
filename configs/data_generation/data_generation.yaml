@@ -44,7 +44,6 @@ quantization_enabled: true
 
 # Output
 output_dir: data/processed/dataset
-zarr_chunk_size: 100
 
 # Debug radio maps (optional)
 debug_radio_maps: false

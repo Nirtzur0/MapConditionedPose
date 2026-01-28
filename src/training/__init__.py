@@ -19,14 +19,7 @@ from pathlib import Path
 
 from ..models.ue_localization_model import UELocalizationModel
 from ..datasets.lmdb_dataset import LMDBRadioLocalizationDataset
-# Legacy Zarr support (kept for backward compatibility)
-try:
-    from ..datasets.radio_dataset import RadioLocalizationDataset, collate_fn
-    from ..datasets.combined_dataset import CombinedRadioLocalizationDataset
-    ZARR_AVAILABLE = True
-except ImportError:
-    ZARR_AVAILABLE = False
-    logger.warning("Zarr datasets not available (Zarr package not installed)")
+collate_fn = None
 from ..datasets.augmentations import RadioAugmentation
 from ..physics_loss import PhysicsLoss, PhysicsLossConfig
 from ..config.feature_schema import RTFeatureIndex, PHYFeatureIndex, MACFeatureIndex
@@ -69,7 +62,6 @@ class UELocalizationLightning(pl.LightningModule):
         self.loss_weights = {
             'coarse_weight': self.config['training']['loss']['coarse_weight'],
             'fine_weight': self.config['training']['loss']['fine_weight'],
-            'position_weight': self.config['training']['loss'].get('position_weight', 0.2),
         }
 
         aux_cfg = self.config['training']['loss'].get('auxiliary', {})
@@ -87,11 +79,7 @@ class UELocalizationLightning(pl.LightningModule):
             or self.config.get('physics_loss', {}).get('enabled', False)
         )
         if self.use_physics_loss:
-            scene_extent = self.config['dataset']['scene_extent']
-            if isinstance(scene_extent, (list, tuple)):
-                map_extent = tuple(scene_extent)
-            else:
-                map_extent = (0.0, 0.0, float(scene_extent), float(scene_extent))
+            map_extent = getattr(self.model, "map_extent", (0.0, 0.0, 1.0, 1.0))
             physics_config = PhysicsLossConfig(
                 feature_weights=self.config['physics_loss']['feature_weights'],
                 map_extent=map_extent,
@@ -217,18 +205,26 @@ class UELocalizationLightning(pl.LightningModule):
     def _extract_aux_targets(self, measurements: Dict) -> Dict[str, torch.Tensor]:
         """Extract auxiliary targets from measurement sequences."""
         mask = measurements['mask']  # (batch, seq_len)
-        mask_f = mask.float()
-        denom = mask_f.sum(dim=1) + 1e-6
 
         rt_features = measurements['rt_features']
         mac_features = measurements['mac_features']
 
-        nlos = (rt_features[:, :, RTFeatureIndex.IS_NLOS] * mask_f).sum(dim=1) / denom
-        num_paths = (rt_features[:, :, RTFeatureIndex.NUM_PATHS] * mask_f).sum(dim=1) / denom
-        timing_advance = (mac_features[:, :, MACFeatureIndex.TIMING_ADVANCE] * mask_f).sum(dim=1) / denom
-        toa = (rt_features[:, :, RTFeatureIndex.TOA] * mask_f).sum(dim=1) / denom
+        def _masked_mean(values: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+            valid_f = valid_mask.float()
+            denom = valid_f.sum(dim=1).clamp_min(1.0)
+            return (values * valid_f).sum(dim=1) / denom
+
+        nlos_vals = rt_features[:, :, RTFeatureIndex.IS_NLOS]
+        num_paths_vals = rt_features[:, :, RTFeatureIndex.NUM_PATHS]
+        nlos = _masked_mean(nlos_vals, mask & torch.isfinite(nlos_vals))
+        num_paths = _masked_mean(num_paths_vals, mask & torch.isfinite(num_paths_vals))
+
+        ta_vals = mac_features[:, :, MACFeatureIndex.TIMING_ADVANCE]
+        toa_vals = rt_features[:, :, RTFeatureIndex.TOA]
+        ta_mask = mask & torch.isfinite(ta_vals) & torch.isfinite(toa_vals)
+        timing_advance = _masked_mean(ta_vals, ta_mask)
         ta_unit = 16.0 / (15000.0 * 4096.0)
-        ta_residual = timing_advance - (2.0 * toa / ta_unit)
+        ta_residual = _masked_mean(ta_vals - (2.0 * toa_vals / ta_unit), ta_mask)
 
         return {
             'nlos': nlos,
@@ -291,11 +287,10 @@ class UELocalizationLightning(pl.LightningModule):
                     batch['position'] = augmented_pos
                     
                     # Recompute cell_grid after augmentation (flip/rotate/scale)
-                    # grid_size is usually 32
+                    # grid_size is usually 32, bottom-left origin
                     grid_size = self.model.grid_size
                     grid_x = (augmented_pos[:, 0] * grid_size).long()
-                    # Flip Y for grid index: 1.0 -> 0, 0.0 -> grid_size-1
-                    grid_y = ((1.0 - augmented_pos[:, 1]) * grid_size).long()
+                    grid_y = (augmented_pos[:, 1] * grid_size).long()
                     
                     # Ensure indices are within [0, grid_size-1]
                     grid_x = torch.clamp(grid_x, 0, grid_size - 1)
@@ -382,12 +377,19 @@ class UELocalizationLightning(pl.LightningModule):
         # Compute errors in meters
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        # Distance in normalized space [0,1] * extent [meters]
-        # scene_extent shape: [batch]
-        extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
-        if isinstance(extent, (int, float)):
-            extent = torch.tensor(extent, device=pred_pos.device)
-        errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
+        scene_size = batch.get('scene_size')
+        if scene_size is not None:
+            if not torch.is_tensor(scene_size):
+                scene_size = torch.tensor(scene_size, device=pred_pos.device)
+            scene_size = scene_size.to(device=pred_pos.device, dtype=pred_pos.dtype)
+            if scene_size.dim() == 1:
+                scene_size = scene_size.unsqueeze(0)
+            errors = torch.norm((pred_pos - true_pos) * scene_size, dim=-1)
+        else:
+            extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
+            if isinstance(extent, (int, float)):
+                extent = torch.tensor(extent, device=pred_pos.device)
+            errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
 
         # Always visualize the first sample of the first batch for consistency across epochs
         if batch_idx == 0:
@@ -399,7 +401,8 @@ class UELocalizationLightning(pl.LightningModule):
                 'top_k_indices': outputs['top_k_indices'][0].detach().cpu(),
                 'top_k_probs': outputs['top_k_probs'][0].detach().cpu(),
                 'fine_offsets': outputs['fine_offsets'][0].detach().cpu(),
-                'fine_uncertainties': outputs['fine_uncertainties'][0].detach().cpu(),
+                'fine_scores': outputs['fine_scores'][0].detach().cpu(),
+                'hypothesis_weights': outputs['hypothesis_weights'][0].detach().cpu(),
             }
         
         # Store for epoch-end aggregation
@@ -437,6 +440,15 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Aggregate errors
         all_errors = torch.cat([x['errors'] for x in self.validation_step_outputs])
+        finite_mask = torch.isfinite(all_errors)
+        if not torch.all(finite_mask):
+            num_bad = (~finite_mask).sum().item()
+            logger.warning("Validation errors contain %d non-finite values; filtering.", num_bad)
+            all_errors = all_errors[finite_mask]
+        if all_errors.numel() == 0:
+            logger.warning("No finite validation errors available; skipping metric aggregation.")
+            self.validation_step_outputs.clear()
+            return
         
         median_error = torch.median(all_errors)
         rmse = torch.sqrt(torch.mean(all_errors ** 2))
@@ -473,18 +485,26 @@ class UELocalizationLightning(pl.LightningModule):
         # Compute errors in meters
         pred_pos = outputs['predicted_position']
         true_pos = batch['position']
-        # Distance in normalized space [0,1] * extent [meters]
-        extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
-        if isinstance(extent, (int, float)):
-            extent = torch.tensor(extent, device=pred_pos.device)
-        errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
+        scene_size = batch.get('scene_size')
+        if scene_size is not None:
+            if not torch.is_tensor(scene_size):
+                scene_size = torch.tensor(scene_size, device=pred_pos.device)
+            scene_size = scene_size.to(device=pred_pos.device, dtype=pred_pos.dtype)
+            if scene_size.dim() == 1:
+                scene_size = scene_size.unsqueeze(0)
+            errors = torch.norm((pred_pos - true_pos) * scene_size, dim=-1)
+        else:
+            extent = batch.get('scene_extent', torch.tensor(512.0, device=pred_pos.device))
+            if isinstance(extent, (int, float)):
+                extent = torch.tensor(extent, device=pred_pos.device)
+            errors = torch.norm(pred_pos - true_pos, dim=-1) * extent
         
         # Store results
         self.test_step_outputs.append({
             'errors': errors,
             'predictions': pred_pos,
             'ground_truth': true_pos,
-            'uncertainties': outputs['fine_uncertainties'][:, 0, :],
+            'hypothesis_weights': outputs['hypothesis_weights'],
         })
 
         # Always visualize the first sample of the first batch
@@ -497,69 +517,11 @@ class UELocalizationLightning(pl.LightningModule):
                 'top_k_indices': outputs['top_k_indices'][0].detach().cpu(),
                 'top_k_probs': outputs['top_k_probs'][0].detach().cpu(),
                 'fine_offsets': outputs['fine_offsets'][0].detach().cpu(),
-                'fine_uncertainties': outputs['fine_uncertainties'][0].detach().cpu(),
+                'fine_scores': outputs['fine_scores'][0].detach().cpu(),
+                'hypothesis_weights': outputs['hypothesis_weights'][0].detach().cpu(),
             }
         
         return errors
-
-    def _render_gmm_heatmap(self, h, w, top_k_indices, top_k_probs, fine_offsets, fine_uncertainties):
-        """Render Gaussian Mixture Model heatmap."""
-        import numpy as np
-        
-        # Create grid coordinates [0, 1] with FLIPPED Y for image coords
-        # Image coords: (0,0) = top-left, Y increases downward
-        # Normalized coords: (0,0) = bottom-left, Y increases upward
-        x = np.linspace(0, 1, w)
-        y = np.linspace(1, 0, h)  # Flip Y: top=1, bottom=0
-        X, Y = np.meshgrid(x, y)
-        pos = np.stack([X, Y], axis=-1) # [H, W, 2]
-        
-        # Get component parameters
-        cell_size = self.model.cell_size
-        top_k_indices = top_k_indices.to(self.device).long()
-        grid_size = self.model.grid_size
-        
-        # row = index // grid_size, col = index % grid_size
-        gy = top_k_indices // grid_size
-        gx = top_k_indices % grid_size
-        
-        # Center of cell in [0, 1] coords
-        center_x = (gx.float() + 0.5) * cell_size
-        # Flip Y back for visualization: grid_y=0 is top=1.0, grid_y=N-1 is bottom=0.0
-        center_y = (grid_size - 1 - gy.float() + 0.5) * cell_size
-        
-        centers = torch.stack([center_x, center_y], dim=-1).cpu().numpy() # [K, 2]
-        
-        # Add predicted offsets
-        centers = centers + fine_offsets.numpy() # [K, 2]
-        
-        # Scale variances to be visible (add minimum variance to prevent too-peaked Gaussians)
-        variances = (fine_uncertainties.numpy() ** 2) + 0.001  # [K, 2]
-        probs = top_k_probs.numpy() # [K]
-        
-        # Normalize probs
-        probs = probs / (probs.sum() + 1e-6)
-        
-        # Compute heatmap
-        heatmap = np.zeros((h, w), dtype=np.float32)
-        
-        for k in range(len(probs)):
-            mu = centers[k]
-            var = variances[k]
-            pi = probs[k]
-            
-            # Evaluate Gaussian with epsilon to prevent division by zero
-            dx = (pos[..., 0] - mu[0]) ** 2 / (2 * var[0] + 1e-6)
-            dy = (pos[..., 1] - mu[1]) ** 2 / (2 * var[1] + 1e-6)
-            
-            component = pi * np.exp(-(dx + dy))
-            heatmap += component
-            
-        # Normalize heatmap to [0, 1]
-        if heatmap.max() > 0:
-            heatmap = heatmap / heatmap.max()
-            
-        return heatmap
 
     def _log_comet_visuals(self, split: str, errors: Optional[torch.Tensor] = None):
         experiment = self._get_comet_experiment()
@@ -599,23 +561,23 @@ class UELocalizationLightning(pl.LightningModule):
         pred_px = pred_pos[0] * (w - 1)
         pred_py = (1.0 - pred_pos[1]) * (h - 1)  # Flip Y-axis
         
-        # Render GMM
-        gmm_heatmap = self._render_gmm_heatmap(
-            h, w, 
-            sample['top_k_indices'], 
-            sample['top_k_probs'], 
-            sample['fine_offsets'], 
-            sample['fine_uncertainties']
-        )
-        
-        # Apply colormap to GMM with adaptive transparency
-        # Use jet/turbo but ensure zero probability is fully transparent
-        gmm_colored = plt.cm.turbo(gmm_heatmap) # RGBA [H, W, 4]
-        
-        # Set alpha channel: 
-        # Low prob -> Transparent
-        # High prob -> More opaque but still see-through (max 0.7)
-        gmm_colored[..., 3] = np.clip(gmm_heatmap * 0.8, 0.0, 0.8)
+        # Candidate hypotheses (top-K) with re-ranking weights
+        top_k_indices = sample['top_k_indices'].numpy()
+        fine_offsets = sample['fine_offsets'].numpy()
+        if 'hypothesis_weights' in sample:
+            weights = sample['hypothesis_weights'].numpy()
+        else:
+            top_k_probs = sample['top_k_probs'].numpy()
+            fine_scores = sample['fine_scores'].numpy()
+            logits = np.log(np.clip(top_k_probs, 1e-8, None)) + fine_scores
+            exps = np.exp(logits - logits.max())
+            weights = exps / (exps.sum() + 1e-8)
+
+        grid_size = self.model.grid_size
+        gy = top_k_indices // grid_size
+        gx = top_k_indices % grid_size
+        centers = np.stack([(gx + 0.5) / grid_size, (gy + 0.5) / grid_size], axis=-1)
+        candidates = centers + fine_offsets
 
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         axes[0].imshow(radio_img, cmap='inferno')
@@ -626,17 +588,29 @@ class UELocalizationLightning(pl.LightningModule):
         axes[1].set_title("OSM Map (R:Height G:Build B:Road/Terrain)")
         axes[1].axis("off")
         
-        # Overlay GMM + Points on top of OSM map for context
-        # 1. Base map
-        axes[2].imshow(osm_rgb) 
-        # 2. GMM overlay
-        axes[2].imshow(gmm_colored)
-        # 3. Points
+        # Overlay candidate hypotheses on top of OSM map for context
+        axes[2].imshow(osm_rgb)
+        cand_px = candidates[:, 0] * (w - 1)
+        cand_py = (1.0 - candidates[:, 1]) * (h - 1)
+        sizes = 40 + 260 * (weights / (weights.max() + 1e-8))
+        sc = axes[2].scatter(
+            cand_px,
+            cand_py,
+            c=weights,
+            s=sizes,
+            cmap='viridis',
+            alpha=0.8,
+            edgecolors='black',
+            linewidths=0.5,
+            label="Top-K hypotheses",
+            zorder=8,
+        )
         axes[2].scatter([true_px], [true_py], c="lime", s=60, edgecolors='black', label="True", zorder=10)
-        # axes[2].scatter([pred_px], [pred_py], c="red", s=60, marker="x", label="Pred", zorder=10)
-        axes[2].set_title(f"{split.upper()} GMM Prediction + True Pos")
+        axes[2].scatter([pred_px], [pred_py], c="red", s=60, marker="x", label="Pred", zorder=10)
+        axes[2].set_title(f"{split.upper()} Top-K Hypotheses + True/Pred")
         axes[2].legend(loc="lower right", fontsize=8)
         axes[2].axis("off")
+        fig.colorbar(sc, ax=axes[2], fraction=0.046, pad=0.04, label="Hypothesis weight")
         fig.tight_layout()
 
         if hasattr(experiment, "log_figure"):
@@ -656,6 +630,15 @@ class UELocalizationLightning(pl.LightningModule):
         
         # Aggregate errors
         all_errors = torch.cat([x['errors'] for x in self.test_step_outputs])
+        finite_mask = torch.isfinite(all_errors)
+        if not torch.all(finite_mask):
+            num_bad = (~finite_mask).sum().item()
+            logger.warning("Test errors contain %d non-finite values; filtering.", num_bad)
+            all_errors = all_errors[finite_mask]
+        if all_errors.numel() == 0:
+            logger.warning("No finite test errors available; skipping metric aggregation.")
+            self.test_step_outputs.clear()
+            return
         
         median_error = torch.median(all_errors)
         mean_error = torch.mean(all_errors)
@@ -769,91 +752,57 @@ class UELocalizationLightning(pl.LightningModule):
     
     def _build_dataset(self, split: str):
         dataset_config = self.config['dataset']
-        
+
         # Get augmentation config (only for training)
         augmentation = None
         if split == 'train' and 'training' in self.config:
             augmentation = self.config['training'].get('augmentation', None)
-        
-        # Support both LMDB and Zarr paths (prefer LMDB)
-        # LMDB: train_lmdb_paths, val_lmdb_paths, test_lmdb_paths
-        # Zarr (DEPRECATED): train_zarr_paths, val_zarr_paths, test_zarr_paths
-        dataset_config = self.config['dataset']
-        
-        # Check for LMDB paths first (preferred)
-        train_paths = dataset_config.get('train_lmdb_paths', dataset_config.get('train_zarr_paths', []))
-        val_paths = dataset_config.get('val_lmdb_paths', dataset_config.get('val_zarr_paths', []))
-        test_paths = dataset_config.get('test_lmdb_paths', dataset_config.get('test_zarr_paths', []))
-        
-        # Select paths based on split
+
+        train_paths = dataset_config.get('train_lmdb_paths', [])
+        val_paths = dataset_config.get('val_lmdb_paths', [])
+        test_paths = dataset_config.get('test_lmdb_paths', [])
+
         if split == 'train':
             paths = train_paths
         elif split == 'val':
-            paths = val_paths if val_paths else train_paths  # Fallback to train if no val
+            paths = val_paths if val_paths else train_paths
         elif split == 'test':
-            paths = test_paths if test_paths else val_paths  # Fallback to val if no test
+            paths = test_paths if test_paths else val_paths
         else:
             raise ValueError(f"Unknown split: {split}")
-        
-        if not paths:
-            raise ValueError(f"No dataset paths configured for split '{split}'")
 
-        # Filter out empty paths
+        if not paths:
+            raise ValueError(f"No LMDB dataset paths configured for split '{split}'")
+
         valid_paths = [p for p in paths if p and str(p) not in ['', '.']]
         if not valid_paths:
-            raise ValueError(f"No valid dataset paths found for split {split}. Original paths: {paths}")
-        
-        # Check if using LMDB or Zarr
-        use_lmdb = dataset_config.get('use_lmdb', False)
+            raise ValueError(f"No valid LMDB paths found for split {split}. Original paths: {paths}")
+
         first_path = Path(valid_paths[0])
-        
-        # Auto-detect if path is LMDB
-        if str(first_path).endswith('.lmdb') or (first_path.is_dir() and (first_path / 'data.mdb').exists()):
-            use_lmdb = True
-        
-        if use_lmdb:
-            # Use LMDB dataset (multiprocessing-friendly!)
-            logger.info(f"✓ Using LMDB dataset for {split} split (multiprocessing-safe)")
-            if len(valid_paths) > 1:
-                logger.warning(f"Multiple LMDB paths not yet supported, using first: {valid_paths[0]}")
-            
-            return LMDBRadioLocalizationDataset(
-                lmdb_path=str(valid_paths[0]),
-                split=split,
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-                augmentation=augmentation,
-                split_seed=dataset_config.get('split_seed', 42),
-                map_cache_size=dataset_config.get('map_cache_size', 0),
-                sequence_length=dataset_config.get('sequence_length', 0),
-                max_cells=dataset_config.get('max_cells', 2),
-            )
-        else:
-            # Use Zarr dataset (DEPRECATED - has multiprocessing issues)
-            if not ZARR_AVAILABLE:
-                raise ImportError(
-                    "Zarr dataset requested but Zarr not installed. "
-                    "Either install zarr (pip install zarr) or migrate to LMDB datasets."
-                )
-            
-            logger.warning(f"⚠️  Using deprecated Zarr dataset for {split} split - migrate to LMDB for better multiprocessing")
-            logger.warning("   Set num_workers=0 in config to avoid multiprocessing issues with Zarr")
-            
-            return CombinedRadioLocalizationDataset(
-                zarr_paths=valid_paths,
-                split=split,
-                map_resolution=dataset_config['map_resolution'],
-                scene_extent=dataset_config['scene_extent'],
-                normalize=dataset_config['normalize_features'],
-                handle_missing=dataset_config['handle_missing_values'],
-                augmentation=augmentation,
-                split_seed=dataset_config.get('split_seed', 42),
-                map_cache_size=dataset_config.get('map_cache_size', 0),
-                sequence_length=dataset_config.get('sequence_length', 0),
-                max_cells=dataset_config.get('max_cells', 2),
-            )
+        if not (str(first_path).endswith('.lmdb') or (first_path.is_dir() and (first_path / 'data.mdb').exists())):
+            raise ValueError(f"Non-LMDB dataset provided: {first_path}")
+
+        logger.info(f"✓ Using LMDB dataset for {split} split (multiprocessing-safe)")
+        if len(valid_paths) > 1:
+            logger.warning(f"Multiple LMDB paths not yet supported, using first: {valid_paths[0]}")
+
+        return LMDBRadioLocalizationDataset(
+            lmdb_path=str(valid_paths[0]),
+            split=split,
+            map_resolution=dataset_config['map_resolution'],
+            scene_extent=dataset_config['scene_extent'],
+            normalize=dataset_config['normalize_features'],
+            handle_missing=dataset_config['handle_missing_values'],
+            augmentation=augmentation,
+            split_seed=dataset_config.get('split_seed', 42),
+            map_cache_size=dataset_config.get('map_cache_size', 0),
+            sequence_length=dataset_config.get('sequence_length', 0),
+            max_cells=dataset_config.get('max_cells', 2),
+            normalize_maps=dataset_config.get('normalize_maps', False),
+            map_norm_mode=dataset_config.get('map_norm_mode', 'zscore'),
+            map_log_throughput=dataset_config.get('map_log_throughput', False),
+            map_log_epsilon=dataset_config.get('map_log_epsilon', 1e-3),
+        )
 
     def train_dataloader(self):
         """Create training dataloader."""

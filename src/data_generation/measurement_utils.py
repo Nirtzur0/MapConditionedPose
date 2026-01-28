@@ -82,6 +82,9 @@ def compute_rsrp(h: Union[np.ndarray, Any],
         elif rank == 5:
             # [batch, rx, rx_ant, sites, tx_ant]
             rsrp = tf.reduce_sum(power_avg_pilots, axis=[2, 4])
+        elif rank == 6:
+            # [batch, rx, rx_ant, sites, tx_ant, freq]
+            rsrp = tf.reduce_sum(power_avg_pilots, axis=[2, 4])
         else:
             # Fallback to last and last-but-two if rank >= 3
             rsrp = tf.reduce_sum(power_avg_pilots, axis=[-1, -3])
@@ -108,6 +111,8 @@ def compute_rsrp(h: Union[np.ndarray, Any],
             rsrp = np.sum(power_avg_pilots, axis=(2, 3))
         elif rank == 5:
             rsrp = np.sum(power_avg_pilots, axis=(2, 4))
+        elif rank == 6:
+            rsrp = np.sum(power_avg_pilots, axis=(2, 4))
         else:
             rsrp = np.sum(power_avg_pilots, axis=(-1, -3))
             
@@ -131,12 +136,15 @@ def compute_rsrq(rsrp: Union[np.ndarray, Any],
         # TensorFlow path
         rsrp = tf.convert_to_tensor(rsrp, dtype=tf.float32)
         rssi = tf.convert_to_tensor(rssi, dtype=tf.float32)
+        rsrp = tf.where(tf.math.is_finite(rsrp), rsrp, tf.constant(-200.0, dtype=rsrp.dtype))
+        rssi = tf.where(tf.math.is_finite(rssi), rssi, tf.constant(-200.0, dtype=rssi.dtype))
         
         # Detect linear scale (heuristic)
         is_linear = tf.reduce_mean(rsrp) > 1.0
         
         def _to_db(x):
-            return 10.0 * (tf.math.log(x + 1e-10) / tf.math.log(10.0))
+            x = tf.maximum(x, 1e-10)
+            return 10.0 * (tf.math.log(x) / tf.math.log(10.0))
 
         rsrp_db = tf.cond(is_linear, lambda: _to_db(rsrp), lambda: rsrp)
         rssi_db = tf.cond(is_linear, lambda: _to_db(rssi), lambda: rssi)
@@ -144,6 +152,7 @@ def compute_rsrq(rsrp: Union[np.ndarray, Any],
         # RSRQ (dB) = RSRP(dB) - RSSI(dB) + 10log10(N)
         offset = 10.0 * np.log10(float(N))
         rsrq_db = rsrp_db - rssi_db + offset
+        rsrq_db = tf.where(tf.math.is_finite(rsrq_db), rsrq_db, tf.constant(-34.0, dtype=rsrq_db.dtype))
         
         # Quantize 0.5 dB
         rsrq_quantized = tf.round(rsrq_db * 2.0) / 2.0
@@ -154,12 +163,13 @@ def compute_rsrq(rsrp: Union[np.ndarray, Any],
         in_linear_scale = np.mean(rsrp) > 1.0
         
         if in_linear_scale:
-            rsrp_db = 10 * np.log10(rsrp + 1e-10)
-            rssi_db = 10 * np.log10(rssi + 1e-10)
+            rsrp_db = 10 * np.log10(np.maximum(rsrp, 1e-10))
+            rssi_db = 10 * np.log10(np.maximum(rssi, 1e-10))
         else:
             rsrp_db, rssi_db = rsrp, rssi
         
         rsrq_db = rsrp_db - rssi_db + 10 * np.log10(float(N))
+        rsrq_db = np.where(np.isfinite(rsrq_db), rsrq_db, -34.0)
         rsrq_quantized = np.round(rsrq_db * 2) / 2
         return np.clip(rsrq_quantized, -34.0, 2.5)
 
@@ -252,12 +262,12 @@ def compute_cqi(sinr_db: Union[np.ndarray, Any],
     
     if _is_tensor(sinr_db):
         sinr_db = tf.cast(sinr_db, tf.float32)
-        # Searchsorted in TF
-        # Must reshape thresholds to tensor
         thresh_tensor = tf.constant(cqi_thresholds, dtype=tf.float32)
-        
-        cqi = tf.searchsorted(thresh_tensor, sinr_db, side='right') - 1
-        return tf.clip_by_value(cqi, 0, 15)
+        # TF searchsorted expects matching leading dims; flatten and reshape.
+        flat = tf.reshape(sinr_db, [-1])
+        cqi = tf.searchsorted(thresh_tensor, flat, side='right') - 1
+        cqi = tf.clip_by_value(cqi, 0, 15)
+        return tf.reshape(cqi, tf.shape(sinr_db))
         
     else:
         cqi_thresholds[0] = -np.inf # numpy supports inf

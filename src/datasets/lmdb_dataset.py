@@ -1,8 +1,7 @@
 """
 LMDB-based Radio Localization Dataset
 
-Perfect multiprocessing support - no async event loop issues like Zarr.
-Drop-in replacement for RadioLocalizationDataset.
+Perfect multiprocessing support with LMDB-backed storage.
 
 Usage:
     dataset = LMDBRadioLocalizationDataset(
@@ -28,16 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
-    """LMDB-based dataset for radio localization with perfect multiprocessing support.
-    
-    Key differences from legacy Zarr version:
-    - No async event loops → multiprocessing works perfectly
-    - Lazy initialization → only stores path in __init__
-    - Per-worker LMDB environment → opened after fork/spawn
-    - Fast random access via memory-mapped files
+    """LMDB-based dataset for radio localization with multiprocessing-friendly access.
+
+    Uses lazy initialization per worker and memory-mapped random access.
     """
     
-    # Schema definitions (same as RadioLocalizationDataset)
+    # Schema definitions for LMDB dataset
     RT_SCHEMA = [
         ('toa', 'toa'),
         ('path_gains', 'path_gains'),
@@ -89,6 +84,10 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         map_cache_size: int = 0,
         sequence_length: int = 0,
         max_cells: int = 2,
+        normalize_maps: bool = False,
+        map_norm_mode: str = "zscore",
+        map_log_throughput: bool = False,
+        map_log_epsilon: float = 1e-3,
     ):
         """Initialize LMDB dataset.
         
@@ -119,6 +118,10 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         self._map_cache = OrderedDict()
         self.sequence_length = sequence_length
         self.max_cells = max_cells
+        self.normalize_maps = normalize_maps
+        self.map_norm_mode = map_norm_mode
+        self.map_log_throughput = map_log_throughput
+        self.map_log_epsilon = map_log_epsilon
         
         # Critical: Don't open LMDB in __init__!
         # Store only the path - environment opened lazily per worker
@@ -163,9 +166,9 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             if max_cells:
                 self.max_cells = int(max_cells)
         
-        # Get split indices (support both 'n_samples' and 'num_samples' for backward compatibility)
-        n_samples = self._metadata.get('n_samples', self._metadata.get('num_samples', 0))
-        if n_samples == 0:
+        # Get split indices
+        n_samples = self._metadata.get('num_samples', 0)
+        if not n_samples:
             raise ValueError(f"No samples found in LMDB metadata: {self.lmdb_path}")
         self._indices = self._get_split_indices(n_samples)
 
@@ -252,40 +255,73 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
     
     def _build_norm_stats(self):
         """Convert metadata normalization stats to PyTorch tensors."""
-        if 'normalization' not in self._metadata:
+        norm_data = self._metadata.get('normalization')
+        if not norm_data:
+            norm_data = self._metadata.get('normalization_stats')
+        if not norm_data:
             self.norm_stats = None
             return
-        
-        norm_data = self._metadata['normalization']
         self.norm_stats = {}
         
         # RT stats
         if 'rt' in norm_data:
-            rt_means, rt_stds = [], []
-            for feat_name, _ in self.RT_SCHEMA[:6]:  # Only stored features
-                if feat_name in norm_data['rt']:
-                    rt_means.append(norm_data['rt'][feat_name]['mean'])
-                    rt_stds.append(norm_data['rt'][feat_name]['std'])
-                else:
-                    rt_means.append(0.0)
-                    rt_stds.append(1.0)
-            
+            rt_stats = norm_data['rt']
+            rt_dim = len(RTFeatureIndex)
+            rt_means = torch.zeros(rt_dim, dtype=torch.float32)
+            rt_stds = torch.ones(rt_dim, dtype=torch.float32)
+
+            def _apply_rt_stat(idx: RTFeatureIndex, key: str) -> None:
+                if key in rt_stats:
+                    mean_val = rt_stats[key].get('mean')
+                    std_val = rt_stats[key].get('std')
+                    if (
+                        mean_val is None
+                        or std_val is None
+                        or not np.isfinite(mean_val)
+                        or not np.isfinite(std_val)
+                        or std_val == 0
+                    ):
+                        logger.warning(
+                            "Non-finite normalization stats for rt/%s; using defaults.", key
+                        )
+                        return
+                    rt_means[idx.value] = float(mean_val)
+                    rt_stds[idx.value] = float(std_val)
+
+            _apply_rt_stat(RTFeatureIndex.TOA, 'toa')
+            _apply_rt_stat(RTFeatureIndex.RMS_DELAY_SPREAD, 'rms_delay_spread')
+            _apply_rt_stat(RTFeatureIndex.RMS_ANGULAR_SPREAD, 'rms_angular_spread')
+            _apply_rt_stat(RTFeatureIndex.TOTAL_POWER, 'path_gains')
+            _apply_rt_stat(RTFeatureIndex.N_SIGNIFICANT_PATHS, 'num_paths')
+            _apply_rt_stat(RTFeatureIndex.IS_NLOS, 'is_nlos')
+
             self.norm_stats['rt'] = {
-                'mean': torch.tensor(rt_means, dtype=torch.float32),
-                'std': torch.clamp(torch.tensor(rt_stds, dtype=torch.float32), min=1e-8),
+                'mean': rt_means,
+                'std': torch.clamp(rt_stds, min=1e-8),
             }
         
         # PHY stats
         if 'phy' in norm_data:
             phy_means, phy_stds = [], []
-            for feat_name, _, default in self.PHY_SCHEMA:
-                phy_key = feat_name.replace('_', ' ').title().replace(' ', '')
-                if phy_key in norm_data['phy']:
-                    phy_means.append(norm_data['phy'][phy_key]['mean'])
-                    phy_stds.append(norm_data['phy'][phy_key]['std'])
-                else:
+            for feat_name, key, default in self.PHY_SCHEMA:
+                if feat_name == 'l1_rsrp':
                     phy_means.append(0.0)
                     phy_stds.append(1.0)
+                    continue
+                lookup_key = key or feat_name
+                mean_val = 0.0
+                std_val = 1.0
+                if lookup_key in norm_data['phy']:
+                    mean_val = norm_data['phy'][lookup_key].get('mean', 0.0)
+                    std_val = norm_data['phy'][lookup_key].get('std', 1.0)
+                    if not np.isfinite(mean_val) or not np.isfinite(std_val) or std_val == 0:
+                        logger.warning(
+                            "Non-finite normalization stats for phy/%s; using defaults.", lookup_key
+                        )
+                        mean_val = 0.0
+                        std_val = 1.0
+                phy_means.append(mean_val)
+                phy_stds.append(std_val)
             
             self.norm_stats['phy'] = {
                 'mean': torch.tensor(phy_means, dtype=torch.float32),
@@ -295,13 +331,21 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         # MAC stats
         if 'mac' in norm_data:
             mac_means, mac_stds = [], []
-            for feat_name, _, default in self.MAC_SCHEMA:
-                if feat_name in norm_data['mac']:
-                    mac_means.append(norm_data['mac'][feat_name]['mean'])
-                    mac_stds.append(norm_data['mac'][feat_name]['std'])
-                else:
-                    mac_means.append(0.0)
-                    mac_stds.append(1.0)
+            for feat_name, key, default in self.MAC_SCHEMA:
+                lookup_key = key or feat_name
+                mean_val = 0.0
+                std_val = 1.0
+                if lookup_key in norm_data['mac']:
+                    mean_val = norm_data['mac'][lookup_key].get('mean', 0.0)
+                    std_val = norm_data['mac'][lookup_key].get('std', 1.0)
+                    if not np.isfinite(mean_val) or not np.isfinite(std_val) or std_val == 0:
+                        logger.warning(
+                            "Non-finite normalization stats for mac/%s; using defaults.", lookup_key
+                        )
+                        mean_val = 0.0
+                        std_val = 1.0
+                mac_means.append(mean_val)
+                mac_stds.append(std_val)
             
             self.norm_stats['mac'] = {
                 'mean': torch.tensor(mac_means, dtype=torch.float32),
@@ -358,7 +402,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         aux_targets = self._extract_aux_from_raw(sample)
         scene_id = sample.get('scene_id', '')
         radio_map, osm_map = self._get_scene_maps(scene_id)
-        position, scene_extent = self._extract_position(sample)
+        position, scene_extent, scene_size = self._extract_position(sample)
         cell_grid = self._compute_grid_cell(position, 1.0)
         scene_idx = sample.get('scene_idx', None)
         if scene_idx is None:
@@ -372,6 +416,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'position': position,
             'cell_grid': cell_grid,
             'scene_extent': scene_extent,
+            'scene_size': scene_size,
             'scene_idx': torch.tensor(scene_idx, dtype=torch.long),
             'aux_targets': aux_targets,
         }
@@ -404,7 +449,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'mask': mask_seq.reshape(seq_len * max_cells),
         }
 
-        position, scene_extent = self._extract_position(samples[-1])
+        position, scene_extent, scene_size = self._extract_position(samples[-1])
         cell_grid = self._compute_grid_cell(position, 1.0)
         scene_idx = samples[-1].get('scene_idx', None)
         if scene_idx is None:
@@ -424,11 +469,12 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             'position': position,
             'cell_grid': cell_grid,
             'scene_extent': scene_extent,
+            'scene_size': scene_size,
             'scene_idx': torch.tensor(scene_idx, dtype=torch.long),
             'aux_targets': aux_targets,
         }
 
-    def _extract_position(self, sample: dict) -> Tuple[torch.Tensor, float]:
+    def _extract_position(self, sample: dict) -> Tuple[torch.Tensor, float, torch.Tensor]:
         pos = sample['position']
         if isinstance(pos, (tuple, list)):
             position = torch.tensor(pos[:2], dtype=torch.float32)
@@ -436,35 +482,64 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             pos_array = np.asarray(pos).flatten()
             position = torch.from_numpy(pos_array[:2]).float()
 
-        scene_metadata = sample.get('scene_metadata', {})
-        bbox = scene_metadata.get('bbox', {})
-        if 'x_max' in bbox and 'x_min' in bbox:
-            actual_width = bbox['x_max'] - bbox['x_min']
-            actual_height = bbox['y_max'] - bbox['y_min']
-            scene_extent = max(actual_width, actual_height)
+        scene_metadata = sample.get('scene_metadata', {}) or {}
+        bbox = scene_metadata.get('bbox') or {}
+        if not bbox and 'scene_bbox' in sample:
+            x_min, y_min, x_max, y_max = sample['scene_bbox']
+            bbox = {'x_min': x_min, 'y_min': y_min, 'x_max': x_max, 'y_max': y_max}
+
+        scene_size = None
+        if all(k in bbox for k in ('x_min', 'y_min', 'x_max', 'y_max')):
+            actual_width = float(bbox['x_max'] - bbox['x_min'])
+            actual_height = float(bbox['y_max'] - bbox['y_min'])
+            if actual_width > 0 and actual_height > 0:
+                scene_size = torch.tensor([actual_width, actual_height], dtype=torch.float32)
+                scene_extent = max(actual_width, actual_height)
+            else:
+                scene_extent = sample.get('scene_extent', self.scene_extent)
         else:
             scene_extent = sample.get('scene_extent', self.scene_extent)
 
-        position = position / scene_extent
+        if scene_size is None:
+            scene_size = torch.tensor([scene_extent, scene_extent], dtype=torch.float32)
+
+        position = position / scene_size
         position = torch.clamp(position, 0.0, 1.0)
-        return position, scene_extent
+        return position, scene_extent, scene_size
 
     def _extract_aux_from_raw(self, sample: dict) -> Dict[str, torch.Tensor]:
-        rt_data = sample.get('rt_features', sample.get('rt', {})) or {}
-        mac_data = sample.get('mac_features', sample.get('mac', {})) or {}
+        rt_data = sample.get('rt_features', {}) or {}
+        mac_data = sample.get('mac_features', {}) or {}
 
-        def _mean_first(arr) -> float:
+        def _mean_valid(arr, min_val=None, max_val=None) -> float:
             arr = np.asarray(arr).astype(np.float32).flatten()
             if arr.size == 0:
                 return 0.0
-            return float(np.mean(arr[:self.max_cells]))
+            arr = arr[:self.max_cells]
+            mask = np.isfinite(arr)
+            if min_val is not None:
+                mask &= arr >= min_val
+            if max_val is not None:
+                mask &= arr <= max_val
+            if not np.any(mask):
+                return 0.0
+            return float(np.mean(arr[mask]))
 
-        nlos = _mean_first(rt_data.get('is_nlos', []))
-        num_paths = _mean_first(rt_data.get('num_paths', []))
-        timing_advance = _mean_first(mac_data.get('timing_advance', []))
-        toa = _mean_first(rt_data.get('toa', []))
-        ta_unit = 16.0 / (15000.0 * 4096.0)
-        ta_residual = timing_advance - (2.0 * toa / ta_unit) if toa else 0.0
+        nlos = _mean_valid(rt_data.get('is_nlos', []), min_val=0.0, max_val=1.0)
+        num_paths = _mean_valid(rt_data.get('num_paths', []), min_val=0.0)
+        timing_advance = _mean_valid(mac_data.get('timing_advance', []), min_val=0.0)
+
+        toa_arr = np.asarray(rt_data.get('toa', []), dtype=np.float32).flatten()
+        ta_arr = np.asarray(mac_data.get('timing_advance', []), dtype=np.float32).flatten()
+        n = min(self.max_cells, toa_arr.size, ta_arr.size)
+        ta_residual = 0.0
+        if n > 0:
+            toa_arr = toa_arr[:n]
+            ta_arr = ta_arr[:n]
+            valid = np.isfinite(toa_arr) & np.isfinite(ta_arr) & (toa_arr >= 0.0) & (ta_arr >= 0.0)
+            if np.any(valid):
+                ta_unit = 16.0 / (15000.0 * 4096.0)
+                ta_residual = float(np.mean(ta_arr[valid] - (2.0 * toa_arr[valid] / ta_unit)))
 
         return {
             'nlos': torch.tensor(nlos, dtype=torch.float32),
@@ -477,10 +552,9 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         """Process RT, PHY, MAC features into model input format."""
         max_cells = self.max_cells
         
-        # Support both old key names ('rt', 'phy', 'mac') and new ones ('rt_features', 'phy_features', 'mac_features')
-        rt_data = sample.get('rt_features', sample.get('rt', {}))
-        phy_data = sample.get('phy_features', sample.get('phy', {}))
-        mac_data = sample.get('mac_features', sample.get('mac', {}))
+        rt_data = sample.get('rt_features', {})
+        phy_data = sample.get('phy_features', {})
+        mac_data = sample.get('mac_features', {})
         
         # RT features (16 dims per cell)
         rt_features = self._build_rt_features(rt_data, max_cells)
@@ -490,7 +564,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         
         # MAC features (6 dims per cell)
         mac_features = self._build_mac_features(mac_data, max_cells)
-        
+
         # Cell/beam IDs
         n_actual_cells = sample.get('actual_num_cells', rt_features.shape[0] if rt_features.sum() > 0 else 2)
         cell_ids = torch.zeros(max_cells, dtype=torch.long)
@@ -512,7 +586,18 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         # Mask for valid cells
         mask = torch.zeros(max_cells, dtype=torch.bool)
         mask[:min(n_actual_cells, max_cells)] = True
-        
+
+        # Apply missing-value handling
+        if self.handle_missing in ("mask", "zero"):
+            finite_mask = torch.isfinite(rt_features).all(dim=-1)
+            finite_mask &= torch.isfinite(phy_features).all(dim=-1)
+            finite_mask &= torch.isfinite(mac_features).all(dim=-1)
+            if self.handle_missing == "mask":
+                mask = mask & finite_mask
+
+            rt_features = torch.nan_to_num(rt_features, nan=0.0, posinf=0.0, neginf=0.0)
+            phy_features = torch.nan_to_num(phy_features, nan=0.0, posinf=0.0, neginf=0.0)
+            mac_features = torch.nan_to_num(mac_features, nan=0.0, posinf=0.0, neginf=0.0)
         return {
             'rt_features': rt_features,
             'phy_features': phy_features,
@@ -528,17 +613,17 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         
         Feature mapping (aligned with RT_SCHEMA):
             0: toa - Time of Arrival (seconds)
-            1: mean_path_gain - Mean path gain (linear)
-            2: max_path_gain - Max path gain (linear)
-            3: mean_path_delay - Mean path delay (seconds)
-            4: num_paths - Number of multipath components
+            1: unused (mean_path_gain removed)
+            2: unused (max_path_gain removed)
+            3: unused (mean_path_delay removed)
+            4: unused (num_paths removed)
             5: rms_delay_spread - RMS delay spread (seconds)
             6: rms_angular_spread - RMS angular spread (radians)
             7: total_power - Sum of squared path gains (linear power)
             8: n_significant_paths - Paths with gain > 1% of max
-            9: delay_range - Max delay - min delay (seconds)
-            10: dominant_path_gain - Gain of strongest path
-            11: dominant_path_delay - Delay of strongest path
+            9: unused (delay_range removed)
+            10: unused (dominant_path_gain removed)
+            11: unused (dominant_path_delay removed)
             12: is_nlos - Is non-line-of-sight (0 or 1)
             13-15: Reserved
         """
@@ -562,97 +647,43 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         
         # Feature 0: ToA
         if toa.ndim > 1:
+            toa = np.nan_to_num(toa, nan=0.0, posinf=0.0, neginf=0.0)
+            toa = np.where(toa >= 0.0, toa, 0.0)
             features[:n_cells, RTFeatureIndex.TOA] = torch.from_numpy(
                 toa[:n_cells, 0].astype(np.float32)
             )
         elif toa.ndim == 1:
+            toa = np.nan_to_num(toa, nan=0.0, posinf=0.0, neginf=0.0)
+            toa = np.where(toa >= 0.0, toa, 0.0)
             features[:n_cells, RTFeatureIndex.TOA] = torch.from_numpy(
                 toa[:n_cells].astype(np.float32)
             )
         
-        # Process path_gains for features 1, 2, 7, 8, 10
+        # Process path_gains for features 7, 8
         path_gains = None
         if 'path_gains' in rt_data and rt_data['path_gains'] is not None:
             path_gains = np.asarray(rt_data['path_gains'])
+            path_gains = np.nan_to_num(path_gains, nan=0.0, posinf=0.0, neginf=0.0)
             if path_gains.size > 0:
                 if path_gains.ndim >= 2:
                     n = min(path_gains.shape[0], n_cells)
-                    # Feature 1: mean path gain
-                    features[:n, RTFeatureIndex.MEAN_PATH_GAIN] = torch.from_numpy(
-                        np.mean(path_gains[:n], axis=-1).astype(np.float32)
-                    )
-                    # Feature 2: max path gain
-                    max_gains = np.max(np.abs(path_gains[:n]), axis=-1)
-                    features[:n, RTFeatureIndex.MAX_PATH_GAIN] = torch.from_numpy(
-                        max_gains.astype(np.float32)
-                    )
                     # Feature 7: total power (sum of squared gains)
                     total_power = np.sum(path_gains[:n] ** 2, axis=-1)
                     features[:n, RTFeatureIndex.TOTAL_POWER] = torch.from_numpy(
                         total_power.astype(np.float32)
                     )
                     # Feature 8: number of significant paths (> 1% of max)
+                    max_gains = np.max(np.abs(path_gains[:n]), axis=-1)
                     for i in range(n):
                         threshold = 0.01 * max_gains[i] if max_gains[i] > 0 else 0
                         n_sig = np.sum(np.abs(path_gains[i]) > threshold)
                         features[i, RTFeatureIndex.N_SIGNIFICANT_PATHS] = float(n_sig)
-                    # Feature 10: dominant path gain (strongest path)
-                    dom_idx = np.argmax(np.abs(path_gains[:n]), axis=-1)
-                    for i in range(n):
-                        features[i, RTFeatureIndex.DOMINANT_PATH_GAIN] = float(
-                            np.abs(path_gains[i, dom_idx[i]])
-                        )
                 elif path_gains.ndim == 1:
-                    features[0, RTFeatureIndex.MEAN_PATH_GAIN] = float(np.mean(path_gains))
-                    features[0, RTFeatureIndex.MAX_PATH_GAIN] = float(np.max(np.abs(path_gains)))
                     features[0, RTFeatureIndex.TOTAL_POWER] = float(np.sum(path_gains ** 2))
                     max_g = np.max(np.abs(path_gains))
                     features[0, RTFeatureIndex.N_SIGNIFICANT_PATHS] = float(
                         np.sum(np.abs(path_gains) > 0.01 * max_g)
                     )
-                    features[0, RTFeatureIndex.DOMINANT_PATH_GAIN] = float(max_g)
-        
-        # Process path_delays for features 3, 9, 11
-        path_delays = None
-        if 'path_delays' in rt_data and rt_data['path_delays'] is not None:
-            path_delays = np.asarray(rt_data['path_delays'])
-            if path_delays.size > 0:
-                if path_delays.ndim >= 2:
-                    n = min(path_delays.shape[0], n_cells)
-                    # Feature 3: mean path delay
-                    features[:n, RTFeatureIndex.MEAN_PATH_DELAY] = torch.from_numpy(
-                        np.mean(path_delays[:n], axis=-1).astype(np.float32)
-                    )
-                    # Feature 9: delay range (max - min for non-zero delays)
-                    for i in range(n):
-                        nonzero_delays = path_delays[i][path_delays[i] > 0]
-                        if len(nonzero_delays) > 1:
-                            features[i, RTFeatureIndex.DELAY_RANGE] = float(
-                                np.max(nonzero_delays) - np.min(nonzero_delays)
-                            )
-                    # Feature 11: dominant path delay (delay of strongest path)
-                    if path_gains is not None and path_gains.ndim >= 2:
-                        dom_idx = np.argmax(np.abs(path_gains[:n]), axis=-1)
-                        for i in range(n):
-                            features[i, RTFeatureIndex.DOMINANT_PATH_DELAY] = float(
-                                path_delays[i, dom_idx[i]]
-                            )
-                elif path_delays.ndim == 1:
-                    features[0, RTFeatureIndex.MEAN_PATH_DELAY] = float(np.mean(path_delays))
-                    nonzero_d = path_delays[path_delays > 0]
-                    if len(nonzero_d) > 1:
-                        features[0, RTFeatureIndex.DELAY_RANGE] = float(
-                            np.max(nonzero_d) - np.min(nonzero_d)
-                        )
-        
-        # Feature 4: num_paths
-        if 'num_paths' in rt_data and rt_data['num_paths'] is not None:
-            num_paths = np.asarray(rt_data['num_paths'])
-            if num_paths.size > 0:
-                n = min(len(num_paths.flatten()), n_cells)
-                features[:n, RTFeatureIndex.NUM_PATHS] = torch.from_numpy(
-                    num_paths.flatten()[:n].astype(np.float32)
-                )
         
         # Feature 5: rms_delay_spread
         if 'rms_delay_spread' in rt_data and rt_data['rms_delay_spread'] is not None:
@@ -688,9 +719,12 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             features[:n_cells, :len(mean)] = (features[:n_cells, :len(mean)] - mean) / std
         
         return features
-    
+
     def _build_phy_features(self, phy_data: dict, max_cells: int) -> torch.Tensor:
-        """Build PHY feature tensor [max_cells, 8]."""
+        """Build PHY feature tensor [max_cells, 8].
+
+        Note: l1_rsrp is intentionally excluded from the feature vector.
+        """
         features = torch.zeros(max_cells, 8)
         
         if not phy_data:
@@ -726,8 +760,16 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                 n = min(len(data), n_cells)
                 features[:n, feature_idx] = torch.from_numpy(data[:n].astype(np.float32))
             else:  # ndim >= 2
-                n = min(data.shape[0], n_cells)
-                features[:n, feature_idx] = torch.from_numpy(np.mean(data[:n], axis=-1).astype(np.float32))
+                # Prefer first RX dimension to preserve per-cell values.
+                row = data[0]
+                if row.ndim == 1:
+                    n = min(len(row), n_cells)
+                    features[:n, feature_idx] = torch.from_numpy(row[:n].astype(np.float32))
+                else:
+                    n = min(row.shape[0], n_cells)
+                    features[:n, feature_idx] = torch.from_numpy(
+                        np.mean(row[:n], axis=-1).astype(np.float32)
+                    )
         
         # Aggregate multi-dimensional features
         if 'rsrp' in phy_data and phy_data['rsrp'] is not None:
@@ -742,16 +784,6 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             safe_extract(phy_data['ri'], PHYFeatureIndex.RI)
         if 'pmi' in phy_data and phy_data['pmi'] is not None:
             safe_extract(phy_data['pmi'], PHYFeatureIndex.PMI)
-        if 'l1_rsrp_beams' in phy_data and phy_data['l1_rsrp_beams'] is not None:
-            l1_rsrp = np.asarray(phy_data['l1_rsrp_beams'])
-            if l1_rsrp.size > 0:
-                if l1_rsrp.ndim >= 2:
-                    n = min(l1_rsrp.shape[0], n_cells)
-                    features[:n, PHYFeatureIndex.L1_RSRP] = torch.from_numpy(
-                        np.max(l1_rsrp[:n], axis=-1).astype(np.float32)
-                    )
-                elif l1_rsrp.ndim == 1:
-                    features[0, PHYFeatureIndex.L1_RSRP] = float(np.max(l1_rsrp))
         if 'best_beam_ids' in phy_data and phy_data['best_beam_ids'] is not None:
             beam_ids = np.asarray(phy_data['best_beam_ids'])
             if beam_ids.size > 0:
@@ -879,6 +911,10 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
             logger.warning(f"No OSM map found for scene: {scene_id}")
             osm_map = torch.zeros(5, 256, 256)
 
+        # Normalize radio map channels if requested.
+        if self.normalize_maps:
+            radio_map = self._normalize_radio_map(radio_map)
+
         if self.osm_channels is not None:
             osm_map = osm_map[self.osm_channels]
 
@@ -889,6 +925,28 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
                 self._map_cache.popitem(last=False)
 
         return radio_map, osm_map
+
+    def _normalize_radio_map(self, radio_map: torch.Tensor) -> torch.Tensor:
+        """Per-channel normalization with optional log compression for throughput."""
+        if radio_map.dim() != 3:
+            return radio_map
+
+        radio_map = radio_map.clone()
+
+        # Log-compress throughput channel if present (channel 4).
+        if self.map_log_throughput and radio_map.shape[0] >= 5:
+            throughput = radio_map[4]
+            throughput = torch.clamp(throughput, min=0.0)
+            radio_map[4] = torch.log1p(throughput + self.map_log_epsilon)
+
+        if self.map_norm_mode == "zscore":
+            flat = radio_map.view(radio_map.shape[0], -1)
+            mean = flat.mean(dim=1, keepdim=True)
+            std = flat.std(dim=1, keepdim=True)
+            std = torch.where(std < 1e-6, torch.ones_like(std), std)
+            radio_map = (radio_map - mean.view(-1, 1, 1)) / std.view(-1, 1, 1)
+
+        return radio_map
 
     def _get_radio_map(self, scene_id: str) -> torch.Tensor:
         """Get radio map for scene [5, 256, 256]."""
@@ -908,7 +966,7 @@ class LMDBRadioLocalizationDataset(torch.utils.data.Dataset):
         # Clamp to valid range
         norm_pos = torch.clamp(norm_pos, 0.0, 0.999)
         
-        # Convert to grid indices
+        # Convert to grid indices (bottom-left origin)
         grid_x = int(norm_pos[0] * grid_size)
         grid_y = int(norm_pos[1] * grid_size)
         

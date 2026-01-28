@@ -29,11 +29,11 @@ setup:
 
 quick-test:
 	@echo "Running quick end-to-end test..."
-	python run_pipeline.py --quick-test
+	. venv/bin/activate && python run_pipeline.py --quick-test
 
 pipeline:
 	@echo "Running full pipeline..."
-	python run_pipeline.py --bbox -105.28 40.014 -105.27 40.020 --num-tx 5 --epochs 50
+	. venv/bin/activate && python run_pipeline.py --config configs/pipeline.yaml
 
 scenes:
 	@echo "Generating scenes..."

@@ -144,14 +144,13 @@ class TestTrainingGPUUtilization:
     def test_training_uses_gpu(self, gpu_monitor, tmp_path):
         """Test that model training effectively uses GPU."""
         from src.training import UELocalizationLightning
-        from src.datasets.radio_dataset import RadioLocalizationDataset
         import pytorch_lightning as pl
         
         # Create minimal training config
         config_path = tmp_path / "test_config.yaml"
         config = {
             'dataset': {
-                'train_zarr_paths': ['data/processed/test_dataset.zarr'],  # Mock path
+                'train_lmdb_paths': ['data/processed/test_dataset.lmdb'],  # Mock path
                 'map_resolution': 1.0,
                 'scene_extent': 512.0,
                 'normalize_features': True,
@@ -204,7 +203,7 @@ class TestTrainingGPUUtilization:
                     'grid_size': 32,
                 },
                 'fine_head': {
-                    'num_gaussians': 3,
+                    'top_k': 5,
                 },
             },
         }

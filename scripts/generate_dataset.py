@@ -34,7 +34,7 @@ def main():
     parser.add_argument('--scene-dir', type=Path, required=True,
                        help='Directory containing M1 scenes (scene_*/)')
     parser.add_argument('--output-dir', type=Path, default=Path('data/synthetic'),
-                       help='Output directory for Zarr dataset')
+                       help='Output directory for LMDB dataset')
     parser.add_argument('--config', type=Path,
                        help='YAML configuration file (overrides CLI args)')
     
@@ -86,13 +86,7 @@ def main():
     parser.add_argument('--disable-quantization', action='store_true',
                        help='Disable 3GPP quantization (floating point)')
     
-    # Storage
-    parser.add_argument('--chunk-size', type=int, default=100,
-                       help='Zarr chunk size (samples per chunk)')
-    parser.add_argument('--compression', choices=['blosc', 'gzip', 'lz4', 'none'],
-                       default='blosc', help='Compression algorithm')
-    parser.add_argument('--compression-level', type=int, default=5,
-                       help='Compression level (1-9)')
+    # Storage (LMDB)
     
     args = parser.parse_args()
     
@@ -125,7 +119,6 @@ def main():
             },
             quantization_enabled=not args.disable_quantization,
             output_dir=args.output_dir,
-            zarr_chunk_size=args.chunk_size,
         )
     
     # Validate scene directory
@@ -165,25 +158,10 @@ def main():
             # Split datasets created
             for split_name, path in output_paths.items():
                 logger.info(f"  {split_name.capitalize()}: {path}")
-                
-                # Print split statistics
-                stats = generator.zarr_writer.get_stats() if hasattr(generator, 'zarr_writer') else None
-                if not stats:
-                    # Try to get stats from the zarr file
-                    import zarr
-                    try:
-                        store = zarr.open(str(path), mode='r')
-                        if 'positions' in store and 'ue_x' in store['positions']:
-                            num_samples = len(store['positions/ue_x'])
-                            logger.info(f"    Samples: {num_samples}")
-                    except:
-                        pass
         else:
-            # Single dataset (legacy)
+            # Single dataset
             logger.info(f"  Output: {output_paths}")
-            stats = generator.zarr_writer.get_stats()
-            logger.info(f"  Total samples: {stats['num_samples']}")
-            logger.info(f"  Total scenes: {stats['num_scenes']}")
+            logger.info("  Total samples: (see LMDB metadata)")
         
         return 0
         

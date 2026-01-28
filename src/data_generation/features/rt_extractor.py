@@ -32,13 +32,15 @@ class RTFeatureExtractor:
                  bandwidth_hz: float = 100e6,
                  compute_k_factor: bool = False,
                  max_stored_paths: int = 256,
-                 max_stored_sites: int = 16):
+                 max_stored_sites: int = 16,
+                 allow_mock_fallback: bool = True):
         self.carrier_frequency_hz = carrier_frequency_hz
         self.bandwidth_hz = bandwidth_hz
         self.compute_k_factor = compute_k_factor
         
         self.max_stored_paths = max_stored_paths
         self.max_stored_sites = max_stored_sites
+        self.allow_mock_fallback = allow_mock_fallback
         self.logger = logging.getLogger(__name__)
         
         logger.info(f"RTFeatureExtractor initialized: fc={carrier_frequency_hz/1e9:.2f} GHz, "
@@ -49,6 +51,8 @@ class RTFeatureExtractor:
         Extract RT features using unified TensorOps.
         """
         if not SIONNA_AVAILABLE:
+            if not self.allow_mock_fallback:
+                raise RuntimeError("Sionna not available and mock fallback is disabled.")
             logger.warning("Sionna not available - returning mock RT features")
             return self._extract_mock(batch_size=batch_size or 10, num_rx=num_rx or 4)
         
@@ -60,6 +64,8 @@ class RTFeatureExtractor:
             logger.error(f"Failed to extract RT features from Sionna paths: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            if not self.allow_mock_fallback:
+                raise
             logger.warning("Falling back to mock RT features")
             return self._extract_mock(batch_size=batch_size or 10, num_rx=num_rx or 4)
 
@@ -71,21 +77,32 @@ class RTFeatureExtractor:
             if isinstance(x, tuple) and len(x) == 2:
                 # Assuming (real, imag) tuple
                 r, i = x
+                if hasattr(r, 'tf'):
+                    r = r.tf()
+                if hasattr(i, 'tf'):
+                    i = i.tf()
                 return ops.complex(r, i)
+            if hasattr(x, 'tf'):
+                return x.tf()
+            return x
+
+        def _ensure_real(x):
+            if hasattr(x, 'tf'):
+                return x.tf()
             return x
 
         # 1. Get Raw Data
         raw_a = _ensure_complex(paths.a)
-        raw_tau = paths.tau
+        raw_tau = _ensure_real(paths.tau)
         
         # Angles helpers
-        phi_r = paths.phi_r
-        theta_r = paths.theta_r
-        phi_t = paths.phi_t
-        theta_t = paths.theta_t
+        phi_r = _ensure_real(paths.phi_r)
+        theta_r = _ensure_real(paths.theta_r)
+        phi_t = _ensure_real(paths.phi_t)
+        theta_t = _ensure_real(paths.theta_t)
         
         # Doppler
-        doppler = getattr(paths, 'doppler', None)
+        doppler = _ensure_real(getattr(paths, 'doppler', None))
         
         # 2. Magnitude
         mag_a = ops.abs(raw_a)
@@ -209,6 +226,25 @@ class RTFeatureExtractor:
         ang_t_el = _enforce_shape(ang_t_el)
         dop_fin = _enforce_shape(dop_fin)
 
+        # Sanitize NaN/Inf values from RT to avoid propagating invalid stats.
+        if ops.is_tensor(mag_a_fin):
+            import tensorflow as tf
+            mag_a_fin = tf.where(tf.math.is_finite(mag_a_fin), mag_a_fin, tf.zeros_like(mag_a_fin))
+            tau_fin = tf.where(tf.math.is_finite(tau_fin), tau_fin, tf.zeros_like(tau_fin))
+            ang_r_az = tf.where(tf.math.is_finite(ang_r_az), ang_r_az, tf.zeros_like(ang_r_az))
+            ang_r_el = tf.where(tf.math.is_finite(ang_r_el), ang_r_el, tf.zeros_like(ang_r_el))
+            ang_t_az = tf.where(tf.math.is_finite(ang_t_az), ang_t_az, tf.zeros_like(ang_t_az))
+            ang_t_el = tf.where(tf.math.is_finite(ang_t_el), ang_t_el, tf.zeros_like(ang_t_el))
+            dop_fin = tf.where(tf.math.is_finite(dop_fin), dop_fin, tf.zeros_like(dop_fin))
+        else:
+            mag_a_fin = np.nan_to_num(mag_a_fin, nan=0.0, posinf=0.0, neginf=0.0)
+            tau_fin = np.nan_to_num(tau_fin, nan=0.0, posinf=0.0, neginf=0.0)
+            ang_r_az = np.nan_to_num(ang_r_az, nan=0.0, posinf=0.0, neginf=0.0)
+            ang_r_el = np.nan_to_num(ang_r_el, nan=0.0, posinf=0.0, neginf=0.0)
+            ang_t_az = np.nan_to_num(ang_t_az, nan=0.0, posinf=0.0, neginf=0.0)
+            ang_t_el = np.nan_to_num(ang_t_el, nan=0.0, posinf=0.0, neginf=0.0)
+            dop_fin = np.nan_to_num(dop_fin, nan=0.0, posinf=0.0, neginf=0.0)
+
         # 6. Aggregate Stats
         
         # RMS Delay Spread
@@ -286,6 +322,7 @@ class RTFeatureExtractor:
              c = tf.cos(az_angles)
              s = tf.sin(az_angles)
              phasors = tf.complex(c, s)
+             weights = tf.cast(weights, tf.complex64)
         else:
              phasors = np.exp(1j * ops.to_numpy(az_angles))
              

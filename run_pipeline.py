@@ -38,6 +38,28 @@ for name in ['matplotlib', 'PIL', 'tensorflow', 'numba']:
     logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _configure_tensorflow_memory() -> None:
+    """Prevent TensorFlow from pre-allocating all GPU memory."""
+    os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+
+
+def _configure_xla_cuda_flags() -> None:
+    """Set XLA libdevice path when CUDA toolkit is provided via pip."""
+    if "--xla_gpu_cuda_data_dir=" in os.environ.get("XLA_FLAGS", ""):
+        return
+
+    py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    cuda_root = Path(sys.prefix) / "lib" / py_ver / "site-packages" / "nvidia" / "cuda_nvcc"
+    libdevice = cuda_root / "nvvm" / "libdevice" / "libdevice.10.bc"
+    if not libdevice.exists():
+        return
+
+    flag = f"--xla_gpu_cuda_data_dir={cuda_root}"
+    existing = os.environ.get("XLA_FLAGS", "").strip()
+    os.environ["XLA_FLAGS"] = f"{existing} {flag}".strip() if existing else flag
+    logger.info(f"Set XLA_FLAGS for CUDA libdevice: {cuda_root}")
+
+
 class Pipeline:
     """Simplified pipeline with direct function calls."""
     
@@ -49,12 +71,16 @@ class Pipeline:
         # Derived paths (convention over configuration)
         self.output_dir = Path(self.config.experiment.output_dir) / self.config.experiment.name
         
-        # Use existing scenes if available, otherwise create new
+        # Prefer scenes generated under the experiment output if they exist.
+        # Fall back to project data/scenes only when explicitly skipping scene generation.
         existing_scenes = self.project_root / "data" / "scenes"
-        if self.config.pipeline.skip_scenes and existing_scenes.exists():
+        output_scenes = self.output_dir / "scenes"
+        if output_scenes.exists():
+            self.scene_dir = output_scenes
+        elif self.config.pipeline.skip_scenes and existing_scenes.exists():
             self.scene_dir = existing_scenes
         else:
-            self.scene_dir = self.output_dir / "scenes"
+            self.scene_dir = output_scenes
             
         self.data_dir = self.output_dir / "data"
         self.checkpoint_dir = self.output_dir / "checkpoints"
@@ -78,6 +104,31 @@ class Pipeline:
     def log(self, msg: str, level: str = "info"):
         """Simple logging."""
         getattr(logger, level)(msg)
+
+    def _load_comet_env(self) -> None:
+        """Load COMET_* vars from .comet.config if not already set."""
+        if os.environ.get("COMET_API_KEY"):
+            return
+
+        config_path = self.project_root / ".comet.config"
+        if not config_path.exists():
+            return
+
+        for line in config_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or not line.startswith("export "):
+                continue
+            entry = line[len("export "):].strip()
+            if "=" not in entry:
+                continue
+            key, value = entry.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and value and key not in os.environ:
+                os.environ[key] = value
+
+        if os.environ.get("COMET_API_KEY"):
+            self.log("Loaded Comet configuration from .comet.config")
     
     def run(self) -> int:
         """Execute the pipeline."""
@@ -118,6 +169,9 @@ class Pipeline:
         scene_config = self.config.scenes
         cities = scene_config.cities
         tx_variations = scene_config.tx_variations
+        osm_server_addr = os.environ.get("OVERPASS_URL")
+        if osm_server_addr:
+            self.log(f"Using custom Overpass URL: {osm_server_addr}")
         
         total_scenes = len(cities) * tx_variations
         self.log(f"Generating {len(cities)} cities × {tx_variations} TX variations = {total_scenes} scenes")
@@ -126,6 +180,20 @@ class Pipeline:
             city_name = city.name
             bbox = city.bbox
             split = city.split  # Track which split this belongs to
+            bbox_scale = getattr(scene_config, "bbox_scale", 1.0)
+            if bbox_scale and bbox_scale != 1.0:
+                west, south, east, north = bbox
+                center_lon = (west + east) / 2.0
+                center_lat = (south + north) / 2.0
+                width = (east - west) * bbox_scale
+                height = (north - south) * bbox_scale
+                bbox = [
+                    center_lon - width / 2.0,
+                    center_lat - height / 2.0,
+                    center_lon + width / 2.0,
+                    center_lat + height / 2.0,
+                ]
+                self.log(f"Applied bbox_scale={bbox_scale:.2f} for {city_name}: {bbox}")
             
             # Generate multiple TX variations per city
             for var_idx in range(tx_variations):
@@ -139,7 +207,6 @@ class Pipeline:
                 
                 # Initialize generator with new random seed for each variation
                 generator = SceneGenerator(
-                    scene_builder_path=str(self.project_root / "src" / "scene_builder"),
                     site_placer=SitePlacer(
                         strategy=scene_config.site_strategy,
                         seed=hash(f"{city_name}_{var_idx}") % (2**32)  # Reproducible random seed
@@ -159,7 +226,13 @@ class Pipeline:
                 result = generator.generate(
                     polygon_points=polygon,
                     scene_id=scene_id,
-                    site_config={'num_tx': scene_config.num_tx}
+                    site_config={'num_tx': scene_config.num_tx},
+                    terrain_config={
+                        'use_lidar': getattr(scene_config, 'use_lidar', True),
+                        'use_dem': getattr(scene_config, 'use_dem', False),
+                        'hag_tiff_path': getattr(scene_config, 'hag_tiff_path', None),
+                    },
+                    osm_server_addr=osm_server_addr
                 )
                 
                 # Store split metadata for later use in data generation
@@ -190,9 +263,15 @@ class Pipeline:
             tx_power_dbm=data_config.tx_power_dbm,
             noise_figure_db=data_config.noise_figure_db,
             use_mock_mode=data_config.use_mock_mode,
+            allow_mock_fallback=data_config.allow_mock_fallback,
+            require_sionna=data_config.require_sionna,
+            require_cfr=data_config.require_cfr,
             max_depth=data_config.max_depth,
             num_samples=data_config.num_samples,
             enable_diffraction=data_config.enable_diffraction,
+            enable_diffuse_reflection=data_config.enable_diffuse_reflection,
+            enable_edge_diffraction=data_config.enable_edge_diffraction,
+            rt_batch_size=data_config.rt_batch_size,
             num_ue_per_tile=data_config.num_ue_per_tile,
             ue_height_range=tuple(data_config.ue_height_range),
             ue_velocity_range=tuple(data_config.ue_velocity_range),
@@ -202,13 +281,17 @@ class Pipeline:
             enable_beam_management=data_config.enable_beam_management,
             num_beams=data_config.num_beams,
             max_neighbors=data_config.max_neighbors,
+            cfr_num_subcarriers=data_config.cfr_num_subcarriers,
             measurement_dropout_rates=data_config.measurement_dropout_rates,
             measurement_dropout_seed=data_config.measurement_dropout_seed,
             quantization_enabled=data_config.quantization_enabled,
             output_dir=self.data_dir,
-            zarr_chunk_size=data_config.zarr_chunk_size,
             max_stored_paths=data_config.max_stored_paths,
             max_stored_sites=data_config.max_stored_sites,
+            enforce_unique_ue_positions=data_config.enforce_unique_ue_positions,
+            min_ue_separation_m=data_config.min_ue_separation_m,
+            ue_sampling_margin_m=data_config.ue_sampling_margin_m,
+            rt_diagnostics_max=data_config.rt_diagnostics_max,
         )
         
         # Generate dataset
@@ -259,18 +342,10 @@ class Pipeline:
         self.log(f"  Val: {self.val_path if self.val_path else 'None (will use train for validation)'}")
         self.log(f"  Test: {self.test_path}")
         
-        # Determine if using LMDB or Zarr based on file extension
-        is_lmdb = str(self.train_path).endswith('.lmdb')
-
         dataset_cfg = self.config.dataset
-        if is_lmdb:
-            dataset_cfg.train_lmdb_paths = [str(self.train_path)]
-            dataset_cfg.val_lmdb_paths = [str(self.val_path)] if self.val_path else []
-            dataset_cfg.test_lmdb_paths = [str(self.test_path)] if self.test_path else []
-        else:
-            dataset_cfg.train_zarr_paths = [str(self.train_path)]
-            dataset_cfg.val_zarr_paths = [str(self.val_path)] if self.val_path else []
-            dataset_cfg.test_zarr_paths = [str(self.test_path)] if self.test_path else []
+        dataset_cfg.train_lmdb_paths = [str(self.train_path)]
+        dataset_cfg.val_lmdb_paths = [str(self.val_path)] if self.val_path else []
+        dataset_cfg.test_lmdb_paths = [str(self.test_path)] if self.test_path else []
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.config.infrastructure.checkpoint.dirpath = str(self.checkpoint_dir)
@@ -283,6 +358,7 @@ class Pipeline:
         from src.training import UELocalizationLightning
         import pytorch_lightning as pl
         from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+        from pytorch_lightning.loggers import WandbLogger, CometLogger
         
         model = UELocalizationLightning(str(config_path))
         
@@ -305,6 +381,40 @@ class Pipeline:
             )
         ]
         
+        loggers = []
+        logging_cfg = self.config.infrastructure.logging
+
+        if logging_cfg.use_comet:
+            self._load_comet_env()
+            try:
+                import comet_ml  # noqa: F401
+            except ImportError:
+                pass
+            comet_api_key = os.environ.get("COMET_API_KEY")
+            if comet_api_key:
+                project_name = os.environ.get("COMET_PROJECT_NAME") or logging_cfg.project
+                comet_logger = CometLogger(
+                    api_key=comet_api_key,
+                    project=project_name,
+                    workspace=os.environ.get("COMET_WORKSPACE"),
+                )
+                run_name = f"{self.config.experiment.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                comet_logger.experiment.set_name(run_name)
+                loggers.append(comet_logger)
+                self.log(f"Comet ML logging enabled: {project_name}")
+            else:
+                self.log("Comet ML enabled but COMET_API_KEY is not set.", level="warning")
+
+        if logging_cfg.use_wandb:
+            wandb_logger = WandbLogger(
+                project=logging_cfg.project,
+                name=self.config.experiment.name,
+                log_model=False,
+            )
+            wandb_logger.experiment.config.update(OmegaConf.to_container(self.config, resolve=True))
+            loggers.append(wandb_logger)
+            self.log(f"WandB logging enabled: {logging_cfg.project}")
+
         trainer = pl.Trainer(
             max_epochs=self.config.training.num_epochs,
             accelerator=self.config.infrastructure.accelerator,
@@ -312,7 +422,8 @@ class Pipeline:
             precision=self.config.infrastructure.precision,
             callbacks=callbacks,
             enable_progress_bar=True,
-            log_every_n_steps=self.config.infrastructure.logging.log_every_n_steps
+            log_every_n_steps=self.config.infrastructure.logging.log_every_n_steps,
+            logger=loggers if loggers else False
         )
         
         self.log(f"Training for {self.config.training.num_epochs} epochs...")
@@ -379,9 +490,15 @@ def main():
     # Apply overrides
     if args.name:
         config.experiment.name = args.name
-    config.pipeline.skip_scenes = args.skip_scenes
-    config.pipeline.skip_data = args.skip_data
-    config.pipeline.skip_training = args.skip_training
+    if args.skip_scenes:
+        config.pipeline.skip_scenes = True
+    if args.skip_data:
+        config.pipeline.skip_data = True
+    if args.skip_training:
+        config.pipeline.skip_training = True
+
+    _configure_tensorflow_memory()
+    _configure_xla_cuda_flags()
     
     # Run pipeline
     pipeline = Pipeline(config)

@@ -26,14 +26,6 @@ try:
 except ImportError:
     LMDB_AVAILABLE = False
 
-# Zarr writer (DEPRECATED - kept for backward compatibility only)
-ZARR_AVAILABLE = False
-# Uncomment to enable legacy Zarr support:
-# try:
-#     from .zarr_writer import ZarrDatasetWriter
-#     ZARR_AVAILABLE = True
-# except ImportError:
-#     ZARR_AVAILABLE = False
 
 # Build __all__ list
 _base_exports = [
@@ -54,7 +46,4 @@ _base_exports = [
 
 if LMDB_AVAILABLE:
     _base_exports.append("LMDBDatasetWriter")
-if ZARR_AVAILABLE:
-    _base_exports.append("ZarrDatasetWriter")  # Deprecated
-
 __all__ = _base_exports

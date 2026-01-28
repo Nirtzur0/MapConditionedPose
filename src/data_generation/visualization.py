@@ -76,50 +76,8 @@ def render_scene_3d(
         # Enforce minimum dimension to prevent camera from being too close/grounded
         max_dim = max(width, height, 100.0)
         ground_z = z_min
-        
-        # --- View 1: Top-Down (Disabled) ---
-        # User requested only isometric views
-        # dist_z = max_dim * 1.5 
-        # cam_height = ground_z + dist_z
-        # 
-        # cam_top = Camera(
-        #     position=[float(cx + 0.1), float(cy + 0.1), float(cam_height)],
-        #     look_at=[float(cx), float(cy), float(ground_z)], 
-        # )
-        
-        # Render with optional radio map overlay (Sionna native)
-        # Only attempt if radio_map is a Sionna RadioMap object, not a numpy array
-        # if radio_map is not None and not isinstance(radio_map, np.ndarray):
-            # logger.info("Rendering Top-Down with radio map coverage (Sionna native)...")
-            # try:
-            #     fig = scene.render(
-            #         camera=cam_top,
-            #         radio_map=radio_map,
-            #         rm_metric='path_gain',
-            #         rm_db_scale=True,
-            #         rm_vmin=-120,
-            #         rm_vmax=-50,
-            #         rm_show_color_bar=True,
-            #         show_devices=True,
-            #         resolution=(1024, 768)
-            #     )
-            #     out_path_coverage = viz_dir / f"{safe_scene_id}_top_down_coverage.png"
-            #     fig.savefig(out_path_coverage, dpi=150, bbox_inches='tight')
-            #     plt.close(fig)
-            #     logger.info(f"Saved coverage map: {out_path_coverage}")
-            # except Exception as e:
-            #     logger.warning(f"Sionna native coverage render failed: {e}")
-        
-        # Plain render (no radio map)
-        # out_path_top = viz_dir / f"{safe_scene_id}_top_down.png"
-        # logger.info(f"Rendering Top-Down plain to {out_path_top}")
-        # scene.render_to_file(
-        #     camera=cam_top,
-        #     filename=str(out_path_top),
-        #     resolution=(1024, 768)
-        # )
-        
-        # --- View 2: Isometric ---
+
+        # --- Isometric ---
         iso_dist = max_dim * 0.8
         cam_iso_z = ground_z + (max_dim * 0.6)
         
@@ -296,9 +254,91 @@ def save_map_visualizations(scene_id: str, radio_map: np.ndarray, osm_map: np.nd
         plt.close(fig2)
         
         logger.info(f"Saved detailed map visualization: {detailed_path}")
+
+        # 3D OSM layer visualization (height + overlays)
+        try:
+            _save_osm_layers_3d(osm_map, scene_id, viz_dir)
+        except Exception as e:
+            logger.warning(f"Failed to save 3D OSM visualization for {scene_id}: {e}")
         
     except Exception as e:
         logger.warning(f"Failed to save map visualization for {scene_id}: {e}")
+
+
+def _downsample_grid(data: np.ndarray, max_size: int = 128) -> Tuple[np.ndarray, int]:
+    """Downsample 2D grid by striding to keep visualization lightweight."""
+    if data.ndim != 2:
+        raise ValueError("Expected 2D array for downsampling.")
+    h, w = data.shape
+    stride = max(1, int(np.ceil(max(h, w) / max_size)))
+    return data[::stride, ::stride], stride
+
+
+def _save_osm_layers_3d(osm_map: np.ndarray, scene_id: str, output_dir: Path) -> None:
+    """Render a 3D plot of OSM layers: height surface + overlays."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    if osm_map.ndim != 3 or osm_map.shape[0] == 0:
+        return
+
+    safe_scene_id = scene_id.replace("/", "_").replace("\\", "_")
+    height = osm_map[0]
+    footprint = osm_map[2] if osm_map.shape[0] > 2 else np.zeros_like(height)
+    road = osm_map[3] if osm_map.shape[0] > 3 else np.zeros_like(height)
+    terrain = osm_map[4] if osm_map.shape[0] > 4 else np.zeros_like(height)
+    material = osm_map[1] if osm_map.shape[0] > 1 else np.zeros_like(height)
+
+    height_ds, stride = _downsample_grid(height, max_size=128)
+    footprint_ds = footprint[::stride, ::stride]
+    road_ds = road[::stride, ::stride]
+    terrain_ds = terrain[::stride, ::stride]
+    material_ds = material[::stride, ::stride]
+
+    h, w = height_ds.shape
+    xs, ys = np.meshgrid(np.arange(w), np.arange(h))
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    ax.plot_surface(
+        xs,
+        ys,
+        height_ds,
+        cmap='terrain',
+        linewidth=0,
+        antialiased=False,
+        alpha=0.9,
+    )
+
+    def _scatter_layer(mask, color, label, z_offset=1.0, max_points=4000):
+        mask = np.asarray(mask) > 0
+        if not np.any(mask):
+            return
+        coords = np.column_stack(np.nonzero(mask))
+        if coords.shape[0] > max_points:
+            idx = np.random.choice(coords.shape[0], size=max_points, replace=False)
+            coords = coords[idx]
+        ys_pts, xs_pts = coords[:, 0], coords[:, 1]
+        zs = height_ds[ys_pts, xs_pts] + z_offset
+        ax.scatter(xs_pts, ys_pts, zs, c=color, s=4, alpha=0.7, label=label)
+
+    _scatter_layer(footprint_ds, color='red', label='Buildings', z_offset=2.0)
+    _scatter_layer(road_ds, color='black', label='Roads', z_offset=1.0)
+    _scatter_layer(terrain_ds, color='green', label='Terrain', z_offset=0.5)
+    _scatter_layer(material_ds > 0, color='blue', label='Materials', z_offset=1.5)
+
+    ax.set_title(f"OSM Layers (3D) - {scene_id}")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Height")
+    ax.legend(loc='upper right')
+
+    output_path = output_dir / f"{safe_scene_id}_osm_layers_3d.png"
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 
 if __name__ == "__main__":

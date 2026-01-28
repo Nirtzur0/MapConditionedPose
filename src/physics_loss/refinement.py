@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import logging
 
 from .core import compute_physics_loss
+from .differentiable_lookup import differentiable_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -35,27 +36,27 @@ class RefineConfig:
     # >1.0 softens, <1.0 sharpens.
     coarse_logit_temperature: float = 1.0
 
-    # Scale factor for fine-head variances (uncertainty calibration).
-    fine_variance_scale: float = 1.0
-
-    # Reference sigma for confidence conversion.
-    # If None, uses fine_sigma_ref_ratio * max(map_extent).
-    fine_sigma_ref: Optional[float] = None
-
-    # Ratio for deriving sigma reference from map extent.
-    fine_sigma_ref_ratio: float = 0.05
+    # Kernel width for hypothesis density (as fraction of map extent).
+    # Used when mixture_params are provided without per-candidate variances.
+    candidate_sigma_ratio: float = 0.05
 
     # Combine confidence sources: "min", "product", "coarse", "fine".
     confidence_combine: str = "min"
 
-    # Minimum variance to avoid degenerate Gaussians.
-    min_variance: float = 1e-6
     
     # Refine only low confidence predictions
     min_confidence_threshold: Optional[float] = 0.6
     
     # Clip refined positions to map extent
     clip_to_extent: bool = True
+
+    # Limit how far refinement can move from the initial prediction.
+    # Ratio is relative to the maximum map extent.
+    max_displacement_ratio: Optional[float] = 0.05
+
+    # Only accept refinement if total energy improves.
+    require_improvement: bool = True
+    energy_tolerance: float = 1e-6
     
     # Map extent for clipping (x_min, y_min, x_max, y_max)
     map_extent: Tuple[float, float, float, float] = (0.0, 0.0, 512.0, 512.0)
@@ -72,24 +73,11 @@ def _apply_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor
     return logits / temperature
 
 
-def _calibrate_variances(variances: torch.Tensor, config: RefineConfig) -> torch.Tensor:
-    variances = variances * config.fine_variance_scale
-    variances = torch.nan_to_num(
-        variances,
-        nan=config.min_variance,
-        posinf=config.min_variance,
-        neginf=config.min_variance,
-    )
-    return torch.clamp(variances, min=config.min_variance)
-
-
-def _resolve_sigma_ref(config: RefineConfig) -> float:
-    if config.fine_sigma_ref is not None and config.fine_sigma_ref > 0:
-        return float(config.fine_sigma_ref)
+def _resolve_candidate_sigma(config: RefineConfig) -> float:
     x_min, y_min, x_max, y_max = config.map_extent
     extent = max(abs(x_max - x_min), abs(y_max - y_min))
-    sigma_ref = extent * config.fine_sigma_ref_ratio
-    return max(sigma_ref, config.min_variance ** 0.5)
+    sigma = extent * config.candidate_sigma_ratio
+    return max(float(sigma), 1e-3)
 
 
 def _combine_confidence(
@@ -122,9 +110,6 @@ def _calibrate_mixture_params(
     logits = calibrated.get('logits')
     if logits is not None:
         calibrated['logits'] = _apply_temperature(logits, config.coarse_logit_temperature)
-    variances = calibrated.get('vars')
-    if variances is not None:
-        calibrated['vars'] = _calibrate_variances(variances, config)
     return calibrated
 
 
@@ -133,39 +118,28 @@ def _compute_confidence(
     config: RefineConfig,
 ) -> Optional[torch.Tensor]:
     logits = mixture_params.get('logits')
-    variances = mixture_params.get('vars')
-    coarse_conf = None
-    fine_conf = None
-    probs = None
-    if logits is not None:
-        probs = torch.softmax(logits, dim=-1)
-        coarse_conf = probs.max(dim=-1).values
-    if variances is not None:
-        sigma = torch.sqrt(variances)
-        sigma_mean = sigma.mean(dim=-1)
-        if probs is not None and probs.shape == sigma_mean.shape:
-            sigma_weighted = (probs * sigma_mean).sum(dim=-1)
-        else:
-            sigma_weighted = sigma_mean.min(dim=-1).values
-        sigma_ref = _resolve_sigma_ref(config)
-        fine_conf = torch.exp(-sigma_weighted / sigma_ref)
-    return _combine_confidence(coarse_conf, fine_conf, config.confidence_combine)
+    if logits is None:
+        return None
+    probs = torch.softmax(logits, dim=-1)
+    coarse_conf = probs.max(dim=-1).values
+    return _combine_confidence(coarse_conf, None, config.confidence_combine)
 
 
 def compute_density_nll(
     xy: torch.Tensor,
     mixture_params: Dict[str, torch.Tensor],
+    candidate_sigma: float,
 ) -> torch.Tensor:
     """
-    Compute negative log likelihood of position xy under the Gaussian Mixture.
-    
+    Compute negative log likelihood of position xy under a hypothesis density.
+
     Args:
         xy: (batch, 2) candidate positions
         mixture_params: Dictionary with:
-            - logits: (batch, K) mixture weights (unnormalized log probs)
-            - means: (batch, K, 2) component means
-            - vars: (batch, K, 2) component variances
-            
+            - logits: (batch, K) hypothesis weights (unnormalized log probs)
+            - means: (batch, K, 2) hypothesis positions
+        candidate_sigma: Kernel width (scalar, in same units as xy)
+
     Returns:
         nll: (batch,) negative log likelihood
     """
@@ -173,18 +147,18 @@ def compute_density_nll(
     xy_expanded = xy.unsqueeze(1)
     
     means = mixture_params['means']  # [batch, K, 2]
-    variances = mixture_params['vars']  # [batch, K, 2]
     logits = mixture_params['logits']  # [batch, K]
     
     # LogSoftmax for weights
     # log_pi = log_softmax(logits)
     log_pi = torch.log_softmax(logits, dim=-1)
     
-    # Gaussian Log Likelihood
-    # log N(x; mu, sigma^2) = -0.5*log(2*pi*sigma^2) - 0.5*(x-mu)^2/sigma^2
-    # Sum over x,y dimensions for multivariate diagonal gaussian
+    # Isotropic Gaussian kernel around each hypothesis
+    sigma = torch.as_tensor(candidate_sigma, device=xy.device, dtype=xy.dtype)
+    sigma_sq = sigma ** 2
     residuals = xy_expanded - means
-    log_prob_dim = -0.5 * torch.log(2 * torch.pi * variances) - 0.5 * (residuals ** 2) / variances
+    log_norm = -0.5 * torch.log(2 * torch.pi * sigma_sq)
+    log_prob_dim = log_norm - 0.5 * (residuals ** 2) / sigma_sq
     log_prob_xy = log_prob_dim.sum(dim=-1)  # [batch, K]
     
     # Mixture Log Likelihood
@@ -204,17 +178,17 @@ def refine_position(
     """
     Refine predicted positions using gradient-based optimization on Energy function.
     
-    Energy E(y) = PhysicsLoss(y) + density_weight * NLL(y | network)
+    Energy E(y) = PhysicsLoss(y) + density_weight * NLL(y | hypothesis density)
     
     Args:
         initial_xy: (batch, 2) initial position estimates
         observed_features: (batch, C) observed radio features
         radio_maps: (batch, C, H, W) precomputed radio maps
         config: Refinement configuration
-        mixture_params: Optional params for density term (means, vars, logits)
+        mixture_params: Optional params for density term (means, logits)
         confidence: Optional confidence scores to mask refinement. If None and
             mixture_params are provided, confidence is derived from calibrated
-            logits/variances.
+            hypothesis weights.
             
     Returns:
         refined_xy: (batch, 2) refined positions
@@ -268,22 +242,63 @@ def refine_position(
     # Slice mixture params if available
     mix_opt = None
     if calibrated_mix is not None and config.density_weight > 0:
-        # Check if mixture_params has the expected structure
-        if isinstance(calibrated_mix, dict) and 'logits' in calibrated_mix:
-            # Convert boolean mask to indices for proper indexing
+        if isinstance(calibrated_mix, dict) and 'logits' in calibrated_mix and 'means' in calibrated_mix:
             refine_indices = torch.where(refine_mask)[0]
-            # Only index if the tensors are multi-dimensional
             if calibrated_mix['logits'].ndim > 1:
                 mix_opt = {
                     'logits': calibrated_mix['logits'][refine_indices],
                     'means': calibrated_mix['means'][refine_indices],
-                    'vars': calibrated_mix['vars'][refine_indices]
                 }
             else:
-                # If 1D, it's likely a single-sample case - don't index
                 mix_opt = calibrated_mix
     
+    candidate_sigma = _resolve_candidate_sigma(config)
     optimizer = torch.optim.Adam([xy_opt], lr=config.learning_rate)
+
+    def _per_sample_physics_loss(xy: torch.Tensor, obs: torch.Tensor, maps: torch.Tensor) -> torch.Tensor:
+        """Compute per-sample physics loss to gate refinement."""
+        sim = differentiable_lookup(
+            predicted_xy=xy,
+            radio_maps=maps,
+            map_extent=loss_fn.config.map_extent,
+            padding_mode=loss_fn.config.padding_mode,
+        )
+        if loss_fn.config.normalize_features:
+            obs_mean = obs.mean(dim=0, keepdim=True)
+            obs_std = obs.std(dim=0, keepdim=True, unbiased=False) + 1e-6
+            obs_norm = (obs - obs_mean) / obs_std
+            sim_norm = (sim - obs_mean) / obs_std
+        else:
+            obs_norm = obs
+            sim_norm = sim
+
+        residuals = obs_norm - sim_norm
+        if loss_fn.config.loss_type == 'mse':
+            feature_losses = residuals ** 2
+        elif loss_fn.config.loss_type == 'huber':
+            feature_losses = torch.nn.functional.huber_loss(
+                sim_norm,
+                obs_norm,
+                reduction='none',
+                delta=loss_fn.config.huber_delta,
+            )
+        else:
+            raise ValueError(f"Unknown loss_type: {loss_fn.config.loss_type}")
+
+        feature_names = list(loss_fn.config.channel_names)
+        weights = [loss_fn.config.feature_weights.get(name, 1.0) for name in feature_names]
+        weights_t = torch.tensor(weights, device=feature_losses.device, dtype=feature_losses.dtype)
+        if feature_losses.shape[1] != weights_t.shape[0]:
+            if feature_losses.shape[1] < weights_t.shape[0]:
+                weights_t = weights_t[:feature_losses.shape[1]]
+            else:
+                pad = torch.ones(
+                    feature_losses.shape[1] - weights_t.shape[0],
+                    device=feature_losses.device,
+                    dtype=feature_losses.dtype,
+                )
+                weights_t = torch.cat([weights_t, pad])
+        return (feature_losses * weights_t.unsqueeze(0)).sum(dim=1)
     
     initial_loss_phys = None
     
@@ -296,7 +311,7 @@ def refine_position(
         # 2. Density Term (Optional)
         loss_dens = torch.tensor(0.0, device=device)
         if mix_opt:
-            loss_dens = compute_density_nll(xy_opt, mix_opt).mean()
+            loss_dens = compute_density_nll(xy_opt, mix_opt, candidate_sigma).mean()
             
         # Total Energy
         total_loss = loss_phys + config.density_weight * loss_dens
@@ -306,6 +321,16 @@ def refine_position(
             
         total_loss.backward()
         optimizer.step()
+
+        if config.max_displacement_ratio is not None:
+            x_min, y_min, x_max, y_max = config.map_extent
+            max_extent = max(abs(x_max - x_min), abs(y_max - y_min))
+            max_disp = max_extent * float(config.max_displacement_ratio)
+            with torch.no_grad():
+                delta = xy_opt - initial_xy[refine_mask]
+                dist = torch.norm(delta, dim=1, keepdim=True)
+                scale = torch.clamp(max_disp / (dist + 1e-8), max=1.0)
+                xy_opt.copy_(initial_xy[refine_mask] + delta * scale)
         
         # Clip to extent if configured
         if config.clip_to_extent:
@@ -316,6 +341,30 @@ def refine_position(
             
     # Update outputs
     refined_xy[refine_mask] = xy_opt.detach()
+
+    num_reverted = 0
+    if config.require_improvement:
+        with torch.no_grad():
+            refine_indices = torch.where(refine_mask)[0]
+            init_phys = _per_sample_physics_loss(initial_xy[refine_mask], obs_opt, maps_opt)
+            ref_phys = _per_sample_physics_loss(refined_xy[refine_mask], obs_opt, maps_opt)
+            init_energy = init_phys.clone()
+            ref_energy = ref_phys.clone()
+            if mix_opt:
+                init_energy += config.density_weight * compute_density_nll(
+                    initial_xy[refine_mask],
+                    mix_opt,
+                    candidate_sigma,
+                )
+                ref_energy += config.density_weight * compute_density_nll(
+                    refined_xy[refine_mask],
+                    mix_opt,
+                    candidate_sigma,
+                )
+            worse = ref_energy > (init_energy + config.energy_tolerance)
+            if worse.any():
+                refined_xy[refine_indices[worse]] = initial_xy[refine_indices[worse]]
+                num_reverted = int(worse.sum().item())
     
     # Calculate distance moved
     distance_moved = torch.zeros(batch_size, device=device)
@@ -329,6 +378,7 @@ def refine_position(
         'loss_initial': initial_loss_phys or 0.0,
         'loss_final': final_loss_phys,
         'num_refined': num_refined,
+        'num_reverted': num_reverted,
         'distance_moved': distance_moved
     }
     if confidence is not None:

@@ -40,9 +40,10 @@ class TestDifferentiableLookup:
         
         xy_norm = normalize_coords(xy_meters, map_extent)
         
+        # Note: y-axis is inverted for grid_sample normalization.
         expected = torch.tensor([
-            [-1.0, -1.0],
-            [1.0, 1.0],
+            [-1.0, 1.0],
+            [1.0, -1.0],
             [0.0, 0.0],
         ])
         
@@ -73,11 +74,11 @@ class TestDifferentiableLookup:
         """Test batched lookup."""
         batch_size = 4
         num_features = 7
-        H, W = 512, 512
+        H, W = 128, 128
         
         radio_maps = torch.randn(batch_size, num_features, H, W)
-        predicted_xy = torch.rand(batch_size, 2) * 512.0  # Random positions
-        map_extent = (0.0, 0.0, 512.0, 512.0)
+        predicted_xy = torch.rand(batch_size, 2) * 128.0  # Random positions
+        map_extent = (0.0, 0.0, 128.0, 128.0)
         
         sampled = differentiable_lookup(predicted_xy, radio_maps, map_extent)
         
@@ -138,9 +139,9 @@ class TestPhysicsLoss:
         batch_size = 8
         num_features = 7
         
-        predicted_xy = torch.rand(batch_size, 2) * 512.0
+        predicted_xy = torch.rand(batch_size, 2) * 128.0
         observed_features = torch.randn(batch_size, num_features)
-        radio_maps = torch.randn(batch_size, num_features, 512, 512)
+        radio_maps = torch.randn(batch_size, num_features, 128, 128)
         
         loss = loss_fn(predicted_xy, observed_features, radio_maps)
         
@@ -174,9 +175,9 @@ class TestPhysicsLoss:
         config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)  # Disable normalization for single sample
         loss_fn = PhysicsLoss(config)
         
-        predicted_xy = torch.tensor([[100.0, 200.0]], requires_grad=True)
+        predicted_xy = torch.tensor([[25.0, 50.0]], requires_grad=True)
         observed_features = torch.randn(1, 7)
-        radio_maps = torch.randn(1, 7, 512, 512)
+        radio_maps = torch.randn(1, 7, 128, 128)
         
         loss = loss_fn(predicted_xy, observed_features, radio_maps)
         loss.backward()
@@ -190,9 +191,9 @@ class TestPhysicsLoss:
         config = PhysicsLossConfig(normalize_features=False, channel_names=channel_names)
         loss_fn = PhysicsLoss(config)
         
-        predicted_xy = torch.rand(4, 2) * 512.0
+        predicted_xy = torch.rand(4, 2) * 128.0
         observed_features = torch.randn(4, 7)
-        radio_maps = torch.randn(4, 7, 512, 512)
+        radio_maps = torch.randn(4, 7, 128, 128)
         
         loss_dict = loss_fn.compute_per_feature_loss(
             predicted_xy, observed_features, radio_maps
@@ -205,9 +206,9 @@ class TestPhysicsLoss:
     
     def test_functional_api(self):
         """Test functional compute_physics_loss."""
-        predicted_xy = torch.rand(4, 2) * 512.0
+        predicted_xy = torch.rand(4, 2) * 128.0
         observed_features = torch.randn(4, 7)
-        radio_maps = torch.randn(4, 7, 512, 512)
+        radio_maps = torch.randn(4, 7, 128, 128)
         
         loss = compute_physics_loss(
             predicted_xy, observed_features, radio_maps
@@ -372,13 +373,13 @@ class TestIntegration:
         """Simulate training step with physics loss."""
         # Model prediction (simulated) - use parameter to ensure it's a leaf
         batch_size = 8
-        predicted_xy_param = torch.nn.Parameter(torch.rand(batch_size, 2) * 512.0)
+        predicted_xy_param = torch.nn.Parameter(torch.rand(batch_size, 2) * 128.0)
         
         # Ground truth
-        true_xy = torch.rand(batch_size, 2) * 512.0
+        true_xy = torch.rand(batch_size, 2) * 128.0
         
         # Radio maps and observed features
-        radio_maps = torch.randn(batch_size, 7, 512, 512)
+        radio_maps = torch.randn(batch_size, 7, 128, 128)
         observed_features = torch.randn(batch_size, 7)
         
         # Compute supervised loss (simple L2)

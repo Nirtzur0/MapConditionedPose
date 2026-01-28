@@ -12,7 +12,7 @@ import logging
 
 # Model components
 from src.models.radio_encoder import RadioEncoder, PositionalEncoding
-from src.models.map_encoder import E2EquivariantMapEncoder, MapEncoder
+from src.models.map_encoder import StandardMapEncoder
 from src.models.fusion import CrossAttentionFusion
 from src.models.heads import CoarseHead, FineHead
 from src.models.ue_localization_model import UELocalizationModel
@@ -29,17 +29,18 @@ def config():
 
 
 @pytest.fixture
-def batch_measurements():
+def batch_measurements(config):
     """Create dummy measurement batch."""
     batch_size = 4
     seq_len = 10
-    
+    radio_cfg = config['model']['radio_encoder']
+
     return {
-        'rt_features': torch.randn(batch_size, seq_len, 10),
-        'phy_features': torch.randn(batch_size, seq_len, 8),
-        'mac_features': torch.randn(batch_size, seq_len, 6),
-        'cell_ids': torch.randint(0, 512, (batch_size, seq_len)),
-        'beam_ids': torch.randint(0, 64, (batch_size, seq_len)),
+        'rt_features': torch.randn(batch_size, seq_len, radio_cfg['rt_features_dim']),
+        'phy_features': torch.randn(batch_size, seq_len, radio_cfg['phy_features_dim']),
+        'mac_features': torch.randn(batch_size, seq_len, radio_cfg['mac_features_dim']),
+        'cell_ids': torch.randint(0, radio_cfg['num_cells'], (batch_size, seq_len)),
+        'beam_ids': torch.randint(0, radio_cfg['num_beams'], (batch_size, seq_len)),
         'timestamps': torch.rand(batch_size, seq_len) * 5,  # 0-5 seconds
         'mask': torch.ones(batch_size, seq_len, dtype=torch.bool),
     }
@@ -84,9 +85,9 @@ class TestRadioEncoder:
             d_model=cfg['d_model'],
             nhead=cfg['nhead'],
             num_layers=cfg['num_layers'],
-            rt_features_dim=10,
-            phy_features_dim=8,
-            mac_features_dim=6,
+            rt_features_dim=cfg['rt_features_dim'],
+            phy_features_dim=cfg['phy_features_dim'],
+            mac_features_dim=cfg['mac_features_dim'],
         )
         
         # Adjust batch size of measurements
@@ -119,9 +120,9 @@ class TestRadioEncoder:
             d_model=cfg['d_model'],
             nhead=cfg['nhead'],
             num_layers=2,  # Fewer layers for speed
-            rt_features_dim=10,
-            phy_features_dim=8,
-            mac_features_dim=6,
+            rt_features_dim=cfg['rt_features_dim'],
+            phy_features_dim=cfg['phy_features_dim'],
+            mac_features_dim=cfg['mac_features_dim'],
         )
         
         # Create mask
@@ -146,222 +147,6 @@ class TestRadioEncoder:
         encoded = pe(timestamps)
         
         assert encoded.shape == (4, 10, 128)
-
-
-class TestE2EquivariantMapEncoder:
-    """Test E2EquivariantMapEncoder component with equivariance properties."""
-    
-    def test_initialization(self, config):
-        """Test E2 equivariant encoder initialization."""
-        cfg = config['model']['map_encoder']
-        encoder = E2EquivariantMapEncoder(
-            img_size=cfg['img_size'],
-            in_channels=cfg['in_channels'],
-            d_model=cfg['d_model'],
-            num_heads=cfg['nhead'],
-            num_layers=2,  # Small for testing
-            num_group_elements=4,  # p4 group for testing
-        )
-        
-        assert encoder.img_size == cfg['img_size']
-        assert encoder.d_model == cfg['d_model']
-        assert encoder.num_group_elements == 4
-    
-    def test_forward_pass(self, config, batch_maps):
-        """Test forward pass."""
-        cfg = config['model']['map_encoder']
-        encoder = E2EquivariantMapEncoder(
-            img_size=cfg['img_size'],
-            in_channels=cfg['in_channels'],
-            d_model=cfg['d_model'],
-            num_heads=cfg['nhead'],
-            num_layers=2,
-            num_group_elements=4,
-        )
-        
-        spatial_tokens, cls_token = encoder(
-            batch_maps['radio_map'],
-            batch_maps['osm_map'],
-        )
-        
-        # Check shapes
-        batch_size = batch_maps['radio_map'].shape[0]
-        img_size = cfg['img_size']
-        
-        assert spatial_tokens.shape[0] == batch_size
-        assert spatial_tokens.shape[2] == cfg['d_model']
-        assert cls_token.shape == (batch_size, cfg['d_model'])
-        
-        # Ensure no NaN or Inf
-        assert not torch.isnan(spatial_tokens).any()
-        assert not torch.isinf(spatial_tokens).any()
-        assert not torch.isnan(cls_token).any()
-        assert not torch.isinf(cls_token).any()
-    
-    def test_rotation_invariance(self, config):
-        """Test that the encoder produces similar outputs for rotated inputs."""
-        # Create smaller encoder for testing
-        encoder = E2EquivariantMapEncoder(
-            img_size=64,
-            in_channels=10,
-            d_model=64,
-            num_heads=4,
-            num_layers=1,
-            num_group_elements=4,  # p4 group
-            dropout=0.0,  # No dropout for deterministic testing
-        )
-        encoder.eval()
-        
-        # Create test input
-        torch.manual_seed(42)
-        radio_map = torch.randn(1, 5, 64, 64)
-        osm_map = torch.randn(1, 5, 64, 64)
-        
-        # Get output for original
-        with torch.no_grad():
-            _, cls_original = encoder(radio_map, osm_map)
-        
-        # Rotate input by 90 degrees
-        radio_map_rot = torch.rot90(radio_map, k=1, dims=[2, 3])
-        osm_map_rot = torch.rot90(osm_map, k=1, dims=[2, 3])
-        
-        # Get output for rotated
-        with torch.no_grad():
-            _, cls_rotated = encoder(radio_map_rot, osm_map_rot)
-        
-        # Check if outputs are similar (invariance to rotation)
-        diff = torch.abs(cls_original - cls_rotated).mean().item()
-        
-        # For p4 group (4 rotations), the output should be similar after 90° rotation
-        # Allow small difference due to numerical precision
-        assert diff < 0.1, f"Rotation invariance failed: difference = {diff}"
-    
-    def test_reflection_invariance(self, config):
-        """Test that the encoder produces similar outputs for reflected inputs."""
-        # Create smaller encoder for testing
-        encoder = E2EquivariantMapEncoder(
-            img_size=64,
-            in_channels=10,
-            d_model=64,
-            num_heads=4,
-            num_layers=1,
-            num_group_elements=8,  # p4m group (with reflections)
-            dropout=0.0,
-        )
-        encoder.eval()
-        
-        # Create test input
-        torch.manual_seed(42)
-        radio_map = torch.randn(1, 5, 64, 64)
-        osm_map = torch.randn(1, 5, 64, 64)
-        
-        # Get output for original
-        with torch.no_grad():
-            _, cls_original = encoder(radio_map, osm_map)
-        
-        # Reflect input horizontally
-        radio_map_ref = torch.flip(radio_map, dims=[3])
-        osm_map_ref = torch.flip(osm_map, dims=[3])
-        
-        # Get output for reflected
-        with torch.no_grad():
-            _, cls_reflected = encoder(radio_map_ref, osm_map_ref)
-        
-        # Check if outputs are similar (invariance to reflection)
-        diff = torch.abs(cls_original - cls_reflected).mean().item()
-        
-        # For p4m group (includes reflections), the output should be similar
-        assert diff < 0.1, f"Reflection invariance failed: difference = {diff}"
-    
-    def test_combined_transformation_invariance(self, config):
-        """Test invariance to combined rotation + reflection."""
-        encoder = E2EquivariantMapEncoder(
-            img_size=64,
-            in_channels=10,
-            d_model=64,
-            num_heads=4,
-            num_layers=1,
-            num_group_elements=8,  # p4m group
-            dropout=0.0,
-        )
-        encoder.eval()
-        
-        # Create test input
-        torch.manual_seed(42)
-        radio_map = torch.randn(1, 5, 64, 64)
-        osm_map = torch.randn(1, 5, 64, 64)
-        
-        # Get output for original
-        with torch.no_grad():
-            _, cls_original = encoder(radio_map, osm_map)
-        
-        # Apply rotation + reflection
-        radio_map_trans = torch.flip(torch.rot90(radio_map, k=2, dims=[2, 3]), dims=[3])
-        osm_map_trans = torch.flip(torch.rot90(osm_map, k=2, dims=[2, 3]), dims=[3])
-        
-        # Get output for transformed
-        with torch.no_grad():
-            _, cls_transformed = encoder(radio_map_trans, osm_map_trans)
-        
-        # Check if outputs are similar
-        diff = torch.abs(cls_original - cls_transformed).mean().item()
-        
-        assert diff < 0.1, f"Combined transformation invariance failed: difference = {diff}"
-    
-    def test_spatial_grid_output(self, config, batch_maps):
-        """Test get_spatial_grid method."""
-        cfg = config['model']['map_encoder']
-        encoder = E2EquivariantMapEncoder(
-            img_size=cfg['img_size'],
-            in_channels=cfg['in_channels'],
-            d_model=cfg['d_model'],
-            num_heads=cfg['nhead'],
-            num_layers=2,
-            num_group_elements=4,
-        )
-        
-        grid = encoder.get_spatial_grid(
-            batch_maps['radio_map'],
-            batch_maps['osm_map'],
-        )
-        
-        batch_size = batch_maps['radio_map'].shape[0]
-        img_size = cfg['img_size']
-        
-        # Grid should be [B, d_model, H, W]
-        assert grid.shape[0] == batch_size
-        assert grid.shape[1] == cfg['d_model']
-        assert grid.shape[2] == grid.shape[3]  # Square grid
-    
-    def test_deterministic_output(self, config, batch_maps):
-        """Test that encoder produces deterministic outputs."""
-        cfg = config['model']['map_encoder']
-        encoder = E2EquivariantMapEncoder(
-            img_size=cfg['img_size'],
-            in_channels=cfg['in_channels'],
-            d_model=cfg['d_model'],
-            num_heads=cfg['nhead'],
-            num_layers=2,
-            num_group_elements=4,
-            dropout=0.0,  # No dropout for deterministic testing
-        )
-        encoder.eval()
-        
-        with torch.no_grad():
-            _, cls1 = encoder(batch_maps['radio_map'], batch_maps['osm_map'])
-            _, cls2 = encoder(batch_maps['radio_map'], batch_maps['osm_map'])
-        
-        # Outputs should be identical
-        assert torch.allclose(cls1, cls2, atol=1e-6)
-
-
-class TestMapEncoderBackwardCompatibility:
-    """Test MapEncoder alias for backward compatibility."""
-    
-    def test_alias_works(self, config):
-        """Test that MapEncoder is an alias for E2EquivariantMapEncoder."""
-        from src.models.map_encoder import MapEncoder, E2EquivariantMapEncoder
-        assert MapEncoder is E2EquivariantMapEncoder
 
 
 class TestCrossAttentionFusion:
@@ -461,40 +246,33 @@ class TestPredictionHeads:
         
         batch_size = 4
         fused = torch.randn(batch_size, 768)
-        top_k_indices = torch.randint(0, 1024, (batch_size, cfg['top_k']))
+        grid_size = config['model']['coarse_head']['grid_size']
+        top_k_indices = torch.randint(0, grid_size ** 2, (batch_size, cfg['top_k']))
         
         cell_size = 1.0 / config['model']['coarse_head']['grid_size']
-        offsets, uncertainties = fine_head(fused, top_k_indices, cell_size=cell_size)
+        offsets, scores = fine_head(fused, top_k_indices, cell_size=cell_size)
         
         assert offsets.shape == (batch_size, cfg['top_k'], 2)
-        assert uncertainties.shape == (batch_size, cfg['top_k'], 2)
-        
-        # Uncertainties should be positive
-        assert (uncertainties > 0).all()
+        assert scores.shape == (batch_size, cfg['top_k'])
+        assert torch.isfinite(scores).all()
     
-    def test_nll_loss(self, config):
-        """Test NLL loss computation."""
+    def test_rerank_weights(self, config):
+        """Test re-ranking weights computation."""
         cfg = config['model']['fine_head']
         
         fine_head = FineHead(d_input=768, top_k=cfg['top_k'])
         
         batch_size = 4
-        predicted_offsets = torch.randn(batch_size, cfg['top_k'], 2)
-        predicted_uncert = torch.rand(batch_size, cfg['top_k'], 2) * 2 + 0.5
-        true_offsets = torch.randn(batch_size, 2)
+        fused = torch.randn(batch_size, 768)
+        top_k_indices = torch.randint(0, 1024, (batch_size, cfg['top_k']))
+        _, scores = fine_head(fused, top_k_indices, cell_size=1.0 / 32)
         top_k_probs = torch.rand(batch_size, cfg['top_k'])
         top_k_probs = top_k_probs / top_k_probs.sum(dim=1, keepdim=True)
-        
-        loss = fine_head.nll_loss(
-            predicted_offsets,
-            predicted_uncert,
-            true_offsets,
-            top_k_probs,
-        )
-        
-        # Loss should be finite scalar
-        assert loss.ndim == 0
-        assert torch.isfinite(loss)
+
+        weights = torch.softmax(torch.log(top_k_probs + 1e-8) + scores, dim=-1)
+
+        assert weights.shape == (batch_size, cfg['top_k'])
+        assert torch.allclose(weights.sum(dim=-1), torch.ones(batch_size), atol=1e-5)
 
 
 class TestUELocalizationModel:
@@ -532,7 +310,8 @@ class TestUELocalizationModel:
         assert 'top_k_indices' in outputs
         assert 'top_k_probs' in outputs
         assert 'fine_offsets' in outputs
-        assert 'fine_uncertainties' in outputs
+        assert 'fine_scores' in outputs
+        assert 'hypothesis_weights' in outputs
         assert 'predicted_position' in outputs
         
         # Check shapes
@@ -543,7 +322,7 @@ class TestUELocalizationModel:
         """Test simplified predict interface."""
         model = UELocalizationModel(config)
         
-        position, uncertainty = model.predict(
+        position, weights = model.predict(
             batch_measurements,
             batch_maps['radio_map'],
             batch_maps['osm_map'],
@@ -552,8 +331,8 @@ class TestUELocalizationModel:
         
         batch_size = batch_measurements['cell_ids'].shape[0]
         assert position.shape == (batch_size, 2)
-        assert uncertainty.shape == (batch_size, 2)
-        assert (uncertainty > 0).all()
+        assert weights.shape[0] == batch_size
+        assert torch.allclose(weights.sum(dim=-1), torch.ones(batch_size), atol=1e-4)
     
     def test_compute_loss(self, config, batch_measurements, batch_maps):
         """Test loss computation."""
@@ -567,9 +346,10 @@ class TestUELocalizationModel:
         
         # Create dummy targets
         batch_size = batch_measurements['cell_ids'].shape[0]
+        grid_size = config['model']['coarse_head']['grid_size']
         targets = {
-            'position': torch.rand(batch_size, 2) * 512,  # Random positions
-            'cell_grid': torch.randint(0, 32*32, (batch_size,)),  # Random cells
+            'position': torch.rand(batch_size, 2),  # Normalized coords [0, 1]
+            'cell_grid': torch.randint(0, grid_size * grid_size, (batch_size,)),  # Random cells
         }
         
         loss_weights = {

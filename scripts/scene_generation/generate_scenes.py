@@ -127,7 +127,14 @@ def parse_args():
     parser.add_argument(
         "--use-lidar",
         action="store_true",
-        help="Enable LiDAR point cloud usage for terrain/building heights",
+        default=True,
+        help="Enable LiDAR point cloud usage for terrain/building heights (default: on)",
+    )
+    parser.add_argument(
+        "--no-lidar",
+        action="store_false",
+        dest="use_lidar",
+        help="Disable LiDAR point cloud usage",
     )
     parser.add_argument(
         "--use-dem",
@@ -141,12 +148,6 @@ def parse_args():
     )
     
     # Paths
-    parser.add_argument(
-        "--scene-builder-path",
-        type=Path,
-        default="/home/ubuntu/projects/scene_builder/package/src",
-        help="Path to scene_builder package src",
-    )
     # Overpass API
     parser.add_argument(
         "--osm-server",
@@ -285,7 +286,6 @@ def main():
         logger.info(f"Generating single scene for area: {scene_id} (Full Bounding Box)")
         
         scene_gen = SceneGenerator(
-            scene_builder_path=str(args.scene_builder_path),
             material_randomizer=material_randomizer,
             site_placer=site_placer,
             output_dir=args.output,

@@ -10,7 +10,7 @@ positioning system. It defines:
 
 The configuration ensures consistency between:
 - Data generation (Sionna feature extraction)
-- Dataset loading (Zarr -> PyTorch)
+- Dataset loading (LMDB -> PyTorch)
 - Model architecture (input dimensions)
 """
 
@@ -33,7 +33,7 @@ class FeatureSource(Enum):
 class FeatureSpec:
     """Specification for a single feature."""
     name: str                           # Feature name (e.g., "rsrp", "path_gains")
-    zarr_key: str                       # Key in Zarr storage (e.g., "phy_fapi/rsrp")
+    storage_key: str                    # Key in storage (e.g., "phy_fapi/rsrp")
     shape: Tuple[str, ...]              # Shape description (e.g., ("batch", "cells"), ("batch", "cells", "paths"))
     dtype: str = "float32"              # Data type
     source: FeatureSource = FeatureSource.DERIVED
@@ -80,9 +80,9 @@ class LayerFeatureConfig:
         """Get list of enabled features."""
         return [f for f in self.features if f.enabled]
     
-    def get_zarr_keys(self) -> List[str]:
-        """Get Zarr keys for all enabled features."""
-        return [f.zarr_key for f in self.features if f.enabled]
+    def get_storage_keys(self) -> List[str]:
+        """Get storage keys for all enabled features."""
+        return [f.storage_key for f in self.features if f.enabled]
 
 
 @dataclass
@@ -156,7 +156,7 @@ class FeatureConfig:
                 'features': [
                     {
                         'name': f.name,
-                        'zarr_key': f.zarr_key,
+                        'storage_key': f.storage_key,
                         'shape': f.shape,
                         'enabled': f.enabled,
                         'default_value': f.default_value,
@@ -169,7 +169,7 @@ class FeatureConfig:
                 'features': [
                     {
                         'name': f.name,
-                        'zarr_key': f.zarr_key,
+                        'storage_key': f.storage_key,
                         'shape': f.shape,
                         'enabled': f.enabled,
                         'default_value': f.default_value,
@@ -182,7 +182,7 @@ class FeatureConfig:
                 'features': [
                     {
                         'name': f.name,
-                        'zarr_key': f.zarr_key,
+                        'storage_key': f.storage_key,
                         'shape': f.shape,
                         'enabled': f.enabled,
                         'default_value': f.default_value,
@@ -238,7 +238,7 @@ class FeatureConfig:
         for f_data in data.get('features', []):
             features.append(FeatureSpec(
                 name=f_data['name'],
-                zarr_key=f_data['zarr_key'],
+                storage_key=f_data['storage_key'],
                 shape=tuple(f_data.get('shape', ('batch',))),
                 enabled=f_data.get('enabled', True),
                 default_value=f_data.get('default_value', 0.0),
@@ -263,35 +263,35 @@ def get_default_feature_config() -> FeatureConfig:
             # Per-cell aggregate features (most useful for positioning)
             FeatureSpec(
                 name="toa",
-                zarr_key="rt/toa",
+                storage_key="rt/toa",
                 shape=("batch", "cells"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Time of Arrival - first path delay per cell (seconds)",
             ),
             FeatureSpec(
                 name="rms_delay_spread",
-                zarr_key="rt/rms_delay_spread",
+                storage_key="rt/rms_delay_spread",
                 shape=("batch", "cells"),
                 source=FeatureSource.DERIVED,
                 description="RMS Delay Spread - multipath channel dispersion (seconds)",
             ),
             FeatureSpec(
                 name="rms_angular_spread",
-                zarr_key="rt/rms_angular_spread",
+                storage_key="rt/rms_angular_spread",
                 shape=("batch", "cells"),
                 source=FeatureSource.DERIVED,
                 description="RMS Angular Spread - angular scattering (radians)",
             ),
             FeatureSpec(
                 name="k_factor",
-                zarr_key="rt/k_factor",
+                storage_key="rt/k_factor",
                 shape=("batch", "cells"),
                 source=FeatureSource.DERIVED,
                 description="Rician K-factor - LoS vs NLoS indicator (dB)",
             ),
             FeatureSpec(
                 name="is_nlos",
-                zarr_key="rt/is_nlos",
+                storage_key="rt/is_nlos",
                 shape=("batch", "cells"),
                 dtype="bool",
                 source=FeatureSource.DERIVED,
@@ -299,7 +299,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="num_paths",
-                zarr_key="rt/num_paths",
+                storage_key="rt/num_paths",
                 shape=("batch", "cells"),
                 dtype="int32",
                 source=FeatureSource.SIONNA_PATHS,
@@ -308,7 +308,7 @@ def get_default_feature_config() -> FeatureConfig:
             # Per-path features (variable length, padded to max_paths)
             FeatureSpec(
                 name="path_gains",
-                zarr_key="rt/path_gains",
+                storage_key="rt/path_gains",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Complex path coefficients magnitude (linear)",
@@ -316,7 +316,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_delays",
-                zarr_key="rt/path_delays",
+                storage_key="rt/path_delays",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Per-path propagation delays (seconds)",
@@ -324,7 +324,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_aoa_azimuth",
-                zarr_key="rt/path_aoa_azimuth",
+                storage_key="rt/path_aoa_azimuth",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Angle of Arrival azimuth per path (radians)",
@@ -332,7 +332,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_aoa_elevation",
-                zarr_key="rt/path_aoa_elevation",
+                storage_key="rt/path_aoa_elevation",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Angle of Arrival elevation per path (radians)",
@@ -340,7 +340,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_aod_azimuth",
-                zarr_key="rt/path_aod_azimuth",
+                storage_key="rt/path_aod_azimuth",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Angle of Departure azimuth per path (radians)",
@@ -348,7 +348,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_aod_elevation",
-                zarr_key="rt/path_aod_elevation",
+                storage_key="rt/path_aod_elevation",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Angle of Departure elevation per path (radians)",
@@ -356,7 +356,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="path_doppler",
-                zarr_key="rt/path_doppler",
+                storage_key="rt/path_doppler",
                 shape=("batch", "cells", "paths"),
                 source=FeatureSource.SIONNA_PATHS,
                 description="Doppler shift per path (Hz)",
@@ -372,7 +372,7 @@ def get_default_feature_config() -> FeatureConfig:
         features=[
             FeatureSpec(
                 name="rsrp",
-                zarr_key="phy_fapi/rsrp",
+                storage_key="phy_fapi/rsrp",
                 shape=("batch", "cells"),
                 source=FeatureSource.SIONNA_CFR,
                 default_value=-120.0,
@@ -380,7 +380,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="rsrq",
-                zarr_key="phy_fapi/rsrq",
+                storage_key="phy_fapi/rsrq",
                 shape=("batch", "cells"),
                 source=FeatureSource.DERIVED,
                 default_value=-20.0,
@@ -388,7 +388,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="sinr",
-                zarr_key="phy_fapi/sinr",
+                storage_key="phy_fapi/sinr",
                 shape=("batch", "cells"),
                 source=FeatureSource.DERIVED,
                 default_value=-10.0,
@@ -396,7 +396,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="cqi",
-                zarr_key="phy_fapi/cqi",
+                storage_key="phy_fapi/cqi",
                 shape=("batch", "cells"),
                 dtype="int32",
                 source=FeatureSource.DERIVED,
@@ -405,7 +405,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="ri",
-                zarr_key="phy_fapi/ri",
+                storage_key="phy_fapi/ri",
                 shape=("batch", "cells"),
                 dtype="int32",
                 source=FeatureSource.SIONNA_CFR,
@@ -414,7 +414,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="pmi",
-                zarr_key="phy_fapi/pmi",
+                storage_key="phy_fapi/pmi",
                 shape=("batch", "cells"),
                 dtype="int32",
                 source=FeatureSource.SIONNA_CFR,
@@ -423,7 +423,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="capacity_mbps",
-                zarr_key="phy_fapi/capacity_mbps",
+                storage_key="phy_fapi/capacity_mbps",
                 shape=("batch", "cells"),
                 source=FeatureSource.SIONNA_CFR,
                 default_value=0.0,
@@ -431,7 +431,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="condition_number",
-                zarr_key="phy_fapi/condition_number",
+                storage_key="phy_fapi/condition_number",
                 shape=("batch", "cells"),
                 source=FeatureSource.SIONNA_CFR,
                 default_value=1.0,
@@ -440,7 +440,7 @@ def get_default_feature_config() -> FeatureConfig:
             # Channel Frequency Response (CFR) - the raw channel estimate
             FeatureSpec(
                 name="cfr_magnitude",
-                zarr_key="phy_fapi/cfr_magnitude",
+                storage_key="phy_fapi/cfr_magnitude",
                 shape=("batch", "cells", "subcarriers"),
                 source=FeatureSource.SIONNA_CFR,
                 default_value=0.0,
@@ -449,7 +449,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="cfr_phase",
-                zarr_key="phy_fapi/cfr_phase",
+                storage_key="phy_fapi/cfr_phase",
                 shape=("batch", "cells", "subcarriers"),
                 source=FeatureSource.SIONNA_CFR,
                 default_value=0.0,
@@ -465,7 +465,7 @@ def get_default_feature_config() -> FeatureConfig:
         features=[
             FeatureSpec(
                 name="serving_cell_id",
-                zarr_key="mac_rrc/serving_cell_id",
+                storage_key="mac_rrc/serving_cell_id",
                 shape=("batch",),
                 dtype="int32",
                 source=FeatureSource.DERIVED,
@@ -474,7 +474,7 @@ def get_default_feature_config() -> FeatureConfig:
             ),
             FeatureSpec(
                 name="timing_advance",
-                zarr_key="mac_rrc/timing_advance",
+                storage_key="mac_rrc/timing_advance",
                 shape=("batch", "cells"),
                 dtype="int32",
                 source=FeatureSource.DERIVED,
@@ -484,7 +484,7 @@ def get_default_feature_config() -> FeatureConfig:
             # The following are simulated/approximated
             FeatureSpec(
                 name="neighbor_cell_ids",
-                zarr_key="mac_rrc/neighbor_cell_ids",
+                storage_key="mac_rrc/neighbor_cell_ids",
                 shape=("batch", 8),  # Up to 8 neighbors
                 dtype="int32",
                 source=FeatureSource.DERIVED,

@@ -42,7 +42,6 @@ model:
     
   # Map Encoder - Standard ViT (E2 is too slow for marginal gains)
   map_encoder:
-    use_e2_equivariant: false  # Standard ViT is faster and sufficient
     img_size: 256
     patch_size: 16             # 16x16 patches -> 256 patch tokens
     in_channels: 10            # 5 radio + 5 OSM channels
@@ -68,14 +67,12 @@ model:
     d_input: 384               # Must match fusion.d_fusion
     dropout: 0.15              # Slightly higher dropout for classification
     
-  # Fine Head (Offset Regression with Uncertainty)
+  # Fine Head (Top-K offset + score re-ranking)
   fine_head:
-    type: "heteroscedastic"
     d_input: 384               # Must match fusion.d_fusion
     d_hidden: 256
     top_k: 5                   # Refine top 5 candidates
     dropout: 0.1
-    # Implicit: sigma_min=0.01 (hardcoded in model)
 
 # Dataset Configuration
 # LMDB format (multiprocessing-friendly)
@@ -117,8 +114,7 @@ training:
   # Loss configuration - REBALANCED for multi-city generalization
   loss:
     coarse_weight: 4.0        # INCREASED from 0.5 to prioritize learning spatial structure first
-    fine_weight: 1.0          # Gaussian NLL for offset regression
-    position_weight: 0.3      # NEW: Direct position supervision with Smooth L1
+    fine_weight: 1.0          # Re-ranking refinement loss over top-K hypotheses
     use_physics_loss: false   # Disable unless you have precomputed radio maps
     
     # Augmentation - important for 7-city generalization

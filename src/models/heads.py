@@ -2,7 +2,7 @@
 Prediction Heads: Coarse and Fine
 
 Coarse Head: Predicts probability distribution over grid cells (32x32)
-Fine Head: Predicts offset within cell with uncertainty for top-K candidates
+Fine Head: Predicts offset within cell and a score for top-K candidates
 """
 
 import torch
@@ -110,12 +110,8 @@ class CoarseHead(nn.Module):
         rows = indices // self.grid_size
         cols = indices % self.grid_size
         
-        # Convert to metric coordinates (cell centers)
-        # Flip Y back: Grid 0 is Top(North/MaxY), Grid N-1 is Bottom(South/MinY)
-        # So Normalized Y = 1.0 - (row + 0.5)/grid_size
-        # Metric Y = (grid_size - 1 - rows + 0.5) * cell_size
-        
-        y = (self.grid_size - 1 - rows.float() + 0.5) * cell_size
+        # Convert to metric coordinates (cell centers) in bottom-left origin
+        y = (rows.float() + 0.5) * cell_size
         x = (cols.float() + 0.5) * cell_size
         
         # Stack coordinates
@@ -129,16 +125,15 @@ class CoarseHead(nn.Module):
 
 
 class FineHead(nn.Module):
-    """Fine positioning head - predicts offset within cell.
-    
+    """Fine positioning head - predicts offset within cell and a candidate score.
+
     For each top-K candidate cell, predicts:
     - (Δx, Δy): Offset from cell center
-    - (σx, σy): Uncertainty estimates
-    
-    Uses heteroscedastic uncertainty (predicts both mean and variance).
+    - s: Candidate score used for re-ranking hypotheses
+
     Uses 2D sinusoidal positional encoding instead of learned embeddings
     to better capture spatial structure and enable generalization.
-    
+
     Args:
         d_input: Input dimension from fusion module
         d_hidden: Hidden dimension for refinement network
@@ -147,8 +142,6 @@ class FineHead(nn.Module):
         d_map: Dimension of local map patch embeddings (if used)
         use_local_map: Whether to condition refinement on local map patches
         offset_scale: Max offset scale relative to cell size
-        sigma_min_ratio: Minimum std dev as ratio of cell size
-        sigma_max_ratio: Maximum std dev as ratio of cell size
         dropout: Dropout rate
     """
     
@@ -161,16 +154,12 @@ class FineHead(nn.Module):
         d_map: int = 0,
         use_local_map: bool = False,
         offset_scale: float = 1.5,
-        sigma_min_ratio: float = 0.03,
-        sigma_max_ratio: float = 3.2,
         dropout: float = 0.1,
     ):
         super().__init__()
         
         self.top_k = top_k
         self.offset_scale = offset_scale
-        self.sigma_min_ratio = sigma_min_ratio
-        self.sigma_max_ratio = sigma_max_ratio
         self.grid_size = int(num_cells ** 0.5)  # Infer grid size (32 for 1024 cells)
         self.d_hidden = d_hidden
         self.use_local_map = use_local_map and d_map > 0
@@ -205,9 +194,8 @@ class FineHead(nn.Module):
         # Predict mean offset (Δx, Δy)
         self.mean_head = nn.Linear(d_hidden, 2)
         
-        # Predict scale (std dev) 
-        # We predict raw values that will be passed through softplus
-        self.scale_head = nn.Linear(d_hidden, 2)
+        # Predict candidate score for re-ranking
+        self.score_head = nn.Linear(d_hidden, 1)
         
         # Precompute sinusoidal basis for positional encoding
         # Using d_hidden/2 frequencies for x and y each
@@ -265,7 +253,7 @@ class FineHead(nn.Module):
         
         Returns:
             offsets: [batch, k, 2] (Δx, Δy) in normalized coords
-            uncertainties: [batch, k, 2] (σx, σy) in normalized coords
+            scores: [batch, k] candidate scores (unnormalized)
         """
         batch_size, k = top_k_indices.shape
         
@@ -301,66 +289,6 @@ class FineHead(nn.Module):
         max_offset = cell_size_t * self.offset_scale
         offsets = torch.tanh(offset_raw) * max_offset  # [B, k, 2] bounded by cell size
         
-        # Predict uncertainty (scale) with bounded range [sigma_min, sigma_max]
-        # Use sigmoid to map to [0, 1], then scale to [sigma_min, sigma_max]
-        # This prevents both overly small (degenerate) and overly large (uninformative) predictions
-        scale_raw = self.scale_head(refined)
-        sigma_min = cell_size_t * self.sigma_min_ratio
-        sigma_max = cell_size_t * self.sigma_max_ratio
-        sigma_range = torch.clamp(sigma_max - sigma_min, min=1e-6)
-        uncertainties = torch.sigmoid(scale_raw) * sigma_range + sigma_min  # [B, k, 2]
-        
-        return offsets, uncertainties
+        scores = self.score_head(refined).squeeze(-1)  # [B, k]
 
-    def nll_loss(
-        self,
-        pred_offsets: torch.Tensor,
-        pred_uncert: torch.Tensor,
-        true_position: torch.Tensor,
-        mixture_weights: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute Negative Log Likelihood (NLL) for a Gaussian Mixture Model (GMM).
-        
-        Args:
-            pred_offsets: [batch, k, 2] Predicted means (mu)
-            pred_uncert: [batch, k, 2] Predicted standard deviations (sigma)
-            true_position: [batch, 2] True target position (absolute or relative?)
-                           Usually this function receives 'true_offsets' relative to cell centers
-                           if pred_offsets are relative.
-                           Assuming true_position matches pred_offsets domain.
-            mixture_weights: [batch, k] Mixing coefficients (pi) - should sum to 1
-        
-        Returns:
-            nll: scalar NLL loss
-        """
-        # Expand true position to match k candidates
-        # true_position: [B, 2] -> [B, 1, 2] -> [B, k, 2]
-        target = true_position.unsqueeze(1).expand(-1, self.top_k, -1)
-        
-        # Gaussian Log Likelihood for each component k
-        # log N(y; mu, sigma) = -0.5 * log(2*pi) - log(sigma) - 0.5 * ((y-mu)/sigma)^2
-        # We sum over spatial dimensions (2) assuming diagonal covariance (independent x,y)
-        
-        # term 1: -log(sigma)
-        log_sigma = torch.log(pred_uncert + 1e-10) # [B, k, 2]
-        
-        # term 2: -0.5 * ((y-mu)/sigma)^2
-        diff = target - pred_offsets
-        squared_err = (diff / (pred_uncert + 1e-10)) ** 2 # [B, k, 2]
-        
-        log_prob_component = -log_sigma - 0.5 * squared_err - 0.5 * torch.log(torch.tensor(2 * torch.pi))
-        
-        # Sum over x, y dimensions to get log prob vector for each k
-        log_prob_k = torch.sum(log_prob_component, dim=-1) # [B, k]
-        
-        # Mixture Log Likelihood
-        # log P(y) = log sum_k (pi_k * exp(log_prob_k))
-        #          = log sum_k exp(log_pi_k + log_prob_k)
-        #          = LogSumExp(log_pi_k + log_prob_k)
-        
-        log_weights = torch.log(mixture_weights + 1e-10) # [B, k]
-        
-        log_likelihood = torch.logsumexp(log_weights + log_prob_k, dim=-1) # [B]
-        
-        return -torch.mean(log_likelihood)
+        return offsets, scores

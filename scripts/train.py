@@ -149,10 +149,8 @@ def main():
                     part_lower = part.lower()
                     
                     # Skip technical directory names
-                    if (part_lower in ['data', 'processed', 'dataset', 'zarr', 'datasets'] or 
-                        part.startswith('dataset_') or 
-                        '.zarr' in part_lower or 
-                        part_lower.endswith('.zarr')):
+                    if (part_lower in ['data', 'processed', 'dataset', 'datasets'] or 
+                        part.startswith('dataset_')):
                         continue
                         
                     if any(city in part_lower for city in ['austin', 'boulder', 'chicago', 'los_angeles', 'new_york', 'seattle']):

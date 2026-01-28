@@ -10,11 +10,10 @@ import numpy as np
 import yaml
 from pathlib import Path
 import sys
-import zarr
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.datasets.radio_dataset import RadioLocalizationDataset
+from src.datasets.lmdb_dataset import LMDBRadioLocalizationDataset
 from src.models.ue_localization_model import UELocalizationModel
 from src.training import UELocalizationLightning
 
@@ -25,13 +24,13 @@ class TestPositionDataLoading:
     def test_position_diversity_in_dataset(self, tmp_path):
         """Test that dataset has diverse UE positions, not all the same."""
         # Use the specific known good dataset
-        zarr_path = Path("data/processed/sionna_dataset/dataset_20260101_184259.zarr")
-        if not zarr_path.exists():
+        lmdb_path = Path("data/processed/sionna_dataset/dataset_20260101_184259.lmdb")
+        if not lmdb_path.exists():
             pytest.skip("Test dataset not available")
         
         # Load dataset
-        dataset = RadioLocalizationDataset(
-            zarr_path=str(zarr_path),
+        dataset = LMDBRadioLocalizationDataset(
+            lmdb_path=str(lmdb_path),
             split='train',
             normalize=True
         )
@@ -169,7 +168,6 @@ class TestModelPredictionDiversity:
                     'nhead': 4,
                     'num_layers': 2,
                     'dropout': 0.1,
-                    'use_e2_equivariant': True,
                     'radio_map_channels': 5,
                     'osm_map_channels': 5,
                 },

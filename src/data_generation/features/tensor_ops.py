@@ -113,7 +113,12 @@ class TFOps(TensorOps):
 
 def get_ops(data: Any) -> TensorOps:
     """Factory to get the correct operations backend."""
-    if TF_AVAILABLE and (tf.is_tensor(data) or (hasattr(data, 'a') and tf.is_tensor(data.a))):
+    if TF_AVAILABLE and (
+        tf.is_tensor(data)
+        or (hasattr(data, 'a') and tf.is_tensor(data.a))
+        or (hasattr(data, 'a') and isinstance(getattr(data, 'a'), tuple) and len(getattr(data, 'a')) == 2 and hasattr(getattr(data, 'a')[0], 'tf'))
+        or (hasattr(data, 'tau') and hasattr(getattr(data, 'tau'), 'tf'))
+    ):
         return TFOps()
     return NumpyOps()
 

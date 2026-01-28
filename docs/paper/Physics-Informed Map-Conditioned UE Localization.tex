@@ -13,7 +13,6 @@
 
 \usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
 \usepackage{bm}
-\usepackage{bbm}
 
 \usepackage{graphicx}
 \usepackage{booktabs}
@@ -73,7 +72,7 @@
 
 % ---------------------------------------------
 \title{\vspace{-0.8cm}\textbf{Physics-Informed Map-Conditioned Transformers for Probabilistic UE Localization}\\
-\vspace{0.1cm}\large Coarse-to-Fine Mixture Posteriors, Differentiable Radio-Map Likelihoods, and Test-Time Refinement}
+\vspace{0.1cm}\large Coarse-to-Fine Re-ranked Hypotheses, Differentiable Radio-Map Likelihoods, and Test-Time Refinement}
 \author{Nir Tzur}
 \date{\vspace{-0.2cm}\today}
 
@@ -83,10 +82,10 @@
 
 \begin{abstract}
 Localizing user equipment (UE) from sparse, irregular radio measurements is an \hlprob{ill-posed inverse problem}: multiple spatial hypotheses can explain the same measurements, and \hlprob{purely data-driven predictors can violate basic propagation constraints}. We present a \hlsol{map-conditioned Transformer} that amortizes Bayesian inference over UE position while remaining tightly coupled to a physics simulator through a \hlsol{differentiable radio-map likelihood}.
-The model (i) encodes measurement sequences as sets of timestamped, multi-layer features, (ii) encodes multi-channel environmental context (radio maps and semantic GIS layers) via a vision Transformer, (iii) fuses both modalities with cross-attention, and (iv) outputs a \hlsol{coarse-to-fine} \hlsol{top-$K$ Gaussian mixture posterior} over 2D position.
-Training combines a proper probabilistic objective (coarse cell cross-entropy + \hlsol{mixture negative log-likelihood}) with a \hlsol{physics-consistency term} computed by \hlsol{differentiable bilinear sampling} of precomputed radio maps.
-At inference, the learned posterior provides calibrated uncertainty and supports optional \hlsol{MAP refinement} by gradient descent on an energy combining the network density and the physics likelihood.
-We detail the model end-to-end from first principles, including the induced invariances, the probabilistic semantics of the heads, and the differentiable physics coupling.
+The model (i) encodes measurement sequences as sets of timestamped, multi-layer features, (ii) encodes multi-channel environmental context (radio maps and semantic GIS layers) via a vision Transformer, (iii) fuses both modalities with cross-attention, and (iv) outputs a \hlsol{coarse-to-fine} \hlsol{top-$K$ re-ranked hypothesis distribution} over 2D position.
+Training combines coarse cell cross-entropy with an \hlsol{expected regression loss over top-$K$ hypotheses}, plus a \hlsol{physics-consistency term} computed by \hlsol{differentiable bilinear sampling} of precomputed radio maps.
+At inference, the hypothesis weights provide calibrated confidence and support optional \hlsol{physics-only refinement} by gradient descent on the physics loss (a posterior density term is optional but not used in our current implementation).
+We detail the model end-to-end from first principles, including the induced invariances, the hypothesis scoring semantics of the heads, and the differentiable physics coupling.
 \end{abstract}
 
 % ---------------------------------------------
@@ -102,9 +101,9 @@ We detail the model end-to-end from first principles, including the induced inva
 \node[block] (gis) {GIS / OSM\\(bbox or city)};
 \node[block, right=1.9cm of gis] (scene) {Scene generation\\(tiling \& TX placement)};
 \node[block, right=1.9cm of scene] (rt) {Differentiable ray tracing\\(Sionna RT)};
-\node[block, below=1.35cm of rt] (data) {Dataset (Zarr)\\$\{(\mathcal{X},\mathcal{M},\mathbf{y})\}$};
+\node[block, below=1.35cm of rt] (data) {Dataset (LMDB)\\$\{(\mathcal{X},\mathcal{M},\mathbf{y})\}$};
 \node[block, left=1.9cm of data] (train) {Training\\$\min_\theta~\mathcal{L}_{\text{data}}$\\$+\lambda_{\text{phys}}\,\mathcal{L}_{\text{phys}}$};
-\node[block, left=1.9cm of train] (infer) {Inference\\posterior \& uncertainty\\+ optional refinement};
+\node[block, left=1.9cm of train] (infer) {Inference\\hypotheses \& confidence\\+ optional refinement};
 
 \draw[arrow] (gis) -- (scene);
 \draw[arrow] (scene) -- (rt);
@@ -126,16 +125,16 @@ First, the inverse map from measurements to position is \hlprob{multi-valued}: d
 Second, the forward physics is constrained (e.g., occlusion by buildings, diffraction/reflection structure), and \hlprob{purely data-driven regressors can produce predictions that are not physically plausible}.
 
 This work treats localization as \hlsol{probabilistic inference} with explicit environmental conditioning. We assume access to a multi-channel map context $\mathcal{M}$ (semantic GIS layers and/or precomputed radio fields) and a variable-length measurement sequence $\mathcal{X}$. We learn an amortized posterior $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ over UE position $\mathbf{y}\in\R^2$.
-To capture multi-modality at scale, we represent the posterior as a \hlsol{coarse-to-fine} \hlsol{top-$K$ Gaussian mixture} tied to a coarse spatial grid.
+To capture multi-modality at scale, we represent the posterior as a \hlsol{coarse-to-fine} \hlsol{top-$K$ re-ranked hypothesis distribution} tied to a coarse spatial grid.
 To enforce physics consistency, we add a \hlsol{differentiable radio-map likelihood term}: predicted positions must align with precomputed radio-map features when sampled via bilinear interpolation.
-Finally, we expose a principled refinement mechanism: when needed, we optimize a \hlsol{MAP objective} combining the learned posterior and the physics likelihood.
+Finally, we expose an optional refinement mechanism: when needed, we optimize a \hlsol{physics-only objective} (a posterior density prior can be added, but is not used in the current implementation).
 
 \paragraph{Contributions.}
 \begin{itemize}
-\item \hlsol{Map-conditioned Transformer posterior.} A dual-encoder architecture (Transformer-based radio encoder with \texttt{[CLS]} pooling + map ViT with optional E(2)-equivariance) fused by multi-query cross-attention.
-\item \hlsol{Coarse-to-fine mixture density head.} A hierarchical discretize-then-refine posterior $p(\mathbf{y})=\sum_c \pi_c\,\mathcal{N}(\mathbf{y};\bm\mu_c,\bm\Sigma_c)$ with a top-$K$ truncation that preserves multi-modality while controlling compute.
+\item \hlsol{Map-conditioned Transformer hypothesis distribution.} A dual-encoder architecture (Transformer-based radio encoder with \texttt{[CLS]} pooling + map ViT with optional E(2)-equivariance) fused by multi-query cross-attention.
+\item \hlsol{Coarse-to-fine re-ranking head.} A hierarchical discretize-then-refine predictor that scores Top-$K$ cell hypotheses and re-ranks candidate offsets to preserve multi-modality while controlling compute.
 \item \hlsol{Differentiable physics coupling.} A physics-consistency loss derived as a negative log-likelihood under a measurement noise model, computed via \hlsol{differentiable sampling} of precomputed radio fields.
-\item \hlsol{MAP refinement.} An inference-time energy minimization that improves low-confidence predictions while remaining consistent with the learned posterior.
+\item \hlsol{Physics-only refinement.} An inference-time energy minimization that improves low-confidence predictions using physics consistency (a posterior prior can be added but is not used in the current implementation).
 \end{itemize}
 
 % ---------------------------------------------
@@ -148,7 +147,7 @@ Differentiable ray tracing enables gradients of propagation quantities with resp
 CNN-based estimators such as RadioUNet learn to predict pathloss/radio maps from urban context \cite{levie2021radiounet}. Transformer-based estimators have recently shown strong performance and favorable inductive biases for sparse spatial observations; STORM is an attention-based estimator for radio map estimation and active sensing \cite{viet2024storm}, and TransPathNet combines transformer feature extraction with multiscale decoding for indoor pathloss mapping \cite{li2025transpathnet}. Physics-informed neural networks have also been proposed for radio environment mapping by embedding PDE residuals as soft constraints \cite{shahid2025reveal,shahid2025revealmt}.
 
 \textbf{Set-structured and probabilistic prediction.}
-Measurement sequences are irregular and naturally set-valued; Deep Sets characterizes permutation-invariant set functions \cite{zaheer2017deepsets}, and Set Transformer provides an attention-based framework for permutation-invariant/equivariant learning on sets \cite{lee2019settransformer}. For multi-modal regression, mixture density networks (MDNs) parameterize conditional densities via mixtures \cite{bishop1994mdn}. Our method combines these ideas: set-structured radio encoding, map-conditioned attention, and a mixture posterior with an explicit physics likelihood term.
+Measurement sequences are irregular and naturally set-valued; Deep Sets characterizes permutation-invariant set functions \cite{zaheer2017deepsets}. For multi-modal regression, discrete hypothesis distributions provide a scalable alternative to continuous mixture models. Our method combines these ideas with a permutation-invariant Transformer encoder for radio tokens, map-conditioned attention, and a Top-$K$ re-ranking head coupled to an explicit physics likelihood term.
 
 % ---------------------------------------------
 \section{Problem Formulation from First Principles}
@@ -174,14 +173,14 @@ where $c_t$ and $b_t$ denote categorical identifiers (cell/beam) and $\mathbf{f}
 \end{equation}
 where $\mathcal{M}$ may include a semantic map $\mathbf{O}\in\R^{C_o\times H\times W}$ and the radio map $\mathbf{R}$ (or a subset of channels). 
 
-A principled approach is Bayesian inference with a posterior $p(\mathbf{y}\mid \mathcal{X},\mathcal{M})$. We learn an amortized approximation $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ with explicit uncertainty.
+A principled approach is Bayesian inference with a posterior $p(\mathbf{y}\mid \mathcal{X},\mathcal{M})$. We learn an amortized approximation $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ expressed as a discrete hypothesis distribution with calibrated confidence.
 
 \subsection{Coordinate system and discretization}
 
 Let the physical extent be the rectangle $\Omega=[x_{\min},x_{\max}]\times[y_{\min},y_{\max}]$ in meters. We discretize $\Omega$ into a $G\times G$ grid of cells $\{\Omega_c\}_{c=1}^{G^2}$ with cell size $s_x=(x_{\max}-x_{\min})/G$ and $s_y=(y_{\max}-y_{\min})/G$.
 Let $\mathbf{c}_c\in\R^2$ be the center of cell $\Omega_c$.
 Define the cell-index function $c(\mathbf{y})$ as the unique index such that $\mathbf{y}\in\Omega_{c(\mathbf{y})}$, and denote its center by $\mathbf{c}(\mathbf{y})\triangleq\mathbf{c}_{c(\mathbf{y})}$.
-We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical mixture posterior (Sec.~\ref{sec:posterior}).
+We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical Top-$K$ hypothesis distribution (Sec.~\ref{sec:posterior}).
 
 % ---------------------------------------------
 \begin{figure*}[t]
@@ -215,12 +214,12 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 % Input features
 \node[inputbox, font=\scriptsize] (embin) at (-4.8, 4.5) {IDs, Time\\{\tiny cell, beam, $\tau$}};
 \node[inputbox, font=\scriptsize] (featsin) at (-2.5, 4.5) {RT/PHY/MAC\\{\tiny 13+8+5=26 dim}};
-\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CFR\\{\tiny 8×64}};
+\node[inputbox, font=\scriptsize] (cfrin) at (-0.5, 4.5) {CSI/CFR\\{\tiny 8×64}};
 
 % Embeddings
 \node[embedbox] (embproj) at (-4.8, 3.6) {Embed\\{\tiny →128×3}};
 \node[embedbox] (featproj) at (-2.5, 3.6) {Linear\\{\tiny →128×3}};
-\node[projbox] (cfrproj) at (-0.5, 3.6) {Conv1D\\{\tiny →128}};
+\node[projbox] (cfrproj) at (-0.5, 3.6) {CSI Enc\\{\tiny Conv1D →128}};
 
 \draw[arrow, blue!60] (embin) -- (embproj);
 \draw[arrow, blue!60] (featsin) -- (featproj);
@@ -270,7 +269,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[arrow, cyan!60] (mapconcat) -- (patchemb);
 
 % ViT
-\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{E(2)-ViT}\\{\scriptsize 6 layers, 8 heads, p4m group}};
+\node[transformer, fill=cyan!20] (mapvit) at (3.65, 1.7) {\textbf{ViT (default)}\\{\scriptsize 6 layers, 8 heads}\\{\scriptsize E(2)-ViT optional (p4m)}};
 \draw[arrow] (patchemb) -- (mapvit);
 
 % Spatial tokens output
@@ -313,18 +312,18 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \draw[dasharrow, red!40] (topk.east) -- ++(0.4, 0) |- ([yshift=-0.15cm]fine.west);
 
 % Fine outputs
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -4.6) {$\boldsymbol{\mu}_k$\\{\tiny offsets}};
-\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (sigma) at (3.6, -4.6) {$\boldsymbol{\sigma}_k$\\{\tiny uncert.}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (offsets) at (2.0, -4.6) {$\boldsymbol{\Delta}_k$\\{\tiny offsets}};
+\node[outputbox, fill=yellow!25, font=\scriptsize, minimum width=1.3cm] (scores) at (3.6, -4.6) {$s_k$\\{\tiny scores}};
 \draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (offsets.north);
-\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (sigma.north);
+\draw[arrow, yellow!50!orange] (fine.south) -- ++(0, -0.25) -| (scores.north);
 
 % ============================================
 % FINAL OUTPUT
 % ============================================
-\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=4.2cm, minimum height=0.65cm, thick] (finalpos) at (0.5, -5.8) {\textbf{Top-$K$ GMM Posterior}\\$p(\mathbf{y}) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{y}; \boldsymbol{\mu}_k, \mathrm{diag}(\boldsymbol{\sigma}_k^2))$};
+\node[outputbox, fill=teal!30, font=\scriptsize, minimum width=4.2cm, minimum height=0.65cm, thick] (finalpos) at (0.5, -5.8) {\textbf{Top-$K$ Hypotheses}\\$\alpha_k = \softmax(\log \pi_k + s_k)$};
 \draw[arrow, thick, teal!60] (heatmap.south) |- (finalpos.west);
 \draw[arrow, thick, teal!60] (offsets.south) |- (finalpos);
-\draw[arrow, thick, teal!60] (sigma.south) |- (finalpos.east);
+\draw[arrow, thick, teal!60] (scores.south) |- (finalpos.east);
 
 % ============================================
 % BACKGROUND BOXES
@@ -340,7 +339,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 
 \end{tikzpicture}
 \vspace{-0.2cm}
-\caption{\textbf{Model architecture.} The \textcolor{blue!70!black}{Radio Encoder} tokenizes multi-layer measurements (RT, PHY, MAC features + optional CFR) via learned embeddings and projections, processes them with a 6-layer Transformer, and extracts a global embedding $\mathbf{z}_r$ via a [CLS] token. The \textcolor{cyan!70!black}{Map Encoder} fuses radio and OSM maps (10 channels total) through patch embedding and an E(2)-equivariant ViT, producing spatial tokens $\mathbf{S}$. \textcolor{violet!70!black}{Cross-attention fusion} attends radio queries to map keys/values with 4 learnable query tokens. The \textcolor{red!70!black}{Coarse Head} predicts a 32×32 cell probability distribution, and the \textcolor{yellow!50!orange}{Fine Head} outputs sub-cell offsets and uncertainties for the Top-K cells, yielding a calibrated \textcolor{teal!70!black}{Gaussian mixture posterior} over 2D position.}
+\caption{\textbf{Model architecture.} The \textcolor{blue!70!black}{Radio Encoder} tokenizes multi-layer measurements (RT, PHY, MAC features + optional CSI/CFR) via learned embeddings and projections, encodes CSI with a 1D conv stack, processes tokens with a 6-layer Transformer, and extracts a global embedding $\mathbf{z}_r$ via a [CLS] token. The \textcolor{cyan!70!black}{Map Encoder} fuses radio and OSM maps (10 channels total) through patch embedding and a standard ViT by default (optional E(2)-equivariant variant), producing spatial tokens $\mathbf{S}$. \textcolor{violet!70!black}{Cross-attention fusion} attends radio queries to map keys/values with 4 learnable query tokens. The \textcolor{red!70!black}{Coarse Head} predicts a 32×32 cell probability distribution, and the \textcolor{yellow!50!orange}{Fine Head} outputs sub-cell offsets and scores for the Top-K cells, yielding a re-ranked \textcolor{teal!70!black}{hypothesis distribution} over 2D position.}
 \label{fig:architecture}
 \end{figure*}
 
@@ -356,10 +355,10 @@ We now specify the model $p_\theta(\mathbf{y}\mid \mathcal{X},\mathcal{M})$ from
 Each measurement event $\mathbf{x}_t=(c_t,b_t,\tau_t,\mathbf{f}_t)$ is mapped to a token $\mathbf{h}_t\in\R^{d_r}$ via learned embeddings and linear projections:
 \begin{equation}
 \mathbf{h}_t
-= W \Big[\, \underbrace{e_c(c_t)}_{\text{cell ID}} \,\Vert\, \underbrace{e_b(b_t)}_{\text{beam ID}} \,\Vert\, \underbrace{\psi(\tau_t;\bm\tau)}_{\text{time}} \,\Vert\, \underbrace{P\,\mathbf{f}_t}_{\text{features}} \Big],
+= W \Big[\, \underbrace{e_c(c_t)}_{\text{cell ID}} \,\Vert\, \underbrace{e_b(b_t)}_{\text{beam ID}} \,\Vert\, \underbrace{\psi(\tau_t;\bm\tau)}_{\text{time}} \,\Vert\, \underbrace{P\,\mathbf{f}_t}_{\text{features}} \,\Vert\, \underbrace{\phi(\mathbf{H}_{\text{cfr}})}_{\text{CSI/CFR}} \Big],
 \label{eq:radio_token}
 \end{equation}
-where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features (RT, PHY, MAC measurements), and $\psi$ is a time embedding.
+where $\Vert$ denotes concatenation, $e_c,e_b$ are learned embeddings, $P$ projects continuous features (RT, PHY, MAC measurements), $\psi$ is a time embedding, and $\phi(\mathbf{H}_{\text{cfr}})$ is an optional CSI/CFR encoder applied to the per-sample CFR magnitude tensor $\mathbf{H}_{\text{cfr}}\in\R^{N_c\times F}$.
 In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time axis}:
 \begin{equation}
   \delta_t = \tau_t-\tau_1,\qquad \bar\delta_t=\frac{\delta_t}{\max_s \delta_s + \varepsilon},\qquad \psi(\tau_t;\bm\tau)=\mathrm{PE}(\bar\delta_t),
@@ -367,10 +366,13 @@ In our implementation, $\psi$ uses a per-sequence \emph{normalized relative time
 \end{equation}
 where $\mathrm{PE}$ is a sinusoidal lookup table (as in standard Transformers \cite{vaswani2017transformer}).
 
+\paragraph{CSI/CFR encoder.}
+When channel-state information is available, we encode the CFR magnitude $\mathbf{H}_{\text{cfr}}$ with a lightweight 1D convolutional stack along the frequency axis, followed by global pooling to obtain a fixed-length vector. This embedding is broadcast across all tokens and concatenated as in Eq.~\eqref{eq:radio_token}. If CSI is unavailable, we omit this term (equivalently, use a zero vector), preserving the tokenization structure.
+
 A standard Transformer encoder with self-attention processes the token set $\{\mathbf{h}_t\}_{t=1}^T$ (with padding masks for variable-length sequences) and outputs contextualized embeddings; we use a learnable \texttt{[CLS]} token prepended to the sequence to pool information into a global representation $\mathbf{z}_r\in\R^{d_r}$.
 
-\paragraph{Implementation note: Transformer vs.\ Set Transformer.}
-While the Set Transformer architecture \cite{lee2019settransformer} provides explicit set-processing primitives (Induced Set Attention Blocks, Pooling by Multihead Attention), we employ a standard Transformer encoder with \texttt{[CLS]} pooling for simplicity and compatibility with existing tooling. Both architectures achieve permutation invariance (via the \texttt{[CLS]} aggregation for Transformers, or explicit set functions for Set Transformer), but the standard Transformer offers more straightforward integration with pre-trained weights and is computationally well-optimized. The choice can be configured in the model YAML.
+\paragraph{Implementation note: standard Transformer encoder.}
+We implement a standard pre-LN Transformer encoder with masked self-attention and a learnable \texttt{[CLS]} token for pooling. We do not use Set Transformer blocks; permutation invariance arises from omitting index-based positional encodings (only time features are used) and aggregating through the \texttt{[CLS]} token.
 
 \begin{proposition}[Time affine invariance of the embedding]
 Assume timestamps transform as $\tau_t' = a\,\tau_t + b$ with $a>0$. Then the normalized relative time coordinates $\bar\delta_t$ in Eq.~\eqref{eq:time_norm} are invariant: $\bar\delta_t'=\bar\delta_t$ for all $t$ (up to the stabilizer $\varepsilon$), and therefore $\psi(\tau_t';\bm\tau')=\psi(\tau_t;\bm\tau)$.
@@ -380,18 +382,18 @@ Assume timestamps transform as $\tau_t' = a\,\tau_t + b$ with $a>0$. Then the no
 \begin{proposition}[Permutation invariance via set encoding]
 If the encoder does not use index-based positional encodings (only token-local features such as Eq.~\eqref{eq:radio_token}), then the Transformer is permutation \emph{equivariant} in its token outputs, and the pooled \texttt{[CLS]} representation is permutation \emph{invariant} with respect to the order of measurements.
 \end{proposition}
-\noindent This aligns with the theory of set functions \cite{zaheer2017deepsets} and attention-based set models \cite{lee2019settransformer}. In practice, this property is crucial because \hlprob{measurement sequences are irregular and may arrive unordered or with missing entries}.
+\noindent This aligns with the theory of set functions \cite{zaheer2017deepsets}. In practice, this property is crucial because \hlprob{measurement sequences are irregular and may arrive unordered or with missing entries}.
 
 \subsection{Map encoder: radio + semantic fields}
 \label{sec:map}
 
 We represent map context as a multi-channel tensor $\mathbf{M}\in\R^{(C_r+C_o)\times H\times W}$ by early fusion of radio-map channels $\mathbf{R}$ and semantic channels $\mathbf{O}$.
-Our implementation provides two encoder options, configurable via the \texttt{use\_e2\_equivariant} flag:
+Our implementation provides two encoder options, configurable via the \texttt{use\_e2\_equivariant} flag; the standard ViT is the default, and the E(2)-equivariant variant is optional.
 
 \paragraph{Standard Vision Transformer (default).}
 The default encoder is a standard Vision Transformer (ViT) \cite{dosovitskiy2021vit}. The input $\mathbf{M}$ is partitioned into non-overlapping patches, projected to embeddings via a convolutional layer, and processed by a stack of Transformer encoder layers with learned positional embeddings. A prepended \texttt{[CLS]} token aggregates global context, and the spatial patch embeddings form the token sequence $\mathbf{S}\in\R^{N\times d_m}$ passed to the fusion stage. This encoder is computationally efficient and provides strong baselines, but is \emph{not} equivariant to rotations or reflections of the input map.
 
-\paragraph{E(2)-Equivariant Vision Transformer (optional).}
+\paragraph{E(2)-Equivariant Vision Transformer (optional, not default).}
 For applications where rotation/reflection invariance is important (e.g., datasets with diverse map orientations), we provide an optional E(2)-Equivariant ViT architecture based on GE-ViT \cite{xu2023evit}.
 This encoder explicitly preserves rotational and reflectional symmetries under the discrete group $G=p4m$ (the symmetry group of the square, $|G|=8$).
 The input map $\mathbf{M}$ is first partitioned into patches, then mapped from the planar domain to the group domain via a \emph{lifting self-attention} layer:
@@ -426,7 +428,7 @@ A residual MLP refines $\mathbf{z}_f$ (standard Transformer block structure \cit
 This multi-query design (with $K_q=4$ by default) allows the fusion module to capture multiple aspects of the radio-map relationship simultaneously, providing richer context for the downstream heads than single-query attention.
 
 % ---------------------------------------------
-\subsection{Coarse-to-fine mixture posterior}
+\subsection{Coarse-to-fine hypothesis re-ranking}
 \label{sec:posterior}
 
 \paragraph{Hierarchical latent variable view.}
@@ -438,52 +440,49 @@ We introduce a discrete latent cell variable $C\in\{1,\dots,G^2\}$ and factor th
 \end{equation}
 The coarse head outputs logits over cells and a categorical distribution
 \begin{equation}
-  \pi_c \;=\; p_\theta(C=c\mid\mathcal{X},\mathcal{M}) = \softmax(\mathbf{u})_c,\qquad \mathbf{u}=\mathrm{MLP}_{\text{coarse}}(\mathbf{z}_f).
+  \pi_c \,=\, p_\theta(C=c\mid\mathcal{X},\mathcal{M}) = \softmax(\mathbf{u})_c,\qquad \mathbf{u}=\mathrm{MLP}_{\text{coarse}}(\mathbf{z}_f).
   \label{eq:coarse_pi}
 \end{equation}
 
-\paragraph{Cell-conditioned continuous refinement.}
-For each cell $c$, the fine head parameterizes a local Gaussian over positions centered at the cell center $\mathbf{c}_c$:
+\paragraph{Cell-conditioned refinement.}
+For each cell $c$, the fine head predicts an offset and a score conditioned on the fused embedding, a 2D sinusoidal encoding of the cell index, and an optional local map patch embedding:
 \begin{equation}
-  p_\theta(\mathbf{y}\mid C=c,\mathcal{X},\mathcal{M})
-  = \mathcal{N}\!\left(\mathbf{y}\,;\; \mathbf{c}_c + \bm\mu_c,\;\diag(\bm\sigma_c^2)\right),
-  \label{eq:fine_gauss}
+  \phi(c)=\mathrm{PE}_{2D}(r_c,q_c),\qquad
+  \ell_c=\mathrm{MapEnc}\!\left(\mathrm{crop}(\mathbf{M}, \mathbf{c}_c, P)\right),
+  \label{eq:fine_map_patch}
 \end{equation}
-with $(\bm\mu_c,\bm\sigma_c)=\mathrm{Head}_{\text{fine}}(\mathbf{z}_f,\,e_{\text{cell}}(c))$ and $e_{\text{cell}}$ a learned embedding of the cell index (a ``local chart'' for each coarse region).
-This \emph{cell-conditioned} parameterization is essential: without $e_{\text{cell}}(c)$, \hlprob{the fine head cannot represent spatially varying offsets/uncertainties tied to the coarse hypothesis}.
-
-\paragraph{Top-$K$ truncation.}
-Evaluating all $G^2$ components can be expensive. We therefore retain only the top-$K$ most likely cells $\{c_k\}_{k=1}^K$ under $\bm\pi$ and renormalize:
 \begin{equation}
-  \hat\pi_k = \frac{\pi_{c_k}}{\sum_{j=1}^K \pi_{c_j}},\qquad k=1,\dots,K.
-  \label{eq:topk_pi}
+  [\tilde{\boldsymbol{\Delta}}_c, s_c]
+  = f_{\text{fine}}\big([\mathbf{z}_f \Vert \phi(c) \Vert \ell_c]\big),
+  \label{eq:fine_refiner}
 \end{equation}
-The resulting approximation is the top-$K$ mixture posterior
 \begin{equation}
-  p_{\theta,K}(\mathbf{y}\mid \mathcal{X},\mathcal{M})
-  = \sum_{k=1}^K \hat\pi_k~\mathcal{N}\!\left(\mathbf{y};\mathbf{c}_{c_k}+\bm\mu_{c_k},\diag(\bm\sigma_{c_k}^2)\right).
-  \label{eq:topk_mixture}
+  \boldsymbol{\Delta}_c = \gamma\,\tanh(\tilde{\boldsymbol{\Delta}}_c)\odot \mathbf{s},
+  \qquad
+  \mathbf{y}_c = \mathbf{c}_c + \boldsymbol{\Delta}_c,
+  \label{eq:fine_bounds}
 \end{equation}
-This truncation preserves multi-modality while controlling computation; see Appendix~\ref{app:topk} for a quantitative discussion of the approximation error.
+where $(r_c,q_c)$ are the row/column indices of cell $c$, $P$ is the local patch size, $\mathbf{s}=(s_x,s_y)$ is the cell size, $\odot$ denotes elementwise scaling, and $\ell_c=\mathbf{0}$ when local map conditioning is disabled.
 
-\paragraph{Uncertainty decomposition.}
-The mixture posterior supports a principled decomposition of predictive uncertainty:
-\begin{align}
-  \E[\mathbf{y}] &= \sum_{k=1}^K \hat\pi_k\,\bm m_k,
-  \qquad \bm m_k=\mathbf{c}_{c_k}+\bm\mu_{c_k}, \\
-  \Cov[\mathbf{y}]
-  &= \sum_{k=1}^K \hat\pi_k \Big(\bm\Sigma_k + (\bm m_k-\E[\mathbf{y}])(\bm m_k-\E[\mathbf{y}])^\top\Big),
-  \quad \bm\Sigma_k=\diag(\bm\sigma_{c_k}^2),
-  \label{eq:mixture_cov}
-\end{align}
-where the first term is within-component (heteroscedastic) uncertainty and the second captures between-component multi-modality.
-
-% ---------------------------------------------
+\paragraph{Top-$K$ re-ranking.}
+We retain the top-$K$ most likely cells $\{c_k\}_{k=1}^K$ under $\bm\pi$ and compute re-ranking logits
+\begin{equation}
+  \ell_k = \log \pi_{c_k} + s_{c_k},\qquad
+  \alpha_k = \softmax(\bm\ell)_k,
+  \label{eq:topk_rerank}
+\end{equation}
+yielding a discrete hypothesis distribution
+\begin{equation}
+  q_{\theta,K}(\mathbf{y}\mid \mathcal{X},\mathcal{M})
+  = \sum_{k=1}^K \alpha_k\,\delta(\mathbf{y}-\mathbf{y}_{c_k}).
+  \label{eq:topk_discrete}
+\end{equation}
+This preserves multi-modality while keeping computation bounded.
 
 \section{Learning Objective and Physics Coupling}
 \label{sec:loss}
 
-Training must (i) concentrate probability mass on the correct region of $\Omega$, (ii) learn calibrated uncertainty and multi-modality, and (iii) respect the propagation constraints encoded by the radio maps. We therefore combine a \emph{coarse} classification term, a \emph{fine} mixture negative log-likelihood, and a \emph{physics} consistency term.
+Training must (i) concentrate probability mass on the correct region of $\Omega$, (ii) learn multi-modal re-ranking, and (iii) respect the propagation constraints encoded by the radio maps. We therefore combine a \emph{coarse} classification term, a \emph{fine} expected regression loss, and a \emph{physics} consistency term.
 \noindent We abbreviate the supervised data term as $\mathcal{L}_{\text{data}}\triangleq \lambda_{\text{coarse}}\,\mathcal{L}_{\text{coarse}} + \lambda_{\text{fine}}\,\mathcal{L}_{\text{fine}}$.
 
 \subsection{Coarse supervision on the latent cell}
@@ -501,18 +500,16 @@ The coarse head outputs $\bm\pi$ (Eq.~\eqref{eq:coarse_pi}). We apply the standa
 \end{equation}
 This term is particularly important with top-$K$ routing: if the true cell is not in the selected set, gradients from the fine loss alone may be weak or absent for the coarse logits. Eq.~\eqref{eq:coarse_ce} ensures the gating distribution learns to place mass near the correct region.
 
-\subsection{\texorpdfstring{Fine top-$K$ mixture negative log-likelihood}{Fine top-K mixture negative log-likelihood}}
-\label{sec:nll}
+\subsection{Fine top-$K$ expected regression loss}
+\label{sec:topk_loss}
 
-Given the top-$K$ posterior $p_{\theta,K}$ (Eq.~\eqref{eq:topk_mixture}), the proper scoring rule for density prediction is the negative log-likelihood
+Given the top-$K$ hypotheses $\{\mathbf{y}_{c_k}\}_{k=1}^K$ and weights $\alpha_k$ (Eq.~\eqref{eq:topk_rerank}), we minimize the expected regression error
 \begin{equation}
   \mathcal{L}_{\text{fine}}(\theta)
-  = -\log p_{\theta,K}(\mathbf{y}^\star\mid \mathcal{X},\mathcal{M})
-  = -\LogSumExp_{k=1}^K \left(\log \hat\pi_k + \log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k)\right).
-  \label{eq:mixture_nll}
+  = \sum_{k=1}^K \alpha_k\,\ell\big(\mathbf{y}^\star, \mathbf{y}_{c_k}\big),
+  \label{eq:topk_expected}
 \end{equation}
-Equation~\eqref{eq:mixture_nll} is \emph{not} equal to the commonly used surrogate $\sum_k \hat\pi_k\,\big(-\log \mathcal{N}(\mathbf{y}^\star;\bm m_k,\bm\Sigma_k)\big)$.
-By Jensen's inequality, \hlprob{the surrogate upper-bounds the true mixture NLL and tends to encourage \emph{all} components to explain every sample, reducing useful multi-modality}. In contrast, Eq.~\eqref{eq:mixture_nll} rewards allocating probability mass to \emph{at least one} well-placed component, which is the correct likelihood for mixture density networks \cite{bishop1994mdn}.
+where $\ell$ is a Smooth-L1 loss. This objective encourages at least one hypothesis to align with the ground truth while preserving multi-modality through the re-ranking weights.
 
 \subsection{Differentiable radio-map lookup}
 \label{sec:lookup}
@@ -575,31 +572,29 @@ where $\hat{\mathbf{y}}_\theta$ is a point estimate extracted from the posterior
 
 \subsection{Point prediction}
 
-From the mixture posterior $p_{\theta,K}$ we can extract:
+From the Top-$K$ hypothesis distribution $q_{\theta,K}$ we can extract:
 \begin{itemize}
-\item \textbf{MAP component mean:} $\hat{\mathbf{y}}_{\text{MAP}}=\bm m_{k^\star}$ with $k^\star=\argmax_k \hat\pi_k$.
-\item \textbf{Posterior mean:} $\hat{\mathbf{y}}_{\text{mean}}=\E[\mathbf{y}]$ (Eq.~\eqref{eq:mixture_cov}).
+\item \textbf{Best hypothesis:} $\hat{\mathbf{y}}_{\text{MAP}}=\mathbf{y}_{c_{k^\star}}$ with $k^\star=\argmax_k \alpha_k$.
+\item \textbf{Weighted mean:} $\hat{\mathbf{y}}_{\text{mean}}=\sum_{k=1}^K \alpha_k\,\mathbf{y}_{c_k}$.
 \end{itemize}
-The MAP mean is robust for multi-modal distributions (it chooses a single hypothesis), while the posterior mean can be biased toward ``in-between'' regions when hypotheses are far apart.
+The best-hypothesis prediction is robust for multi-modal distributions (it chooses a single hypothesis), while the posterior mean can be biased toward ``in-between'' regions when hypotheses are far apart.
 
-\subsection{MAP refinement via energy minimization}
+\subsection{Physics-only refinement via energy minimization}
 \label{sec:refine}
 
-The physics loss enables test-time refinement. We define an energy over $\mathbf{y}$ that can combine the learned posterior density and the physics likelihood:
+The physics loss enables test-time refinement. In our current implementation we use physics-only refinement:
 \begin{equation}
-  \mathcal{E}(\mathbf{y})
-  = \alpha\Big(-\log p_{\theta,K}(\mathbf{y}\mid\mathcal{X},\mathcal{M})\Big) + \beta\,\mathcal{L}_{\text{phys}}(\mathbf{y}),
+  \mathcal{E}(\mathbf{y}) = \mathcal{L}_{\text{phys}}(\mathbf{y}),
   \label{eq:refine_energy}
 \end{equation}
-where $\alpha\ge 0$ and $\beta\ge 0$ control the trust in the network posterior and the physics term, respectively. 
-The special case $\alpha=0$ corresponds to \emph{physics-only} refinement (the setting used in our current refinement module), while $\alpha>0$ yields a \hlsol{composite MAP objective that keeps refined solutions in high-density regions of the learned posterior}.
+An optional extension adds a posterior prior via $-\log q_{\theta,K}(\mathbf{y}\mid\mathcal{X},\mathcal{M})$, yielding a composite MAP objective that keeps refined solutions in high-density regions of the learned posterior.
 
 \begin{algorithm}[t]
 \caption{Optional test-time refinement (per sample)}
 \label{alg:refine}
 \begin{algorithmic}[1]
-\Require posterior parameters $\{\hat\pi_k,\bm m_k,\bm\Sigma_k\}_{k=1}^K$, observed features $\mathbf{m}$, radio map $\mathbf{R}$
-\State initialize $\mathbf{y}^{(0)} \gets \bm m_{k^\star}$ where $k^\star=\argmax_k \hat\pi_k$
+\Require hypothesis parameters $\{\alpha_k, \mathbf{y}_{c_k}\}_{k=1}^K$, observed features $\mathbf{m}$, radio map $\mathbf{R}$
+\State initialize $\mathbf{y}^{(0)} \gets \mathbf{y}_{c_{k^\star}}$ where $k^\star=\argmax_k \alpha_k$
 \For{$i=0,1,\dots,S-1$}
   \State $\mathbf{g}^{(i)} \gets \nabla_{\mathbf{y}} \mathcal{E}(\mathbf{y}^{(i)})$ using Eq.~\eqref{eq:refine_energy} and differentiable lookup
   \State $\mathbf{y}^{(i+1)} \gets \Pi_{\Omega}\!\left(\mathbf{y}^{(i)} - \eta\,\mathbf{g}^{(i)}\right)$ \Comment{step size $\eta$, project to extent}
@@ -608,7 +603,7 @@ The special case $\alpha=0$ corresponds to \emph{physics-only} refinement (the s
 \end{algorithmic}
 \end{algorithm}
 
-Refinement is most useful when the posterior is diffuse (low confidence) or when small corrections are needed to satisfy propagation constraints. In practice, refinement can be applied conditionally (e.g., only when $\max_k \hat\pi_k$ falls below a threshold). Refining multiple candidate hypotheses $\{\bm m_k\}_{k=1}^K$ and selecting the one with the lowest physics loss is a simple extension that further improves robustness when the posterior is strongly multi-modal.
+Refinement is most useful when the hypothesis weights are diffuse (low confidence) or when small corrections are needed to satisfy propagation constraints. In practice, refinement can be applied conditionally (e.g., only when $\max_k \alpha_k$ falls below a threshold). Refining multiple candidate hypotheses $\{\mathbf{y}_{c_k}\}_{k=1}^K$ and selecting the one with the lowest physics loss is a simple extension that further improves robustness when the posterior is strongly multi-modal.
 
 % ---------------------------------------------
 \section{Data Generation Pipeline and Experimental Protocol}
@@ -616,7 +611,7 @@ Refinement is most useful when the posterior is diffuse (low confidence) or when
 
 \subsection{Synthetic data generation with differentiable ray tracing}
 
-We generate datasets by (i) constructing 3D scenes from GIS/OSM data, (ii) placing transmitter sites according to configurable strategies, and (iii) running differentiable ray tracing to compute dense radio maps and sample sparse measurement sequences. Sionna RT provides GPU-accelerated differentiable ray tracing for radio propagation and supports radio-map computation \cite{hoydis2023sionnart,aitaoudia2025sionna_techreport}. The resulting dataset is stored in a chunked array format (Zarr) to support large-scale training.
+We generate datasets by (i) constructing 3D scenes from GIS/OSM data, (ii) placing transmitter sites according to configurable strategies, and (iii) running differentiable ray tracing to compute dense radio maps and sample sparse measurement sequences. Sionna RT provides GPU-accelerated differentiable ray tracing for radio propagation and supports radio-map computation \cite{hoydis2023sionnart,aitaoudia2025sionna_techreport}. The resulting dataset is stored in an LMDB key-value format to support large-scale training.
 
 \subsection{Inputs and channels}
 
@@ -639,47 +634,73 @@ Max sequence & $T=20$ & Sufficient to capture movement trends without high memor
 \multicolumn{3}{l}{\textit{Neural Architecture}} \\
 Radio Encoder & \begin{tabular}[t]{@{}l@{}}$d_r=256$, $L=4$, $H=8$\\\texttt{[CLS]} pooling\end{tabular} & \textbf{Standard Transformer:} Processes radio token sets with self-attention. \texttt{[CLS]} token provides permutation-invariant pooling. \\
 Map Encoder & \begin{tabular}[t]{@{}l@{}}\textbf{Default:} Standard ViT\\$d_m=384$, $L=6$, $H=6$\\\texttt{patch\_size}=$16$\end{tabular} & \textbf{Efficient:} Standard ViT is computationally efficient and performs well when map orientations are consistent. \\
-(Optional) & \begin{tabular}[t]{@{}l@{}}E2-ViT, \texttt{group}=$p4m$\\$|G|=8$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance; higher compute cost. \\
+(Optional, off by default) & \begin{tabular}[t]{@{}l@{}}E2-ViT, \texttt{group}=$p4m$\\$|G|=8$\end{tabular} & \textbf{Equivariant:} E2-ViT (lifting + group attn) ensures rotation/reflection invariance; higher compute cost. \\
 Fusion & \begin{tabular}[t]{@{}l@{}}$d_f=256$, $H=8$\\$K_q=4$ query tokens\end{tabular} & \textbf{Multi-query:} Multiple learnable queries attend to map tokens, conditioned on radio features. \\
-Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: MLP$\to G^2$\\Fine: 2D pos.\ enc., GMM\end{tabular} & \textbf{Hierarchical:} Coarse classification over grid cells; fine head outputs cell-conditioned Gaussian means/variances. \\
+Positional Heads & \begin{tabular}[t]{@{}l@{}}Coarse: MLP$\to G^2$\\Fine: 2D pos.\ enc. +\\optional local map patches\\Top-$K$ re-ranking\end{tabular} & \textbf{Hierarchical:} Coarse classification over grid cells; fine head uses 2D cell encoding (and optional local map patches) to predict offsets and scores. \\
 \midrule
 \multicolumn{3}{l}{\textit{Training}} \\
-Mixture size & Top-$K=5$ & Covers primary ambiguous modes (e.g., street canyon reflections) while suppressing noise. \\
-Loss weights & $\lambda_{\text{coarse}}=0.5$, $\lambda_{\text{fine}}=1.0$ & Fine NLL is primary; coarse ensures correct cell is in top-$K$. \\
+Top-$K$ size & Top-$K=5$ & Covers primary ambiguous modes (e.g., street canyon reflections) while suppressing noise. \\
+Loss weights & $\lambda_{\text{coarse}}=0.5$, $\lambda_{\text{fine}}=1.0$ & Fine expected error is primary; coarse ensures correct cell is in top-$K$. \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Metrics and ablations}
 
-We recommend reporting (i) median/percentile Euclidean error in meters, (ii) NLL (Eq.~\eqref{eq:mixture_nll}) to assess uncertainty quality, (iii) calibration curves (optional), and (iv) refinement gain (improvement after Algorithm~\ref{alg:refine}). Key ablations include removing map conditioning, removing physics loss, removing top-$K$ mixture (single-mode regression), and removing cell-conditioned fine embeddings.
+We recommend reporting (i) median/percentile Euclidean error in meters, (ii) hypothesis entropy or max-weight confidence to assess confidence quality, (iii) calibration curves (optional), and (iv) refinement gain (improvement after Algorithm~\ref{alg:refine}). Key ablations include removing map conditioning, removing physics loss, removing top-$K$ re-ranking (single-mode regression), and removing cell-conditioned fine embeddings.
 
 % ---------------------------------------------
 \section{Experimental Results}
 \label{sec:results}
 
-We demonstrate the model's ability to leverage both radio propagation physics and semantic map context for probabilistic localization. Figure~\ref{fig:environment} shows the input modalities: the radio map captures signal propagation patterns (shadowing, reflections), while the semantic map provides building geometry constraints.
+We demonstrate the model's ability to leverage radio propagation physics and semantic map context for probabilistic localization. Figure~\ref{fig:map_layers} visualizes the multi-channel inputs used by the map encoder: radio-map channels capture propagation structure (shadowing, reflections), while semantic layers encode building geometry and terrain constraints.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\linewidth]{figures/environment_context.png}
-\caption{Input modalities for map-conditioned localization: (Left) Radio map showing path gain distribution from ray tracing. (Right) Semantic map with building footprints that constrain feasible UE positions and explain signal occlusions.}
-\label{fig:environment}
+\includegraphics[width=\linewidth]{figures/map_layers.png}
+\caption{Input map stack used by the map encoder. The top row shows the five radio-map channels (e.g., path gain, ToA, SNR/SINR, throughput), and the bottom row shows the semantic channels (height/footprint/roads/terrain).}
+\label{fig:map_layers}
 \end{figure}
 
-Figure~\ref{fig:posterior} visualizes the model's predicted posterior density as a Gaussian mixture. The heatmap reveals multi-modal ambiguity in challenging scenarios (e.g., signal reflections from multiple buildings), demonstrating that the model correctly quantifies localization uncertainty rather than producing overconfident point estimates.
+Figure~\ref{fig:coarse_to_fine} illustrates the coarse-to-fine posterior: the coarse heatmap highlights candidate grid cells, and the top-$K$ re-ranked hypotheses show weighted candidate positions aligned with map structure.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.8\linewidth]{figures/posterior_density.png}
-\caption{Predicted posterior density visualization: The GMM heatmap (viridis colormap) shows probability mass concentrated in plausible regions consistent with both radio measurements and map geometry. Red star indicates ground truth; cyan marker shows MAP estimate. The multi-modal structure captures inherent ambiguity in the inverse problem.}
-\label{fig:posterior}
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/coarse_heatmap.png}
+  \caption{Coarse cell distribution with the ground-truth cell/position.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/posterior_overlay.png}
+  \caption{Top-$K$ hypothesis overlay with weighted candidates and predicted mean.}
+\end{subfigure}
+\caption{Coarse-to-fine posterior visualization on a representative sample.}
+\label{fig:coarse_to_fine}
+\end{figure}
+
+We also visualize the optional physics-only refinement step. Figure~\ref{fig:refinement_effect} shows how refinement moves the prediction along radio-map gradients and reduces the error for the shown sample. Figure~\ref{fig:error_distribution} summarizes batch-level error statistics with a histogram, CDF, and box plot.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/refinement_effect.png}
+\caption{Physics-only refinement example. The left panel shows the refinement trajectory over the path-gain map, and the right panel compares error before vs.\ after refinement.}
+\label{fig:refinement_effect}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/error_distribution.png}
+\caption{Batch error distribution: histogram, CDF, and box plot summarizing median and tail behavior.}
+\label{fig:error_distribution}
 \end{figure}
 
 % ---------------------------------------------
 \section{Conclusion and Limitations}
 
-We presented a physics-informed, map-conditioned Transformer for UE localization that outputs a multi-modal posterior over position, coupled to a differentiable radio-map likelihood. The model combines amortized inference (fast prediction, uncertainty) with physics-based consistency (regularization and optional refinement). The modular architecture supports both standard Vision Transformer and E(2)-equivariant encoders for map processing, allowing practitioners to trade off computational cost for rotational invariance as needed.
+We presented a physics-informed, map-conditioned Transformer for UE localization that outputs a multi-modal hypothesis distribution over position, coupled to a differentiable radio-map likelihood. The model combines amortized inference (fast prediction, confidence) with physics-based consistency (regularization and optional refinement). The modular architecture supports both standard Vision Transformer and E(2)-equivariant encoders for map processing, allowing practitioners to trade off computational cost for rotational invariance as needed.
 
 \paragraph{Limitations and future work.}
 Our current formulation relies on precomputed radio maps and therefore inherits simulator bias; bridging the sim-to-real gap (e.g., by learning residual corrections or jointly learning material parameters as in differentiable RT) is an important direction. While we provide an optional E(2)-equivariant map encoder, evaluating its benefits on diverse real-world datasets with varying map orientations remains future work. Additional structured priors and stronger relative positional attention mechanisms are also promising extensions.
@@ -690,10 +711,11 @@ Our current formulation relies on precomputed radio maps and therefore inherits 
 \section{\texorpdfstring{Top-$K$ truncation: approximation discussion}{Top-K truncation: approximation discussion}}
 \label{app:topk}
 
-Let $p(\mathbf{y})=\sum_{c=1}^{G^2}\pi_c\,\varphi_c(\mathbf{y})$ be the full mixture with component densities $\varphi_c$ and weights $\pi_c$.
-Let $\mathcal{K}$ be the set of top-$K$ indices and $\pi_{\mathcal{K}}=\sum_{c\in\mathcal{K}}\pi_c$. The truncated-renormalized mixture is
-$p_K(\mathbf{y})=\sum_{c\in\mathcal{K}}(\pi_c/\pi_{\mathcal{K}})\varphi_c(\mathbf{y})$.
-The lost mass is $1-\pi_{\mathcal{K}}$. If $\pi_{\mathcal{K}}\approx 1$, then $p_K$ is close to $p$ in total variation whenever the omitted components do not carry significant mass near $\mathbf{y}^\star$. Empirically, we find that modest $K$ (e.g., $K=5$) captures multi-modality while keeping inference efficient.
+Let $\pi_c$ denote the coarse cell probabilities and $s_c$ the fine scores. The full hypothesis set over all $G^2$ cells would assign logits $\ell_c = \log \pi_c + s_c$ and weights $\alpha_c = \softmax(\ell)_c$. We approximate this by retaining only the top-$K$ cells under $\pi_c$ and renormalizing their logits:
+\[
+\alpha_k = \frac{\exp(\log \pi_{c_k} + s_{c_k})}{\sum_{j=1}^K \exp(\log \pi_{c_j} + s_{c_j})}.
+\]
+If the top-$K$ coarse mass dominates (i.e., $\sum_{k=1}^K \pi_{c_k} \approx 1$), this truncation preserves the dominant modes while keeping inference efficient.
 
 % ---------------------------------------------
 \begin{thebibliography}{99}
@@ -712,16 +734,6 @@ A.~Dosovitskiy, L.~Beyer, A.~Kolesnikov, D.~Weissenborn, X.~Zhai, T.~Unterthiner
 M.~Zaheer, S.~Kottur, S.~Ravanbakhsh, B.~P{\'o}czos, R.~Salakhutdinov, and A.~Smola.
 \newblock Deep sets.
 \newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2017.
-
-\bibitem{lee2019settransformer}
-J.~Lee, Y.~Lee, J.~Kim, A.~R.~Kosiorek, S.~Choi, and Y.~W.~Teh.
-\newblock Set transformer: A framework for attention-based permutation-invariant neural networks.
-\newblock In \emph{International Conference on Machine Learning (ICML)}, 2019.
-
-\bibitem{bishop1994mdn}
-C.~M.~Bishop.
-\newblock Mixture density networks.
-\newblock Technical Report NCRG/94/004, Aston University, 1994.
 
 \bibitem{hoydis2023sionnart}
 J.~Hoydis, F.~A{\"i}t~Aoudia, S.~Cammerer, M.~Nimier-David, N.~Binder, G.~Marcus, and A.~Keller.

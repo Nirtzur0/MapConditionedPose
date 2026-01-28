@@ -27,6 +27,16 @@ except ImportError:
     SIONNA_AVAILABLE = False
     TF_AVAILABLE = False
 
+SIONNA_MIMO_AVAILABLE = False
+_CAPACITY_OPTIMAL = None
+if SIONNA_AVAILABLE:
+    try:
+        from sionna.mimo import capacity_optimal as _CAPACITY_OPTIMAL
+        SIONNA_MIMO_AVAILABLE = True
+    except Exception:
+        _CAPACITY_OPTIMAL = None
+        SIONNA_MIMO_AVAILABLE = False
+
 
 class PHYFAPIFeatureExtractor:
     """
@@ -45,6 +55,34 @@ class PHYFAPIFeatureExtractor:
         
         logger.info(f"PHYFAPIFeatureExtractor initialized: NF={noise_figure_db} dB, "
                    f"beams={num_beams if enable_beam_management else 'disabled'}")
+        if SIONNA_AVAILABLE and TF_AVAILABLE and not SIONNA_MIMO_AVAILABLE:
+            logger.info("sionna.mimo not available; using Shannon-capacity fallback for CQI/RI.")
+
+    def _compute_capacity(self, h_perm: Any, n0_eff: Any, ops: TensorOps) -> Any:
+        """Compute MIMO capacity per subcarrier for h_perm [B, F, Rx, Tx]."""
+        if ops.is_tensor(h_perm):
+            # SISO/SIMO shortcut
+            if int(h_perm.shape[-1]) == 1:
+                h_sq = tf.reduce_sum(tf.square(tf.abs(h_perm)), axis=[-2, -1])
+                snr = h_sq / n0_eff
+                return tf.math.log(1.0 + snr) / tf.math.log(2.0)
+
+            s = tf.linalg.svd(h_perm, compute_uv=False)
+            params = tf.square(s) / n0_eff
+            cap_per_stream = tf.math.log(1.0 + params) / tf.math.log(2.0)
+            return tf.reduce_sum(cap_per_stream, axis=-1)
+
+        # NumPy path
+        h_np = ops.to_numpy(h_perm)
+        if h_np.shape[-1] == 1:
+            h_sq = np.sum(np.abs(h_np) ** 2, axis=(-2, -1))
+            snr = h_sq / n0_eff
+            return np.log2(1.0 + snr)
+
+        s = np.linalg.svd(h_np, compute_uv=False)
+        params = (s ** 2) / n0_eff
+        cap_per_stream = np.log2(1.0 + params)
+        return np.sum(cap_per_stream, axis=-1)
     
     def extract(self, 
                 rt_features: RTLayerFeatures,
@@ -59,9 +97,15 @@ class PHYFAPIFeatureExtractor:
 
         if pilot_re_indices is None:
             if ops.is_tensor(ref_data) and TF_AVAILABLE:
-                pilot_re_indices = tf.range(0, 100, 4)
+                num_sc = tf.shape(ref_data)[-1]
+                pilot_re_indices = tf.range(0, num_sc, 4)
             else:
-                pilot_re_indices = np.arange(0, 100, 4)
+                try:
+                    num_sc = int(ref_data.shape[-1])
+                except Exception:
+                    num_sc = 100
+                step = 4 if num_sc >= 4 else 1
+                pilot_re_indices = np.arange(0, num_sc, step)
         
         # Compute noise power
         bandwidth_hz = rt_features.bandwidth_hz
@@ -106,10 +150,15 @@ class PHYFAPIFeatureExtractor:
         
         # Only use Sionna advanced capacity if available and using TF backend
         if SIONNA_AVAILABLE and channel_matrix is not None and ops.is_tensor(channel_matrix):
-            from sionna.mimo import capacity_optimal
-            
-            # channel_matrix: [Targets, RxAnt, Sources, TxAnt, Freq]
-            h_serv = channel_matrix[:, :, 0, :, :] # Slice Source 0 -> [Batch, RxAnt, TxAnt, Freq]
+            # channel_matrix: [Batch, RxAnt, Sources, TxAnt, Freq]
+            # or [Batch, Rx, RxAnt, Sources, TxAnt, Freq]
+            cm_rank = len(ops.shape(channel_matrix))
+            if cm_rank == 6:
+                # [B, Rx, RxAnt, C, TxAnt, F] -> serve Rx=0, C=0
+                h_serv = channel_matrix[:, 0, :, 0, :, :]
+            else:
+                # [B, RxAnt, C, TxAnt, F]
+                h_serv = channel_matrix[:, :, 0, :, :] # Slice Source 0 -> [Batch, RxAnt, TxAnt, Freq]
             
             # Permute to [Batch, Freq, RxAnt, TxAnt]
             h_perm = ops.transpose(h_serv, perm=[0, 3, 1, 2])
@@ -117,10 +166,11 @@ class PHYFAPIFeatureExtractor:
             n0_eff = noise_power_linear / float(ops.shape(h_perm)[1])
             
             # Capacity (bits/s/Hz)
-            cap_bits = capacity_optimal(h_perm, n0_eff)
+            if _CAPACITY_OPTIMAL is not None:
+                cap_bits = _CAPACITY_OPTIMAL(h_perm, n0_eff)
+            else:
+                cap_bits = self._compute_capacity(h_perm, n0_eff, ops)
             # Result: [Batch, Freq]
-            
-            # Average SE
             se_avg = ops.mean(cap_bits, axis=-1) # [Batch]
             
             # Map SE to Effective SINR
@@ -128,81 +178,71 @@ class PHYFAPIFeatureExtractor:
             # ops doesn't have pow(2, x). Use generic.
             # TF: 2^x = exp(x * ln(2))
             # Numpy: 2**x
-            
-            if ops.is_tensor(se_avg):
-                sinr_eff_linear = tf.pow(2.0, se_avg) - 1.0
-            else:
-                sinr_eff_linear = np.power(2.0, se_avg) - 1.0
+            if se_avg is not None:
+                if ops.is_tensor(se_avg):
+                    sinr_eff_linear = tf.pow(2.0, se_avg) - 1.0
+                else:
+                    sinr_eff_linear = np.power(2.0, se_avg) - 1.0
+                    
+                sinr_eff_db = 10.0 * ops.log10(sinr_eff_linear + 1e-10)
                 
-            sinr_eff_db = 10.0 * ops.log10(sinr_eff_linear + 1e-10)
-            
-            # Expand to [Batch, 1, 1]
-            sinr_eff_db = ops.expand_dims(ops.expand_dims(sinr_eff_db, -1), -1) # reshape -1, 1, 1 not in ops
-            # ops.expand_dims twice?
-            
-            cqi = compute_cqi(sinr_eff_db)
-            sinr = sinr_eff_db
-            
-            # RI Estimate
-            h_mean = ops.mean(h_perm, axis=1) # [Batch, RxAnt, TxAnt]
-            
-            if ops.is_tensor(h_mean):
-                s = tf.linalg.svd(h_mean, compute_uv=False)
-                ri_val = tf.reduce_sum(tf.cast(s > 1e-9, tf.int32), axis=-1, keepdims=True)
-                ri = tf.reshape(ri_val, [-1, 1, 1])
-            else:
-                # Numpy svd
-                s = np.linalg.svd(h_mean, compute_uv=False)
-                ri_val = np.sum(s > 1e-9, axis=-1, keepdims=True)
-                ri = ri_val.reshape(-1, 1, 1)
+                # Expand to [Batch, 1, 1]
+                sinr_eff_db = ops.expand_dims(ops.expand_dims(sinr_eff_db, -1), -1) # reshape -1, 1, 1 not in ops
+                # ops.expand_dims twice?
+                
+                serving_sinr_db = sinr_eff_db
+                serving_cqi = compute_cqi(serving_sinr_db)
+                
+                # RI Estimate
+                h_mean = ops.mean(h_perm, axis=1) # [Batch, RxAnt, TxAnt]
+                
+                if ops.is_tensor(h_mean):
+                    s = tf.linalg.svd(h_mean, compute_uv=False)
+                    ri_val = tf.reduce_sum(tf.cast(s > 1e-9, tf.int32), axis=-1, keepdims=True)
+                    ri = tf.reshape(ri_val, [-1, 1, 1])
+                else:
+                    # Numpy svd
+                    s = np.linalg.svd(h_mean, compute_uv=False)
+                    ri_val = np.sum(s > 1e-9, axis=-1, keepdims=True)
+                    ri = ri_val.reshape(-1, 1, 1)
 
-        else:
-             # Fallback Legacy
-             pass
-             
-        # RSSI
-        # rssi_linear = 10^((rsrp - 30)/10) + noise
+        # RSSI (wideband) approximation: sum over N resource elements + noise.
+        # This avoids RSRQ saturation at the upper bound.
+        rsrq_n_re = 12.0
         if ops.is_tensor(rsrp_dbm):
-            rssi_linear = tf.pow(10.0, (rsrp_dbm - 30.0)/10.0) + noise_power_linear
+            rsrp_linear = tf.pow(10.0, (rsrp_dbm - 30.0) / 10.0)
+            rssi_linear = rsrp_linear * rsrq_n_re + noise_power_linear
         else:
-            rssi_linear = 10**((rsrp_dbm - 30) / 10) + noise_power_linear
-            
-        rssi_dbm = 10.0 * ops.log10(rssi_linear) + 30.0
-            
-        # RSRQ
-        if channel_matrix is None:
-             num_cells = ops.shape(rsrp_dbm)[-1]
-             
-        rsrq = compute_rsrq(rsrp_dbm, rssi_dbm, N=12)
-        
-        # SINR (if not calculated via Capacity)
-        if sinr is None:
-            if channel_matrix is not None:
-                # compute_sinr might need ops? It uses standard operators usually.
-                sinr = compute_sinr(channel_matrix, noise_power_linear, interference_matrices)
-                if len(ops.shape(sinr)) == 2:
-                    sinr = ops.expand_dims(sinr, -1)
-            else:
-                sinr = rsrp_dbm - noise_power_dbm
+            rsrp_linear = np.power(10.0, (rsrp_dbm - 30.0) / 10.0)
+            rssi_linear = rsrp_linear * rsrq_n_re + noise_power_linear
 
-        # CQI (if not calculated)
-        if cqi is None:
+        rssi_dbm = 10.0 * ops.log10(rssi_linear + 1e-10) + 30.0
+
+        # RSRQ
+        rsrq = compute_rsrq(rsrp_dbm, rssi_dbm, N=int(rsrq_n_re))
+        
+        # SINR (per-cell when channel matrix is available)
+        if channel_matrix is not None:
+            sinr_full = compute_sinr(channel_matrix, noise_power_linear, interference_matrices)
+            if len(ops.shape(sinr_full)) == 2:
+                sinr_full = ops.expand_dims(sinr_full, -1)
+            sinr = sinr_full
+        else:
+            sinr = rsrp_dbm - noise_power_dbm
+
+        # CQI (align with SINR shape; fall back to serving-only if needed)
+        if cqi is None or ops.shape(cqi)[-1] != ops.shape(sinr)[-1]:
+            cqi = compute_cqi(sinr)
+        elif 'serving_cqi' in locals() and ops.shape(cqi)[-1] != ops.shape(rsrp_dbm)[-1]:
             cqi = compute_cqi(sinr)
         
-        # RI (if not calculated)
-        if ri is None:
+        # RI (if not calculated or mismatched shape)
+        if ri is None or (channel_matrix is not None and ops.shape(ri)[-1] != ops.shape(rsrp_dbm)[-1]):
             if channel_matrix is not None:
-                h_spatial = ops.mean(channel_matrix, axis=[-2, -1]) if ops.is_tensor(channel_matrix) else ops.mean(channel_matrix, axis=(-2, -1))
-                # My generic ops.mean(axis=Any)
-                # But TF axis can be list. Numpy axis tuple.
-                # ops.mean implementation passes straight to backend. TF supports list, Numpy supports tuple.
-                # generic: use tuple? TF convert tuple to list? TF supports tuple too in newer versions?
-                # Safer: if ops.is_tensor -> list, else tuple.
                 if ops.is_tensor(channel_matrix):
-                     h_spatial = ops.mean(channel_matrix, axis=[-2, -1])
+                    h_spatial = ops.mean(channel_matrix, axis=[-2, -1])
                 else:
-                     h_spatial = ops.mean(channel_matrix, axis=(-2, -1))
-                     
+                    h_spatial = ops.mean(channel_matrix, axis=(-2, -1))
                 ri = compute_rank_indicator(h_spatial)
             else:
                 # Default 1

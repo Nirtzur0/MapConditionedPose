@@ -14,7 +14,7 @@ import torch.nn as nn
 from typing import Dict, Tuple, Optional
 
 from .radio_encoder import RadioEncoder
-from .map_encoder import E2EquivariantMapEncoder, StandardMapEncoder
+from .map_encoder import StandardMapEncoder
 from .fusion import CrossAttentionFusion
 from .heads import CoarseHead, FineHead
 
@@ -65,42 +65,22 @@ class UELocalizationModel(nn.Module):
             rt_features_dim=radio_cfg['rt_features_dim'],
             phy_features_dim=radio_cfg['phy_features_dim'],
             mac_features_dim=radio_cfg['mac_features_dim'],
-            cfr_enabled=radio_cfg.get('cfr_enabled', False),
-            cfr_num_cells=radio_cfg.get('cfr_num_cells', 8),
-            cfr_num_subcarriers=radio_cfg.get('cfr_num_subcarriers', 64),
         )
         
-        # Map encoder: Choose between E2 equivariant and standard ViT
-        use_e2 = map_cfg.get('use_e2_equivariant', False)
-        if use_e2:
-            self.map_encoder = E2EquivariantMapEncoder(
-                img_size=map_cfg['img_size'],
-                patch_size=map_cfg.get('patch_size', 16),  # Pass patch_size!
-                in_channels=map_cfg['in_channels'],
-                d_model=map_cfg['d_model'],
-                num_heads=map_cfg['nhead'],
-                num_layers=map_cfg['num_layers'],
-                num_group_elements=map_cfg.get('num_group_elements', 8),  # p4m group by default
-                dropout=map_cfg['dropout'],
-                radio_map_channels=map_cfg['radio_map_channels'],
-                osm_map_channels=map_cfg['osm_map_channels'],
-                cache_size=map_cfg.get('cache_size', 0),
-                cache_mode=map_cfg.get('cache_mode', 'off'),
-            )
-        else:
-            self.map_encoder = StandardMapEncoder(
-                img_size=map_cfg['img_size'],
-                patch_size=map_cfg.get('patch_size', 16),
-                in_channels=map_cfg['in_channels'],
-                d_model=map_cfg['d_model'],
-                num_heads=map_cfg['nhead'],
-                num_layers=map_cfg['num_layers'],
-                dropout=map_cfg['dropout'],
-                radio_map_channels=map_cfg['radio_map_channels'],
-                osm_map_channels=map_cfg['osm_map_channels'],
-                cache_size=map_cfg.get('cache_size', 0),
-                cache_mode=map_cfg.get('cache_mode', 'off'),
-            )
+        # Map encoder: Standard ViT
+        self.map_encoder = StandardMapEncoder(
+            img_size=map_cfg['img_size'],
+            patch_size=map_cfg.get('patch_size', 16),
+            in_channels=map_cfg['in_channels'],
+            d_model=map_cfg['d_model'],
+            num_heads=map_cfg['nhead'],
+            num_layers=map_cfg['num_layers'],
+            dropout=map_cfg['dropout'],
+            radio_map_channels=map_cfg['radio_map_channels'],
+            osm_map_channels=map_cfg['osm_map_channels'],
+            cache_size=map_cfg.get('cache_size', 0),
+            cache_mode=map_cfg.get('cache_mode', 'off'),
+        )
         
         self.fusion = CrossAttentionFusion(
             d_radio=radio_cfg['d_model'],
@@ -125,8 +105,6 @@ class UELocalizationModel(nn.Module):
             d_map=map_cfg['d_model'],
             use_local_map=self.use_local_map,
             offset_scale=fine_cfg.get('offset_scale', 1.5),
-            sigma_min_ratio=fine_cfg.get('sigma_min_ratio', 0.03),
-            sigma_max_ratio=fine_cfg.get('sigma_max_ratio', 3.2),
             dropout=fine_cfg['dropout'],
         )
 
@@ -190,8 +168,9 @@ class UELocalizationModel(nn.Module):
                 - top_k_indices: [batch, k]
                 - top_k_probs: [batch, k]
                 - fine_offsets: [batch, k, 2]
-                - fine_uncertainties: [batch, k, 2]
-                - predicted_position: [batch, 2] (best prediction)
+                - fine_scores: [batch, k]
+                - predicted_position: [batch, 2] (soft re-ranked mean)
+                - predicted_position_map: [batch, 2] (best hypothesis)
         """
         # 1. Encode radio measurements
         radio_emb = self.radio_encoder(measurements)  # [B, d_radio]
@@ -233,22 +212,29 @@ class UELocalizationModel(nn.Module):
                 centers_px=centers_px,
                 patch_size=self.fine_patch_size,
             )
-        fine_offsets, fine_uncertainties = self.fine_head(
+        fine_offsets, fine_scores = self.fine_head(
             fused,
             top_k_indices,
             cell_size=self.cell_size,
             local_map_embeddings=local_map_embeddings,
-        )  # [B, k, 2], [B, k, 2]
+        )  # [B, k, 2], [B, k]
         
-        # 7. Convert to final position prediction (use highest probability cell)
-        top_cell_coords = self.coarse_head.indices_to_coords(
-            top_k_indices[:, 0:1],  # Take best cell
+        # 7. Re-ranked hypothesis prediction (coarse prior + fine score)
+        top_k_centers = self.coarse_head.indices_to_coords(
+            top_k_indices,
             self.cell_size,
             origin=self.origin,
-        )  # [B, 1, 2]
-        
-        predicted_position = top_cell_coords.squeeze(1) + fine_offsets[:, 0, :]  # [B, 2]
+        )  # [B, K, 2]
+        candidate_pos = top_k_centers + fine_offsets  # [B, K, 2]
+        log_pi = torch.log(top_k_probs.clamp(min=1e-8))  # [B, K]
+        hypothesis_logits = log_pi + fine_scores
+        hypothesis_weights = torch.softmax(hypothesis_logits, dim=-1)  # [B, K]
+        predicted_position = (hypothesis_weights.unsqueeze(-1) * candidate_pos).sum(dim=1)
         predicted_position = torch.clamp(predicted_position, 0.0, 1.0 - 1e-6)
+
+        best_idx = hypothesis_logits.argmax(dim=1)
+        predicted_position_map = candidate_pos[torch.arange(candidate_pos.shape[0]), best_idx]
+        predicted_position_map = torch.clamp(predicted_position_map, 0.0, 1.0 - 1e-6)
         
         return {
             'coarse_logits': coarse_logits,
@@ -256,8 +242,10 @@ class UELocalizationModel(nn.Module):
             'top_k_indices': top_k_indices,
             'top_k_probs': top_k_probs,
             'fine_offsets': fine_offsets,
-            'fine_uncertainties': fine_uncertainties,
+            'fine_scores': fine_scores,
+            'hypothesis_weights': hypothesis_weights,
             'predicted_position': predicted_position,
+            'predicted_position_map': predicted_position_map,
             'aux_outputs': aux_outputs,
         }
     
@@ -274,20 +262,18 @@ class UELocalizationModel(nn.Module):
             measurements: Measurement dictionary
             radio_map: Radio map tensor
             osm_map: OSM map tensor
-            return_uncertainty: Whether to return uncertainty estimate
+            return_uncertainty: Whether to return hypothesis weights (confidence over top-K)
         
         Returns:
             predicted_position: [batch, 2] (x, y) in meters
-            uncertainty: [batch, 2] (σx, σy) in meters (if return_uncertainty=True)
+            hypothesis_weights: [batch, K] (if return_uncertainty=True)
         """
         outputs = self.forward(measurements, radio_map, osm_map)
         
         position = outputs['predicted_position']
         
         if return_uncertainty:
-            # Return uncertainty of best prediction
-            uncertainty = outputs['fine_uncertainties'][:, 0, :]  # [B, 2]
-            return position, uncertainty
+            return position, outputs['hypothesis_weights']
         
         return position, None
     
@@ -310,7 +296,7 @@ class UELocalizationModel(nn.Module):
             Dictionary with:
                 - loss: Total loss
                 - coarse_loss: Cross-entropy loss
-                - fine_loss: Mixture NLL loss
+                - fine_loss: Re-ranking expected error loss
         """
         # Coarse loss: cross-entropy on grid cells
         coarse_loss = nn.functional.cross_entropy(
@@ -318,83 +304,41 @@ class UELocalizationModel(nn.Module):
             targets['cell_grid'],
         )
         
-        # Fine loss: Mixture NLL
-        # 1. Compute centers for all top-K candidates
+        # Fine loss: re-ranking over top-K hypotheses with per-candidate refinement
+        eps = 1e-6
         top_k_centers = self.coarse_head.indices_to_coords(
             outputs['top_k_indices'],
             self.cell_size,
             origin=self.origin,
         )  # [B, K, 2]
-        
-        # 2. Compute targets relative to each candidate center
-        # target_pos: [B, 1, 2], centers: [B, K, 2] -> offsets: [B, K, 2]
-        target_offsets = targets['position'].unsqueeze(1) - top_k_centers
-        
-        # 3. Compute log probability for each component k
-        # log_pi: weights from coarse head
-        # Renormalize top-k probabilities to sum to 1 across the K candidates
-        eps = 1e-6
-        top_k_probs = outputs['top_k_probs']
-        pi = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + eps)
-        log_pi = torch.log(pi + eps)
-        
-        # log_N: Gaussian density
-        # Model predicts offset (mu) and scale (sigma) from the cell center
-        mu = outputs['fine_offsets']           # [B, K, 2]
-        sigma = outputs['fine_uncertainties']  # [B, K, 2]
-        
-        # Residual between true offset and predicted offset
-        residuals = target_offsets - mu        # [B, K, 2]
-        var = sigma ** 2
-        
-        # Log likelihood per dimension: -0.5 * log(2πσ²) - 0.5 * (x-μ)²/σ²
-        log_prob_dim = -0.5 * torch.log(2 * torch.pi * var + eps) - 0.5 * (residuals ** 2) / (var + eps)
-        log_prob_xy = log_prob_dim.sum(dim=-1)  # [B, K] sum over x,y
-        
-        # Clip log probabilities to prevent numerical issues when coarse predictions are very wrong
-        # Minimum corresponds to ~3 sigma away (log(0.01) ≈ -4.6)
-        log_prob_xy = torch.clamp(log_prob_xy, min=-15.0)
-        
-        # 4. Total mixture probability: sum_k (pi_k * N_k)
-        # In log domain: logsumexp(log_pi + log_N)
-        log_mixture = torch.logsumexp(log_pi + log_prob_xy, dim=-1)  # [B]
-        
-        # Ensure numerical stability
-        log_mixture = torch.clamp(log_mixture, min=-15.0)
-        
-        fine_loss = -log_mixture.mean()
-        
-        # 5. Auxiliary position loss (direct distance supervision)
-        # This helps gradient flow and provides direct signal on position error
-        pred_pos = outputs['predicted_position']  # [B, 2]
+        candidate_pos = top_k_centers + outputs['fine_offsets']  # [B, K, 2]
         true_pos = targets['position']  # [B, 2]
-        position_loss = nn.functional.smooth_l1_loss(pred_pos, true_pos)
-        
-        # 6. Variance regularization loss - penalize large variances to encourage confident predictions
-        # This encourages the model to predict smaller, more confident ellipses
-        # We regularize log(sigma) to encourage smaller sigma values, weighted by mixture probability
-        variance_reg_weight = loss_weights.get('variance_reg_weight', 0.1)
-        # Weight each component's variance by its probability (focus on top predictions)
-        weighted_log_sigma = (pi.detach().unsqueeze(-1) * torch.log(sigma + eps)).sum(dim=1)  # [B, 2]
-        variance_loss = weighted_log_sigma.mean()  # Scalar, penalizes large sigma
+        true_pos_expanded = true_pos.unsqueeze(1).expand_as(candidate_pos)
+
+        per_candidate_loss = nn.functional.smooth_l1_loss(
+            candidate_pos,
+            true_pos_expanded,
+            reduction='none',
+        ).sum(dim=-1)  # [B, K]
+
+        log_pi = torch.log(outputs['top_k_probs'].clamp(min=eps))
+        hypothesis_logits = log_pi + outputs['fine_scores']
+        hypothesis_weights = torch.softmax(hypothesis_logits, dim=-1)
+
+        fine_loss = (hypothesis_weights * per_candidate_loss).sum(dim=-1).mean()
         
         # Get position loss weight (default to 0.2 if not specified)
-        position_weight = loss_weights.get('position_weight', 0.2)
-        
         # Total loss
         total_loss = (
             loss_weights['coarse_weight'] * coarse_loss +
-            loss_weights['fine_weight'] * fine_loss +
-            position_weight * position_loss +
-            variance_reg_weight * variance_loss
+            loss_weights['fine_weight'] * fine_loss
         )
         
         return {
             'loss': total_loss,
             'coarse_loss': coarse_loss,
             'fine_loss': fine_loss,
-            'position_loss': position_loss,
-            'variance_loss': variance_loss,
+            'position_loss': torch.tensor(0.0, device=coarse_loss.device),
         }
     
     def forward_with_attention(
@@ -439,20 +383,28 @@ class UELocalizationModel(nn.Module):
                 centers_px=centers_px,
                 patch_size=self.fine_patch_size,
             )
-        fine_offsets, fine_uncertainties = self.fine_head(
+        fine_offsets, fine_scores = self.fine_head(
             fused,
             top_k_indices,
             cell_size=self.cell_size,
             local_map_embeddings=local_map_embeddings,
         )
         
-        top_cell_coords = self.coarse_head.indices_to_coords(
-            top_k_indices[:, 0:1],
+        top_k_centers = self.coarse_head.indices_to_coords(
+            top_k_indices,
             self.cell_size,
             origin=self.origin,
-        ).squeeze(1)
-        predicted_position = top_cell_coords + fine_offsets[:, 0, :]
+        )
+        candidate_pos = top_k_centers + fine_offsets
+        log_pi = torch.log(top_k_probs.clamp(min=1e-8))
+        hypothesis_logits = log_pi + fine_scores
+        hypothesis_weights = torch.softmax(hypothesis_logits, dim=-1)
+        predicted_position = (hypothesis_weights.unsqueeze(-1) * candidate_pos).sum(dim=1)
         predicted_position = torch.clamp(predicted_position, 0.0, 1.0 - 1e-6)
+
+        best_idx = hypothesis_logits.argmax(dim=1)
+        predicted_position_map = candidate_pos[torch.arange(candidate_pos.shape[0]), best_idx]
+        predicted_position_map = torch.clamp(predicted_position_map, 0.0, 1.0 - 1e-6)
 
         aux_outputs = None
         if self.aux_enabled and self.aux_heads:
@@ -468,8 +420,10 @@ class UELocalizationModel(nn.Module):
             'top_k_indices': top_k_indices,
             'top_k_probs': top_k_probs,
             'fine_offsets': fine_offsets,
-            'fine_uncertainties': fine_uncertainties,
+            'fine_scores': fine_scores,
+            'hypothesis_weights': hypothesis_weights,
             'predicted_position': predicted_position,
+            'predicted_position_map': predicted_position_map,
             'aux_outputs': aux_outputs,
         }
         

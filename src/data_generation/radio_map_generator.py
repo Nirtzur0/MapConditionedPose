@@ -2,11 +2,10 @@
 Radio Map Generator for Physics Loss.
 
 Generates precomputed Sionna radio maps with comprehensive RT/PHY/SYS features
-for use in physics-consistency loss. Maps are saved in Zarr format for efficient loading.
+for use in physics-consistency loss.
 """
 
 import numpy as np
-import zarr
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
@@ -56,10 +55,8 @@ class RadioMapConfig:
     tx_power: float = 43.0  # dBm
     noise_figure: float = 9.0  # dB
     
-    # Output format
+    # Output
     output_dir: Path = Path("data/radio_maps")
-    compression: str = "zstd"  # Zarr compression
-    compression_level: int = 3
     
     def __post_init__(self):
         if isinstance(self.output_dir, str):
@@ -72,8 +69,7 @@ class RadioMapGenerator:
     Generates precomputed Sionna radio maps for physics loss.
     
     For each scene, computes a multi-channel radio map covering the full extent
-    with comprehensive RT/PHY/SYS features. Maps are stored in Zarr format for
-    efficient loading during training.
+    with comprehensive RT/PHY/SYS features.
     """
     
     def __init__(self, config: RadioMapConfig):
@@ -267,29 +263,3 @@ class RadioMapGenerator:
             return radio_map, sionna_rm
         return radio_map
     
-    def save_to_zarr(self, radio_map: np.ndarray, scene_id: str, metadata: Optional[Dict] = None) -> Path:
-        """Save radio map to Zarr format."""
-        output_path = self.config.output_dir / f"{scene_id}.zarr"
-        store = zarr.open(str(output_path), mode='w')
-        store.create_dataset('radio_map', data=radio_map, chunks=(1, 256, 256),
-                           compression=self.config.compression, compression_opts={'level': self.config.compression_level})
-        
-        if metadata is None: metadata = {}
-        metadata.update({
-            'scene_id': scene_id,
-            'resolution': self.config.resolution,
-            'map_size': self.config.map_size,
-            'map_extent': self.config.map_extent,
-            'features': self.config.features,
-            'ue_height': self.config.ue_height
-        })
-        store.attrs.update(metadata)
-        return output_path
-    
-    def load_from_zarr(self, scene_id: str) -> Tuple[np.ndarray, Dict]:
-        """Load radio map from Zarr format."""
-        zarr_path = self.config.output_dir / f"{scene_id}.zarr"
-        if not zarr_path.exists():
-            raise FileNotFoundError(f"Radio map not found: {zarr_path}")
-        store = zarr.open(str(zarr_path), mode='r')
-        return store['radio_map'][:], dict(store.attrs)

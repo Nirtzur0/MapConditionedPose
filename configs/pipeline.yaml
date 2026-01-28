@@ -1,7 +1,7 @@
 # Unified pipeline configuration
 
 experiment:
-  name: experiment
+  name: experiment_1tx_50vars_2000ue
   output_dir: outputs
   clean: false
 
@@ -30,9 +30,13 @@ scenes:
     - name: NYC, NY
       bbox: [-73.990, 40.750, -73.980, 40.760]
       split: test
-  num_tx: 2
-  tx_variations: 5
+  num_tx: 1
+  tx_variations: 2
   site_strategy: random
+  bbox_scale: 0.6
+  use_lidar: false
+  use_dem: false
+  hag_tiff_path: null
 
 data_generation:
   carrier_frequency_hz: 3500000000.0
@@ -40,28 +44,41 @@ data_generation:
   tx_power_dbm: 43.0
   noise_figure_db: 9.0
   use_mock_mode: false
+  allow_mock_fallback: false
+  require_sionna: true
+  require_cfr: false
   max_depth: 5
-  num_samples: 1000000
+  num_samples: 600000
   enable_diffraction: true
-  num_ue_per_tile: 150
+  enable_diffuse_reflection: true
+  rt_batch_size: 8
+  num_ue_per_tile: 2000
   ue_height_range: [1.5, 1.5]
-  ue_velocity_range: [0.0, 1.5]
-  num_reports_per_ue: 10
+  ue_velocity_range: [0.0, 0.0]
+  num_reports_per_ue: 1
+  enforce_unique_ue_positions: true
+  min_ue_separation_m: 2.0
+  ue_sampling_margin_m: 50.0
+  rt_diagnostics_max: 20
+  rt_fail_log_every: 200
+  drop_log_every: 200
+  drop_failed_reports: true
+  max_resample_attempts: 25
   report_interval_ms: 200.0
   enable_k_factor: false
   enable_beam_management: true
   num_beams: 64
   max_neighbors: 8
+  cfr_num_subcarriers: 64
   measurement_dropout_rates: {}
   measurement_dropout_seed: 42
   quantization_enabled: true
-  zarr_chunk_size: 100
   max_stored_paths: 256
   max_stored_sites: 16
   split_ratios:
-    train: 0.7
-    val: 0.15
-    test: 0.15
+    train: 0.6
+    val: 0.2
+    test: 0.2
 
 model:
   radio_encoder:
@@ -75,12 +92,7 @@ model:
     rt_features_dim: 16
     phy_features_dim: 8
     mac_features_dim: 6
-    cfr_enabled: false
-    cfr_num_cells: 8
-    cfr_num_subcarriers: 64
   map_encoder:
-    use_e2_equivariant: false
-    num_group_elements: 8
     img_size: 256
     patch_size: 16
     in_channels: 10
@@ -108,8 +120,6 @@ model:
     patch_size: 64
     use_local_map: true
     offset_scale: 1.5
-    sigma_min_ratio: 0.03
-    sigma_max_ratio: 3.2
     dropout: 0.1
 
 training:
@@ -121,8 +131,6 @@ training:
   loss:
     coarse_weight: 1.5
     fine_weight: 1.0
-    position_weight: 0.5
-    variance_reg_weight: 0.1
     use_physics_loss: false
     auxiliary:
       enabled: true
@@ -143,35 +151,37 @@ training:
     feature_dropout: 0.1
     temporal_dropout: 0.1
     random_flip: true
-    random_rotation: true
-    scale_range: [0.95, 1.05]
+    random_rotation: false
+    scale_range: [1.0, 1.0]
 
 dataset:
   train_lmdb_paths: []
   val_lmdb_paths: []
   test_lmdb_paths: []
-  train_zarr_paths: []
-  val_zarr_paths: []
-  test_zarr_paths: []
+  require_lmdb: true
   map_resolution: 1.0
   scene_extent: 512
   normalize_features: true
   handle_missing_values: mask
   split_seed: 42
   map_cache_size: 16
-  sequence_length: 10
+  sequence_length: 1
   max_cells: 2
+  normalize_maps: true
+  map_norm_mode: zscore
+  map_log_throughput: true
+  map_log_epsilon: 0.001
 
 physics_loss:
   enabled: false
-  lambda_phys: 0.1
+  lambda_phys: 0.05
   feature_weights:
     rsrp: 1.0
     rsrq: 0.5
     sinr: 0.8
     cqi: 0.3
     throughput: 0.2
-  loss_type: mse
+  loss_type: huber
   huber_delta: 1.0
   normalize_features: true
   radio_maps_dir: data/radio_maps
@@ -182,11 +192,8 @@ physics_loss:
     min_confidence_threshold: 0.6
     clip_to_extent: true
     coarse_logit_temperature: 1.0
-    fine_variance_scale: 1.0
-    fine_sigma_ref: null
-    fine_sigma_ref_ratio: 0.05
+    candidate_sigma_ratio: 0.05
     confidence_combine: min
-    min_variance: 1.0e-6
 
 evaluation:
   metrics:

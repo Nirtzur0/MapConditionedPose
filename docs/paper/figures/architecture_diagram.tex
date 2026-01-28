@@ -63,7 +63,7 @@
 \node[inputbox] (phyin) at (-3.5, 5.3) {PHY Features\\{\tiny [B, L, 8]}};
 \node[inputbox] (macin) at (-1.5, 5.3) {MAC Features\\{\tiny [B, L, 5]}};
 
-\node[cfrbox] (cfrin) at (-0.0, 5.3) {CFR\\{\tiny [B, 8, 64]}};
+\node[cfrbox] (cfrin) at (-0.0, 5.3) {CSI/CFR\\{\tiny [B, 8, 64]}};
 
 % Embedding/Projection layers
 \node[embedbox] (cellemb) at (-5.5, 5.8) {Embed\\{\tiny →128}};
@@ -73,7 +73,7 @@
 \node[projbox] (rtproj) at (-5.5, 4.65) {Linear\\{\tiny →128}};
 \node[projbox] (phyproj) at (-3.5, 4.65) {Linear\\{\tiny →128}};
 \node[projbox] (macproj) at (-1.5, 4.65) {Linear\\{\tiny →128}};
-\node[projbox] (cfrenc) at (0.0, 4.65) {Conv1D\\{\tiny →128}};
+\node[projbox] (cfrenc) at (0.0, 4.65) {CSI Enc\\{\tiny Conv1D →128}};
 
 % Arrows from inputs to embeddings
 \draw[arrow, inputblue!70] (cellin.south) -- (cellemb.north);
@@ -134,7 +134,7 @@
 \draw[arrow, mapblue!70] (mapconcat.south) -- (patchemb.north);
 
 % Map Vision Transformer
-\node[transformer, minimum width=3.6cm, fill=mapblue!25] (mapvit) at (5.5, 3.2) {\textbf{E(2)-ViT Encoder}\\{\scriptsize 6 layers, 8 heads}\\{\scriptsize p4m group (8 elements)}};
+\node[transformer, minimum width=3.6cm, fill=mapblue!25] (mapvit) at (5.5, 3.2) {\textbf{ViT Encoder (default)}\\{\scriptsize 6 layers, 8 heads}\\{\scriptsize E(2)-ViT optional (p4m)}};
 \draw[arrow] (patchemb.south) -- (mapvit.north);
 
 % Map spatial tokens output
@@ -180,17 +180,17 @@
 
 % Fine outputs
 \node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (offsets) at (3.0, -5.8) {Offsets\\{\tiny [B, K, 2]}};
-\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (sigma) at (5.4, -5.8) {Uncertainty\\{\tiny [B, K, 2]}};
+\node[outputbox, fill=fineyellow!30, minimum width=1.7cm] (scores) at (5.4, -5.8) {Scores\\{\tiny [B, K]}};
 \draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.4) -| (offsets.north);
-\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.4) -| (sigma.north);
+\draw[arrow, fineyellow!60!orange] (fine.south) -- ++(0, -0.4) -| (scores.north);
 
 % ============================================
 % FINAL OUTPUT
 % ============================================
-\node[outputbox, fill=outputteal!40, minimum width=3.2cm, minimum height=0.8cm, very thick] (finalpos) at (1.5, -7.4) {\textbf{GMM Posterior}\\$p(\mathbf{y}) = \sum_k \pi_k \mathcal{N}(\boldsymbol{\mu}_k, \boldsymbol{\Sigma}_k)$};
+\node[outputbox, fill=outputteal!40, minimum width=3.2cm, minimum height=0.8cm, very thick] (finalpos) at (1.5, -7.4) {\textbf{Top-K Hypotheses}\\$\alpha_k \propto \pi_k \exp(s_k)$};
 \draw[arrow, thick, outputteal] (heatmap.south) |- ++(0, -0.3) -| (finalpos.west);
 \draw[arrow, thick, outputteal] (offsets.south) |- ++(0, -0.3) -| (finalpos);
-\draw[arrow, thick, outputteal] (sigma.south) |- ++(0, -0.3) -| (finalpos.east);
+\draw[arrow, thick, outputteal] (scores.south) |- ++(0, -0.3) -| (finalpos.east);
 
 % ============================================
 % ANNOTATIONS/LEGEND

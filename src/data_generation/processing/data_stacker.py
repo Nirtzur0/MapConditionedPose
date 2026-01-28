@@ -18,18 +18,20 @@ class DataStacker:
     
     Responsibilities:
     - Stack feature batches from multiple simulations
-    - Pad arrays to fixed dimensions for Zarr compatibility
+    - Pad arrays to fixed dimensions for consistent storage
     - Handle variable-length features
     """
     
-    def __init__(self, max_neighbors: int = 8):
+    def __init__(self, max_neighbors: int = 8, num_subcarriers: int = 64):
         """
         Initialize data stacker.
         
         Args:
             max_neighbors: Maximum number of neighbor cells to track
+            num_subcarriers: CFR subcarrier count for padding/truncation
         """
         self.max_neighbors = max_neighbors
+        self.num_subcarriers = num_subcarriers
         
     def stack_scene_data(self, all_data: Dict[str, List]) -> Dict[str, np.ndarray]:
         """
@@ -127,6 +129,11 @@ class DataStacker:
             val = self._pad_cell_dim(val, target_size=MAX_CELLS, fill_value=fill_val)
             # Pad axis 1 (Rx/Sites)
             return self._pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=fill_val)
+
+        # CFR Features: [Batch, Cells, Subcarriers]
+        elif key in ['phy_fapi/cfr_magnitude', 'phy_fapi/cfr_phase']:
+            val = self._pad_tx_dim(val, axis=1, target_size=MAX_CELLS, fill_value=0)
+            return self._pad_cell_dim(val, target_size=self.num_subcarriers, fill_value=0)
         
         # MAC Features: [Batch, Rx]
         elif key in ['mac_rrc/serving_cell_id', 'mac_rrc/timing_advance', 

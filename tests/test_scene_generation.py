@@ -76,12 +76,6 @@ def tile_generator(seed):
 
 
 @pytest.fixture
-def scene_builder_path():
-    """Path to scene_builder package."""
-    return "/home/ubuntu/projects/scene_builder/package/src"
-
-
-@pytest.fixture
 def boulder_bbox():
     """Boulder, CO test bounding box."""
     return (-105.30, 40.00, -105.25, 40.03)
@@ -113,9 +107,9 @@ class TestMaterialRandomizer:
         
         assert mat1 == mat2
         assert mat1 == {
-            'ground': 'mat-itu_wet_ground',
-            'rooftop': 'mat-itu_metal',
-            'wall': 'mat-itu_concrete',
+            'ground': 'mat-itu_very_dry_ground',
+            'rooftop': 'mat-itu_concrete',
+            'wall': 'mat-itu_brick',
         }
     
     def test_material_properties(self, material_randomizer):
@@ -345,37 +339,15 @@ class TestTileGenerator:
 class TestSceneGenerator:
     """Test suite for SceneGenerator."""
     
-    def test_init_without_scene_builder(self, tmp_path):
-        """Test that scene_builder_path is ignored when module is installed."""
+    def test_init_scene_builder(self, tmp_path):
+        """Test SceneGenerator initialization with installed scene_builder."""
         pytest.importorskip("scene_builder")
-        material_randomizer = MaterialRandomizer()
-        site_placer = SitePlacer()
-
-        scene_gen = SceneGenerator(
-            scene_builder_path="/invalid/path",
-            output_dir=tmp_path,
-        )
-
-        assert scene_gen.scene is not None
-    
-    @pytest.mark.skipif(
-        not Path("/home/ubuntu/projects/scene_builder/package/src").exists(),
-        reason="Scene Builder not installed"
-    )
-    def test_init_with_scene_builder(self, scene_builder_path, tmp_path):
-        """Test SceneGenerator initialization with valid scene_builder."""
         try:
             import shapely
         except ImportError:
             pytest.skip("Shapely not installed (required by scene_builder)")
-        
-        material_randomizer = MaterialRandomizer(seed=42)
-        site_placer = SitePlacer(strategy="grid", seed=42)
-        
-        scene_gen = SceneGenerator(
-            scene_builder_path=scene_builder_path,
-            output_dir=tmp_path,
-        )
+
+        scene_gen = SceneGenerator(output_dir=tmp_path)
         
         assert scene_gen.material_randomizer is not None
         assert scene_gen.site_placer is not None
