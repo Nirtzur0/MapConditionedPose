@@ -896,6 +896,9 @@ def visualize_all_features(batch, sample_idx=0, model=None, verbose=False):
     rt_data = {}
     for i in range(min(rt_dim, len(rt_feature_names))):
         name, unit = rt_feature_names[i]
+        # Skip unused features
+        if name.startswith('unused') or name.startswith('reserved'):
+            continue
         rt_data[f"{name} ({unit})" if unit else name] = rt_values[:, i]
 
     df_rt = pd.DataFrame(rt_data)
@@ -906,6 +909,9 @@ def visualize_all_features(batch, sample_idx=0, model=None, verbose=False):
     phy_data = {}
     for i in range(min(phy_dim, len(phy_feature_names))):
         name, unit = phy_feature_names[i]
+        # Skip unused features
+        if name.startswith('unused'):
+            continue
         phy_data[f"{name} ({unit})" if unit else name] = phy_values[:, i]
 
     df_phy = pd.DataFrame(phy_data)
@@ -916,6 +922,9 @@ def visualize_all_features(batch, sample_idx=0, model=None, verbose=False):
     mac_data = {}
     for i in range(min(mac_dim, len(mac_feature_names))):
         name, unit = mac_feature_names[i]
+        # Skip unused features
+        if name.startswith('unused'):
+            continue
         mac_data[f"{name} ({unit})" if unit else name] = mac_values[:, i]
 
     df_mac = pd.DataFrame(mac_data)
@@ -924,11 +933,19 @@ def visualize_all_features(batch, sample_idx=0, model=None, verbose=False):
 
     summary_data = {
         'Layer': ['RT', 'PHY', 'MAC'],
-        'Feature Count': [rt_dim, phy_dim, mac_dim],
-        'Mean (abs)': [np.abs(rt_values).mean(), np.abs(phy_values).mean(), np.abs(mac_values).mean()],
-        'Std (abs)': [rt_values.std(), phy_values.std(), mac_values.std()],
-        'Min': [rt_values.min(), phy_values.min(), mac_values.min()],
-        'Max': [rt_values.max(), phy_values.max(), mac_values.max()],
+        'Feature Count': [len(rt_data), len(phy_data), len(mac_data)],
+        'Mean (abs)': [np.abs(np.array(list(rt_data.values()))).mean() if rt_data else 0,
+                       np.abs(np.array(list(phy_data.values()))).mean() if phy_data else 0,
+                       np.abs(np.array(list(mac_data.values()))).mean() if mac_data else 0],
+        'Std (abs)': [np.array(list(rt_data.values())).std() if rt_data else 0,
+                      np.array(list(phy_data.values())).std() if phy_data else 0,
+                      np.array(list(mac_data.values())).std() if mac_data else 0],
+        'Min': [np.array(list(rt_data.values())).min() if rt_data else 0,
+                np.array(list(phy_data.values())).min() if phy_data else 0,
+                np.array(list(mac_data.values())).min() if mac_data else 0],
+        'Max': [np.array(list(rt_data.values())).max() if rt_data else 0,
+                np.array(list(phy_data.values())).max() if phy_data else 0,
+                np.array(list(mac_data.values())).max() if mac_data else 0],
     }
 
     df_summary = pd.DataFrame(summary_data)
