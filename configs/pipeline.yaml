@@ -52,7 +52,7 @@ data_generation:
   num_samples: 600000
   enable_diffraction: true
   enable_diffuse_reflection: false
-  rt_batch_size: 32
+  rt_batch_size: 16
   num_ue_per_tile: 1000
   ue_height_range: [1.5, 1.5]
   ue_velocity_range: [0.0, 10.0]
@@ -134,7 +134,7 @@ model:
   fine_head:
     d_input: 192
     d_hidden: 192
-    top_k: 3
+    top_k: 2
     patch_size: 64
     use_local_map: true
     offset_scale: 1.5
@@ -229,7 +229,7 @@ infrastructure:
   accelerator: gpu
   devices: 1
   precision: 16-mixed
-  num_workers: 8
+  num_workers: 4
   checkpoint:
     dirpath: checkpoints
     save_top_k: 3

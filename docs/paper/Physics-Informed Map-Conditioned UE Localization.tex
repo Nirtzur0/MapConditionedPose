@@ -329,7 +329,7 @@ We will use a latent cell variable $C\in\{1,\dots,G^2\}$ to build a hierarchical
 \end{scope}
 
 % Feature annotations
-\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 4.3) {Radio map: PathGain, SNR,\\SINR, Throughput, BLER};
+\node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 4.3) {Radio map: RSRP, RSRQ,\\SINR, CQI, Throughput};
 \node[font=\tiny, text=gray, align=left, anchor=west] at (5.8, 3.4) {OSM: Height, Footprint,\\Roads, Terrain, Material};
 
 \end{tikzpicture}
@@ -610,7 +610,7 @@ We generate datasets by (i) constructing 3D scenes from GIS/OSM data, (ii) placi
 
 \subsection{Inputs and channels}
 
-We use a multi-channel map tensor with $C_r$ radio channels and $C_o$ semantic channels. Example semantic channels include building footprint/height and terrain/road layers; example radio channels include path gain and quality metrics (SNR/SINR/throughput/BLER). The measurement sequence $\mathcal{X}$ includes categorical identifiers (cell/beam) and multi-layer features (RT/PHY/MAC). Missing or padded events are handled by an attention mask.
+We use a multi-channel map tensor with $C_r$ radio channels and $C_o$ semantic channels. Example semantic channels include building footprint/height and terrain/road layers; example radio channels include RSRP/RSRQ, SINR, CQI, and throughput. The measurement sequence $\mathcal{X}$ includes categorical identifiers (cell/beam) and multi-layer features (RT/PHY/MAC). Missing or padded events are handled by an attention mask.
 
 
 \begin{table}[t]
@@ -653,7 +653,7 @@ We demonstrate the model's ability to leverage radio propagation physics and sem
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/map_layers.png}
-\caption{Input map stack used by the map encoder. The top row shows the five radio-map channels (e.g., path gain, SNR/SINR, throughput, BLER), and the bottom row shows the semantic channels (height/footprint/roads/terrain).}
+\caption{Input map stack used by the map encoder. The top row shows the five radio-map channels (RSRP, RSRQ, SINR, CQI, throughput), and the bottom row shows the semantic channels (height/footprint/roads/terrain).}
 \label{fig:map_layers}
 \end{figure}
 
